@@ -67,6 +67,8 @@ export const config = {
   growthIntelligenceScheduleIntervalMs: Math.max(15_000, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_INTERVAL_MS, 60_000)),
   growthIntelligenceScheduleBatchSize: Math.max(10, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_BATCH_SIZE, 250)),
   growthIntelligenceDebounceMs: Math.max(60_000, num(process.env.GROWTH_INTELLIGENCE_DEBOUNCE_MS, 30 * 60 * 1000)),
+  changeIntelligenceInitialDelayMs: Math.max(5_000, num(process.env.CHANGE_INTELLIGENCE_INITIAL_DELAY_MS, 45_000)),
+  changeIntelligenceIntervalMs: Math.max(60 * 60 * 1000, num(process.env.CHANGE_INTELLIGENCE_INTERVAL_MS, 24 * 60 * 60 * 1000)),
 };
 
 /** Crawl defaults from env; per-crawl options override these. */

@@ -38,7 +38,7 @@ const nav = [
   { to: "/admin/automation", label: "Automation Center", icon: "plans", superOnly: true },
   { to: "/reports", label: "Reports", icon: "audits", permission: "view_reports" },
   { to: "/approvals", label: "Approvals", icon: "plans", permission: "approve" },
-  { to: "/billing", label: "Billing", icon: "billing", permission: "billing" },
+  { to: "/billing", label: "AI & Billing", icon: "billing", permission: "billing" },
 ] satisfies {
   to: string;
   label: string;
@@ -264,8 +264,8 @@ const helpByPath: Record<string, HelpContent> = {
   },
   "/strategy": {
     eyebrow: "Module Help",
-    title: "AI Strategy Engine",
-    intro: "AI Strategy Engine turns opportunity, intake, keyword analysis, site analysis, and project goals into a structured strategy and execution roadmap.",
+    title: "SEnuke AI Intelligence Strategy Engine",
+    intro: "SEnuke AI Intelligence Strategy Engine turns opportunity, intake, keyword analysis, site analysis, and project goals into a structured strategy and execution roadmap.",
     sections: [
       {
         title: "Correct order",
@@ -501,7 +501,7 @@ const helpByPath: Record<string, HelpContent> = {
   },
   "/billing": {
     eyebrow: "Billing Help",
-    title: "Billing",
+    title: "AI & Billing",
     intro: "Billing shows subscription status, plan access, invoices, trial state, and account billing controls.",
     sections: [
       {
@@ -692,8 +692,10 @@ export default function Layout({ children }: { children: ReactNode }) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem("senuke-sidebar") !== "expanded");
   const [sidebarTooltip, setSidebarTooltip] = useState<{ label: string; top: number } | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
   const [impersonation, setImpersonation] = useState<string | null>(() => getImpersonationLabel());
   const [billingStatus, setBillingStatus] = useState<BillingStatus | null>(null);
+  const [upgradeBannerDismissed, setUpgradeBannerDismissed] = useState(false);
   const [workspaceRoles, setWorkspaceRoles] = useState<string[]>(() => user?.workspace?.roles ?? []);
   const [workspacePermissions, setWorkspacePermissions] = useState<Record<string, boolean>>(() => user?.workspace?.capabilities.permissions ?? {});
   const [workspaceIdentity, setWorkspaceIdentity] = useState<{ name: string; workspaceType: string } | null>(() => user?.workspace ? { name: user.workspace.name, workspaceType: user.workspace.type } : null);
@@ -723,6 +725,15 @@ export default function Layout({ children }: { children: ReactNode }) {
   useEffect(() => {
     setHelpOpen(false);
   }, [location.pathname]);
+
+  useEffect(() => {
+    if (!logoutConfirmOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setLogoutConfirmOpen(false);
+    };
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [logoutConfirmOpen]);
 
   useEffect(() => {
     window.localStorage.setItem("senuke-sidebar", sidebarCollapsed ? "collapsed" : "expanded");
@@ -921,7 +932,7 @@ export default function Layout({ children }: { children: ReactNode }) {
           <div className={`grid grid-cols-3 gap-2 ${sidebarCollapsed ? "lg:grid-cols-1" : ""}`}>
             <button type="button" aria-label="Help" title="Help" onMouseEnter={(event) => showSidebarTooltip("Help", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Help", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => setHelpOpen(true)} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-lg font-bold text-slate-500 hover:bg-slate-50">?</button>
             {workspacePermissions.view_notifications === true && <Link to="/workspace?tab=notifications" aria-label={unreadNotifications ? `${unreadNotifications} unread notifications` : "Notifications"} title="Notifications" onMouseEnter={(event) => showSidebarTooltip("Notifications", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Notifications", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} className="relative flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-brand-300 hover:text-brand-700"><NavGlyph icon="notifications" />{unreadNotifications > 0 && <span className="absolute -right-1.5 -top-1.5 flex min-h-5 min-w-5 items-center justify-center rounded-full border-2 border-slate-100 bg-red-600 px-1 text-[10px] font-bold text-white">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}</Link>}
-            <button type="button" aria-label="Sign out" title="Sign out" onMouseEnter={(event) => showSidebarTooltip("Sign out", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Sign out", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => { logout(); navigate("/"); }} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></svg></button>
+            <button type="button" aria-label="Log out" title="Log out" onMouseEnter={(event) => showSidebarTooltip("Log out", event.currentTarget)} onMouseLeave={() => setSidebarTooltip(null)} onFocus={(event) => showSidebarTooltip("Log out", event.currentTarget)} onBlur={() => setSidebarTooltip(null)} onClick={() => { setSidebarTooltip(null); setLogoutConfirmOpen(true); }} className="flex h-10 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:border-red-200 hover:text-red-600"><svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10 17l5-5-5-5" /><path d="M15 12H3" /><path d="M14 3h5a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-5" /></svg></button>
           </div>
         </div>
       </aside>
@@ -930,15 +941,31 @@ export default function Layout({ children }: { children: ReactNode }) {
 
       {open && <div className="fixed inset-0 z-20 bg-black/30 lg:hidden" onClick={() => setOpen(false)} />}
 
+      {logoutConfirmOpen && (
+        <div className="fixed inset-0 z-[100] grid place-items-center bg-slate-950/50 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setLogoutConfirmOpen(false); }}>
+          <div role="dialog" aria-modal="true" aria-labelledby="logout-confirm-title" className="w-full max-w-md rounded-2xl border border-slate-200 bg-white p-6 shadow-2xl">
+            <h2 id="logout-confirm-title" className="text-xl font-black text-slate-950">Are You Sure You Want To Log Out?</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-600">You will need to sign in again to access your workspace.</p>
+            <div className="mt-6 flex justify-end gap-3">
+              <button type="button" autoFocus onClick={() => setLogoutConfirmOpen(false)} className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-700 hover:bg-slate-50">Cancel</button>
+              <button type="button" onClick={() => { setLogoutConfirmOpen(false); logout(); navigate("/"); }} className="rounded-lg bg-red-600 px-4 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-red-700">Continue</button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Main */}
       <div className={`flex min-w-0 flex-1 flex-col transition-[margin] duration-200 ${sidebarCollapsed ? "lg:ml-20" : "lg:ml-56"}`}>
         <button type="button" aria-label="Open navigation" className="fixed left-3 top-3 z-20 rounded-lg border border-slate-200 bg-white p-2 shadow-sm hover:bg-charcoal-50 lg:hidden" onClick={() => setOpen(true)}>☰</button>
         <BackgroundJobCenter enabled={Boolean(user)} />
-        {billingStatus?.status === "trialing" && billingStatus.hasAccess && (
+        {billingStatus?.status === "trialing" && billingStatus.hasAccess && !upgradeBannerDismissed && (
           <div className="border-b border-amber-300 bg-amber-300 px-4 py-3 text-sm text-amber-950 shadow-sm lg:px-8">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <span className="font-bold">Your {billingStatus.trialDurationDays ?? ""}{billingStatus.trialDurationDays ? "-day " : ""}trial is active. {billingStatus.trialDaysRemaining} day{billingStatus.trialDaysRemaining === 1 ? "" : "s"} left. Upgrade to keep SEnuke AI - AI Growth Operating System active after the trial.</span>
-              <Link to="/pricing" className="inline-flex rounded-lg bg-charcoal-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-charcoal-800">Upgrade</Link>
+              <div className="flex shrink-0 items-center gap-2 sm:ml-auto">
+                <Link to="/pricing" className="inline-flex rounded-lg bg-charcoal-900 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-charcoal-800">Upgrade</Link>
+                <button type="button" onClick={() => setUpgradeBannerDismissed(true)} aria-label="Dismiss upgrade banner" title="Dismiss" className="grid h-9 w-9 place-items-center rounded-lg border border-amber-500/60 bg-amber-200 text-xl font-bold leading-none text-amber-950 hover:bg-amber-100">×</button>
+              </div>
             </div>
           </div>
         )}

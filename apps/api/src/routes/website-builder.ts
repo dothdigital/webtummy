@@ -86,6 +86,7 @@ import { captureWebsiteTracking, productionTrackingEndpointIssue, trackingEmbed,
 import { requireApprovedExecutionPlanForExternalAction } from "../publishing-workflow.js";
 import { optimizeEmbeddedWebsiteMedia, optimizeWebsiteImage, websiteAssetRole } from "../website-media-optimization.js";
 import { decodeImageDataUrl, storeGeneratedAsset } from "../generated-assets.js";
+import { sendMail } from "../email.js";
 
 export const websiteBuilderRouter = Router();
 const WEBSITE_SEO_PLAN_NORMALIZATION_VERSION = "keyword-owner-v2";
@@ -8119,10 +8120,26 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ap
     ...await matchingContentPlanExecutionTaskIds(project.id, page),
   ])];
   const updated = await prisma.$transaction(async (tx) => {
+    const currentBrief = jsonRecord(page.briefJson);
+    const currentSeoPlan = jsonRecord(currentBrief.seoPlan);
+    const currentTargetedDraft = jsonRecord(currentSeoPlan.targetedUpdateDraft);
+    const hasTargetedUpdates = Array.isArray(currentTargetedDraft.updates)
+      && currentTargetedDraft.updates.length > 0;
     const nextBrief = {
-      ...jsonRecord(page.briefJson),
+      ...currentBrief,
+      ...(hasTargetedUpdates ? {
+        seoPlan: {
+          ...currentSeoPlan,
+          targetedUpdateDraft: {
+            ...currentTargetedDraft,
+            status: "approved_for_implementation",
+            approvedAt: approvedAt.toISOString(),
+            approvedByUserId: context.membership.userId,
+          },
+        },
+      } : {}),
       executionTrace: {
-        ...jsonRecord(jsonRecord(page.briefJson).executionTrace),
+        ...jsonRecord(currentBrief.executionTrace),
         executionTaskIds,
         status: "completed",
         approvedAt: approvedAt.toISOString(),
@@ -10342,6 +10359,83 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   res.setHeader("X-SEnuke-Release-Id", release.id);
   res.setHeader("X-SEnuke-Snapshot-Hash", release.snapshotHash);
   res.send(archive);
+});
+
+websiteBuilderRouter.post("/projects/:projectId/website-builder/developer-handoff/email", async (req, res) => {
+  const { context, project } = await scopedProject(req.params.projectId, req);
+  if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(409).json({ error: "Create the website build first." });
+  const handoff = jsonRecord(jsonRecord(build.settingsJson).hostingHandoff);
+  if (handoff.destination !== "developer_handoff") return res.status(409).json({ error: "Select and save Client or developer handoff first." });
+  const recipientName = String(handoff.technicalContactName || "Developer").trim();
+  const recipientEmail = z.string().email().parse(String(handoff.technicalContactEmail || "").trim());
+  const release = await activeApprovedReleaseForBuild(build);
+  if (!release) return res.status(409).json({ error: "Approve the current validated website version before emailing its handoff." });
+  requireLaunchReadiness(build, release);
+
+  const releaseModel = approvedReleaseWebsiteModel(release);
+  const websiteTracking = await trackingForProject(project, context.membership.userId);
+  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
+  const baseUrl = /^https:\/\//i.test(rawWebsiteUrl) ? rawWebsiteUrl : rawWebsiteUrl ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}` : "";
+  const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(releaseModel, build));
+  const files = createStaticWebsiteFiles(optimizedMedia.model, {
+    approvedReleaseId: release.id,
+    snapshotHash: release.snapshotHash,
+    formAction: staticWebsiteFormAction(release),
+    ...(baseUrl ? { baseUrl } : {}),
+    environmentType: "production",
+    siteFiles: approvedWebsiteSiteFileOverrides(build),
+    ...(websiteTracking ? { tracking: { ...websiteTracking, releaseId: release.id } } : {}),
+  });
+  const zip = new JSZip();
+  for (const file of files) zip.file(file.path, file.content, { date: release.approvedAt, base64: file.base64 });
+  const archive = await zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+  const archiveHash = createHash("sha256").update(archive).digest("hex");
+  const filename = `${slugify(project.businessName || project.name || "senuke-website")}-approved-release-${release.id.slice(-6)}.zip`;
+  const sentAt = new Date();
+  const expiresAt = new Date(sentAt.getTime() + 7 * 24 * 60 * 60 * 1000);
+  const asset = await storeGeneratedAsset({
+    workspaceId: context.workspace.id,
+    projectId: project.id,
+    assetType: "website-developer-handoff",
+    mimeType: "application/zip",
+    filename,
+    body: archive,
+    source: "website_builder_developer_handoff",
+    visibility: "private",
+    sourceEntityType: "website_approved_release",
+    sourceEntityId: release.id,
+    dedupeKey: `website-handoff:${release.id}:${recipientEmail.toLowerCase()}`,
+    createdByUserId: context.membership.userId,
+    metadata: { recipientName, recipientEmail, releaseId: release.id, snapshotHash: release.snapshotHash, archiveSha256: archiveHash, sentAt: sentAt.toISOString(), expiresAt: expiresAt.toISOString(), fileCount: files.length },
+  });
+  if (!asset) return res.status(409).json({ error: "Secure file storage is not configured, so the handoff link could not be created. Use Download Production Handoff instead." });
+  const deliveryMetadata = { ...jsonRecord(asset.metadataJson), recipientName, recipientEmail, releaseId: release.id, snapshotHash: release.snapshotHash, archiveSha256: archiveHash, sentAt: sentAt.toISOString(), expiresAt: expiresAt.toISOString(), fileCount: files.length, deliveryStatus: "sending" };
+  await prisma.generatedAsset.update({ where: { id: asset.id }, data: { metadataJson: deliveryMetadata as Prisma.InputJsonValue } });
+
+  const subject = `${project.businessName || project.name} website production handoff`;
+  const text = `Hello ${recipientName},\n\nThe approved production website package is ready.\n\nDownload: ${asset.deliveryUrl}\n\nThis private link expires ${expiresAt.toISOString()}. The package represents Approved Release ${release.id} with SHA-256 ${archiveHash}.\n\nSent securely by SEnuke AI.`;
+  const html = `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#0f172a"><p>Hello ${recipientName.replace(/[&<>"']/g, "")},</p><h1 style="font-size:24px">Website production handoff</h1><p>The approved production website package is ready.</p><p style="margin:28px 0"><a href="${asset.deliveryUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:white;padding:12px 18px;text-decoration:none;font-weight:700">Download approved website ZIP</a></p><p style="font-size:13px;color:#475569">This private link expires ${expiresAt.toISOString()}.<br>Approved Release: ${release.id}<br>SHA-256: ${archiveHash}</p><p>Sent securely by SEnuke AI.</p></div>`;
+  try {
+    await sendMail({ to: recipientEmail, subject, text, html });
+  } catch (error) {
+    await prisma.generatedAsset.update({ where: { id: asset.id }, data: { metadataJson: { ...deliveryMetadata, deliveryStatus: "failed", deliveryError: error instanceof Error ? error.message.slice(0, 500) : "Email delivery failed." } as Prisma.InputJsonValue } });
+    throw Object.assign(new Error("The secure handoff was prepared, but the email provider could not deliver it. Try again or use Download Production Handoff."), { statusCode: 409 });
+  }
+  const delivery = { id: asset.id, recipientName, recipientEmail, subject, filename, releaseId: release.id, snapshotHash: release.snapshotHash, archiveSha256: archiveHash, archiveBytes: archive.length, fileCount: files.length, sentAt: sentAt.toISOString(), expiresAt: expiresAt.toISOString(), status: "sent" };
+  const publicationIdempotencyKey = `release:${release.id}:static_html:developer_handoff:${recipientEmail.toLowerCase()}`;
+  await prisma.$transaction([
+    prisma.generatedAsset.update({ where: { id: asset.id }, data: { metadataJson: { ...deliveryMetadata, deliveryStatus: "sent", subject } as Prisma.InputJsonValue } }),
+    prisma.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...jsonRecord(build.settingsJson), hostingHandoff: { ...handoff, lastDelivery: delivery, deliveryHistory: [...(Array.isArray(handoff.deliveryHistory) ? handoff.deliveryHistory : []).slice(-9), delivery] } } as Prisma.InputJsonValue } }),
+    prisma.websitePublication.upsert({
+      where: { idempotencyKey: publicationIdempotencyKey },
+      update: { status: "completed", destinationId: asset.id, requestedById: context.membership.userId, remoteMappingsJson: { deliveryMethod: "secure_link", recipientEmail, assetId: asset.id, filename, expiresAt: expiresAt.toISOString() } as Prisma.InputJsonValue, verificationJson: { status: "delivered", archiveSha256: archiveHash, snapshotHash: release.snapshotHash } as Prisma.InputJsonValue, startedAt: sentAt, completedAt: sentAt, errorMessage: null },
+      create: { releaseId: release.id, projectId: project.id, clientId: project.clientId, target: "static_html", mode: "developer_handoff", status: "completed", rendererVersion: STATIC_HTML_RENDERER_VERSION, destinationId: asset.id, idempotencyKey: publicationIdempotencyKey, requestedById: context.membership.userId, remoteMappingsJson: { deliveryMethod: "secure_link", recipientEmail, assetId: asset.id, filename, expiresAt: expiresAt.toISOString() } as Prisma.InputJsonValue, verificationJson: { status: "delivered", archiveSha256: archiveHash, snapshotHash: release.snapshotHash } as Prisma.InputJsonValue, queuedAt: sentAt, startedAt: sentAt, completedAt: sentAt },
+    }),
+  ]);
+  await recordWorkspaceActivity(prisma, { context, action: "website_builder.developer_handoff_emailed", entityType: "generated_asset", entityId: asset.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: delivery });
+  res.json({ delivery, message: `Production handoff emailed to ${recipientEmail}. Publishing handoff is complete.` });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", async (req, res) => {

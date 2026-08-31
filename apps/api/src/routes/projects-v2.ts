@@ -23,7 +23,7 @@ import { approvedKeywordEntries, missingApprovedKeywordResearch, splitKeywordEnt
 import { recommendationFindings } from "./gap-analysis.js";
 import { approvedStrategyContext, channelStrategyText, extractUnifiedStrategyPlan, generateUnifiedStrategyWithAi } from "../strategy-ai.js";
 import { buildStrategyDecisionSet, composeStrategyDecisionExplainability, STRATEGY_DECISION_ENGINE_VERSION } from "../strategy-decision-engine.js";
-import { executionPlanWorkflowBlocker, getProjectWorkflowController, publishProjectWorkflowEvent, strategyWorkflowPrerequisite } from "../project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, getProjectWorkflowController, publishProjectWorkflowEvent, registerStrategyRefreshScheduler, strategyWorkflowPrerequisite, type StrategyRefreshRequest } from "../project-workflow-controller.js";
 import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
 import { centralAiJson, prepareCentralAiPrompt } from "../central-ai-service.js";
@@ -402,12 +402,7 @@ async function scopedProject(req: Request, projectId: string) {
   const latestStrategy = project.strategyPlans[0] ?? null;
   const latestGapAnalysis = project.gapAnalysisRuns[0] ?? null;
   const gapAnalysisAt = latestGapAnalysis?.completedAt ?? latestGapAnalysis?.createdAt ?? null;
-  const seoEvidenceCurrent = !requiresSiteAnalysisBeforeStrategy(project) || Boolean(
-    latestStrategy?.status === "approved"
-    && gapAnalysisAt
-    && gapAnalysisAt.getTime() <= latestStrategy.createdAt.getTime()
-  );
-  const strategyCoversLatestGap = Boolean(latestStrategy && gapAnalysisAt && gapAnalysisAt.getTime() <= latestStrategy.createdAt.getTime());
+  const seoEvidenceCurrent = !requiresSiteAnalysisBeforeStrategy(project) || Boolean(latestStrategy?.status === "approved" && gapAnalysisAt);
   const seoWorkflowGate = !latestGapAnalysis
     ? {
       title: "Run SEO & Gap Analysis",
@@ -416,7 +411,7 @@ async function scopedProject(req: Request, projectId: string) {
       action: "Run SEO & Gap Analysis",
       url: `/gap-analysis?projectId=${project.id}`,
     }
-    : strategyCoversLatestGap && latestStrategy?.status !== "approved"
+    : latestStrategy?.status !== "approved"
       ? {
         title: "Review & Approve Updated Strategy",
         description: "The latest Strategy already includes the completed SEO and Gap Analysis. Review and approve it before executable SEO work is released.",
@@ -425,10 +420,10 @@ async function scopedProject(req: Request, projectId: string) {
         url: `/strategy?projectId=${project.id}`,
       }
       : {
-        title: "Update Strategy with Latest SEO Evidence",
-        description: "The completed SEO and Gap Analysis is newer than the approved Strategy. Regenerate and approve Strategy so execution uses the latest evidence.",
-        reason: "The latest SEO or Gap Analysis is newer than the approved Strategy. Update and approve Strategy before creating executable SEO work.",
-        action: "Update Strategy",
+        title: "Review latest SEO evidence",
+        description: "The approved Strategy remains active. Review newer SEO evidence and optionally create a replacement version.",
+        reason: "Review is optional and does not block executable SEO work.",
+        action: "Review evidence",
         url: `/strategy?projectId=${project.id}`,
       };
   const existingWebsiteWithoutBuild = (project.projectType === "existing_website" || project.websiteStatus === "existing_website") && project.websiteBuilds.length === 0;
@@ -508,7 +503,9 @@ async function scopedProject(req: Request, projectId: string) {
     executionTasks: project.executionTasks.filter(isVisibleExecutionWork).map(normalizeGuidedPlanTask).map(withExecutionGovernance),
     executionPlans: project.executionPlans.map((plan) => ({ ...plan, tasks: plan.tasks.filter(isVisibleExecutionWork).map(normalizeGuidedPlanTask).map(withExecutionGovernance) })),
   };
-  if (normalizedProject.businessLocationJson) return normalizedProject;
+  // A saved project location is authoritative even when an older Discovery
+  // record has only free text rather than structured address JSON.
+  if (normalizedProject.businessLocationJson || normalizedProject.businessLocation) return normalizedProject;
   const clientSettings = project.agencyClient?.defaultSettings && typeof project.agencyClient.defaultSettings === "object"
     ? project.agencyClient.defaultSettings as Record<string, unknown> : {};
   const inheritedDetails = clientSettings.businessLocationDetails;
@@ -1842,7 +1839,7 @@ async function generateProjectKeywordGroups(project: NonNullable<Awaited<ReturnT
       }));
     }
     await recordWorkspaceActivity(tx, { context, action: regenerate ? "keyword.recommendations_regenerated" : append ? "keyword.more_ideas_generated" : "keyword.recommendations_generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { groupIds: saved.map((row) => row.id), manualSeed: manualSeed ?? null, expansionInstruction: expansionInstruction ?? null, expansionTopic, append, generationSource, usedExistingWebsiteContent: pageText.length > 0 } });
-    if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed after Strategy approval. Create a new Strategy version and reconcile the Execution Plan.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
+    if ((regenerate || append) && hadApprovedGroups && strategyApproved) await createWorkspaceNotification(tx, { context, userId: context.workspace.ownerUserId, type: "approved_keywords_changed", title: "Approved keywords changed", body: `${project.name}'s approved keyword recommendations changed. Review what changed; the approved Strategy remains active unless you explicitly replace it after reviewing the credit estimate.`, actionUrl: "/keywords", agencyClientId: project.agencyClientId, projectId: project.id });
     await syncProjectWorkflow(tx, project.id);
     return saved;
   });
@@ -3364,7 +3361,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     else await syncProjectWorkflow(tx, project.id);
     await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
   });
-  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `business-brain.updated:${project.id}:${Date.now()}`, payload: { source: "project_settings" } });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `business-brain.user-fact:${project.id}:${Date.now()}`, payload: { source: "project_settings", provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
   res.json({ project: await scopedProject(req, project.id), workflow });
 });
 
@@ -3410,12 +3407,12 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/locations", async (req, res)
     });
     if (projectChanged && strategyApproved) await createWorkspaceNotification(tx, {
       context, userId: context.workspace.ownerUserId, type: "project_location_changed", title: "Refresh project research",
-      body: `${project.name}'s location or target markets changed after strategy approval. Refresh Strategy and Keyword Research.`,
+      body: `${project.name}'s location or target markets changed. Review the changes; existing approved plans remain active unless you explicitly replace them.`,
       actionUrl: `/guided-projects/${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id,
     });
     return next;
   });
-  const workflow = projectChanged ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_locations", sourceId: project.id, idempotencyKey: `project.locations:${project.id}:${Date.now()}`, payload: { reason: "Business location or target markets changed." } }) : await getProjectWorkflowController(project.id);
+  const workflow = projectChanged ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_locations", sourceId: project.id, idempotencyKey: `project.locations:${project.id}:${Date.now()}`, payload: { reason: "User saved the business location or target markets.", provenance: "user_entered", actorUserId: context.membership.userId, impactedModules: ["local_seo", "growth_plan", "seo_plan", "opportunity_finder", "keyword_targeting", "multi_location_strategy", "next_best_action"] } }) : await getProjectWorkflowController(project.id);
   res.json({ project: updated, refreshRequired: projectChanged && strategyApproved, workflow });
 });
 
@@ -3475,7 +3472,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/target-markets", async (req,
     return next;
   });
 
-  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_target_markets", sourceId: project.id, idempotencyKey: `project.target-markets:${project.id}:${Date.now()}`, payload: { reason: "Target markets changed.", source: parsed.data.source } }) : await getProjectWorkflowController(project.id);
+  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_target_markets", sourceId: project.id, idempotencyKey: `project.target-markets:${project.id}:${Date.now()}`, payload: { reason: "User saved target markets.", source: parsed.data.source, provenance: "user_entered", impactedModules: ["local_seo", "growth_plan", "seo_plan", "opportunity_finder", "keyword_targeting", "multi_location_strategy", "next_best_action"] } }) : await getProjectWorkflowController(project.id);
   res.json({
     project: updated,
     targetMarkets,
@@ -3510,12 +3507,12 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/goals", async (req, res) => 
     });
     if (primaryChanged && strategyApproved) await createWorkspaceNotification(tx, {
       context, userId: context.workspace.ownerUserId, type: "project_primary_goal_changed", title: "Refresh project plan",
-      body: `${project.name}'s Primary Goal changed after strategy approval. Refresh Strategy, Keyword Research, and the Execution Plan.`,
+      body: `${project.name}'s Primary Goal changed. Review the impact; existing approved plans remain active unless you explicitly replace them.`,
       actionUrl: `/guided-projects/${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id,
     });
     return next;
   });
-  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_goals", sourceId: project.id, idempotencyKey: `project.goals:${project.id}:${Date.now()}`, payload: { reason: "Primary or secondary project goals changed.", primaryGoalChanged: primaryChanged } }) : await getProjectWorkflowController(project.id);
+  const workflow = changed ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_goals", sourceId: project.id, idempotencyKey: `project.goals:${project.id}:${Date.now()}`, payload: { reason: "User saved primary or secondary project goals.", primaryGoalChanged: primaryChanged, provenance: "user_entered", impactedModules: ["opportunity_finder", "growth_plan", "seo_plan", "execution_plan", "next_best_action"] } }) : await getProjectWorkflowController(project.id);
   res.json({ project: updated, strategyRefreshRequired: changed && strategyApproved, primaryGoalChanged: primaryChanged, workflow });
 });
 
@@ -3829,7 +3826,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
 
   const updated = await scopedProject(req, project.id);
   const opportunityGenerationDeferred = "Approve the Business Brain and complete the Readiness Check before Opportunity Discovery.";
-  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length } });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length, provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
   res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow, opportunityGenerationDeferred });
 });
 
@@ -3908,7 +3905,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/:opportunityId/
     });
     if (changingApprovedDirection) await createWorkspaceNotification(tx, {
       context, userId: context.workspace.ownerUserId, type: "approved_opportunity_changed", title: "Approved project direction changed",
-      body: `${project.name}'s selected opportunity changed after Strategy approval. Refresh Strategy, Keyword Research, and the Execution Plan.`, actionUrl: `/guided-projects/${project.id}`,
+      body: `${project.name}'s selected opportunity changed. Review the impact; existing approved plans remain active unless you explicitly replace them.`, actionUrl: `/guided-projects/${project.id}`,
       agencyClientId: project.agencyClientId, projectId: project.id,
     });
     await syncProjectWorkflow(tx, project.id);
@@ -4151,6 +4148,8 @@ async function performStrategyGeneration(req: Request, res: Response) {
   const generateInput = z.object({
     revisionComment: z.string().trim().max(2000).optional(),
     generationJobId: z.string().trim().max(191).optional(),
+    forceReview: z.boolean().optional(),
+    automaticRefresh: z.boolean().optional(),
   }).safeParse(req.body ?? {});
   if (!generateInput.success) return res.status(400).json({ error: generateInput.error.flatten() });
   const workflowGate = await getProjectWorkflowController(project.id);
@@ -4182,7 +4181,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
   const advanced = await extendedStrategyAnalysisForProject(project);
   const approvedGapRecommendations = await prisma.gapRecommendation.findMany({ where: { projectId: project.id, status: "approved" }, orderBy: [{ impactScore: "desc" }, { confidenceScore: "desc" }], take: 20 });
   const gapStrategyRecommendations = approvedGapRecommendations.map((item) => ({ gapRecommendationId: item.id, analysisKey: `gap_${item.category}`, key: `gap_${item.category}`, title: item.title, applicable: true, priority: item.priority, impact: item.impactScore, confidence: item.confidenceScore, why: item.explanation, evidence: item.evidenceJson, actions: [item.recommendedAction], expectedImpact: item.expectedImpact }));
-  const personalNoApproval = context.workspace.workspaceType === "personal";
+  const personalNoApproval = context.workspace.workspaceType === "personal" && !generateInput.data.forceReview;
   const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
   const strategyAiRoute = await modelRouteForFeature("strategy_generate", client?.plan, config.openaiModel);
   const strategyEvidence = {
@@ -4433,7 +4432,18 @@ async function performStrategyGeneration(req: Request, res: Response) {
       select: { membership: { select: { userId: true } } },
     });
     for (const userId of personalNoApproval ? [] : [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.membership.userId)])]) {
-      await createWorkspaceNotification(tx, { context, userId, type: "strategy_approval_requested", title: "Strategy ready for review", body: `${project.name} Strategy v${latestVersion + 1} is ready to review and approve.`, actionUrl: `/strategy?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
+      await createWorkspaceNotification(tx, {
+        context,
+        userId,
+        type: "strategy_approval_requested",
+        title: "Strategy ready for review",
+        body: generateInput.data.automaticRefresh
+          ? "New business information was added. An updated Strategy is ready for review."
+          : `${project.name} Strategy v${latestVersion + 1} is ready to review and approve.`,
+        actionUrl: `/strategy?projectId=${project.id}`,
+        agencyClientId: project.agencyClientId,
+        projectId: project.id,
+      });
     }
 
     return row;
@@ -4464,6 +4474,8 @@ type StrategyGenerationJobInput = {
     clientId: string;
     workspaceId: string;
   };
+  forceReview?: boolean;
+  automaticRefresh?: boolean;
 };
 
 type StrategyGenerationResult = {
@@ -4506,6 +4518,56 @@ async function enqueueStrategyGenerationJob(jobId: string) {
   return "enqueued" as const;
 }
 
+async function enqueueAutomaticStrategyRefresh(request: StrategyRefreshRequest) {
+  const jobId = `strategy_job_${createHash("sha256").update(`${request.projectId}:${request.sourceEventId}:${request.businessBrainVersion}:${request.evidenceVersion}`).digest("hex").slice(0, 32)}`;
+  const existing = await prisma.aiRun.findUnique({ where: { id: jobId }, select: { id: true, status: true } });
+  if (existing) {
+    if (["queued", "running"].includes(existing.status)) await enqueueStrategyGenerationJob(existing.id);
+    return;
+  }
+  const project = await prisma.project.findUnique({
+    where: { id: request.projectId },
+    select: {
+      id: true, clientId: true, websiteId: true,
+      client: { select: { workspace: { select: { id: true } } } },
+      agencyClient: { select: { workspace: { select: { id: true } } } },
+    },
+  });
+  if (!project) return;
+  const workspaceId = project.agencyClient?.workspace.id ?? project.client.workspace?.id;
+  if (!workspaceId) throw new Error("No workspace is available for the automatic Strategy refresh.");
+  const membership = await prisma.workspaceMembership.findFirst({ where: { workspaceId, userId: request.actorUserId, status: "active" }, select: { userId: true } });
+  if (!membership) throw new Error("The user who changed the location is no longer an active workspace member.");
+  const usage = await preflightUsage({ clientId: project.clientId, userId: request.actorUserId, projectId: project.id, websiteId: project.websiteId, featureKey: "strategy_generate", actionKey: "Regenerate strategy after location update", idempotencyKey: `strategy-job:${jobId}`, metadata: { workspaceId, source: "automatic_location_strategy_refresh", sourceEventId: request.sourceEventId } });
+  const input: StrategyGenerationJobInput = {
+    projectId: project.id,
+    revisionComment: "Business location information changed. Re-evaluate Local SEO, keywords, opportunities, competitors, growth priorities, SEO Plan, multi-location strategy, and Next Best Action.",
+    idempotencyKey: request.sourceEventId,
+    usageEventId: usage.usageEventId,
+    requestedBy: { userId: request.actorUserId, role: "client_user", clientId: project.clientId, workspaceId },
+    forceReview: true,
+    automaticRefresh: true,
+  };
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.usageEvent.update({ where: { id: usage.usageEventId }, data: { approvalTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000) } });
+      await tx.aiRun.create({ data: { id: jobId, projectId: project.id, clientId: project.clientId, moduleName: "strategy_generation_job", promptVersion: "unified-strategy-job-v1", inputSnapshotJson: input as unknown as Prisma.InputJsonValue, outputJson: { stage: "queued", progress: 5, queuedAt: new Date().toISOString(), automaticRefresh: true }, status: "queued" } });
+      await tx.projectWorkflowEvent.upsert({
+        where: { idempotencyKey: `strategy.refresh_queued:${jobId}` },
+        update: {},
+        create: { projectId: project.id, eventType: "strategy.refresh_queued", sourceModule: "workflow_controller", sourceId: jobId, idempotencyKey: `strategy.refresh_queued:${jobId}`, payloadJson: { sourceEventId: request.sourceEventId, businessBrainVersion: request.businessBrainVersion, evidenceVersion: request.evidenceVersion, preserveCurrentApproval: true }, occurredAt: new Date(), processedAt: new Date() },
+      });
+    });
+  } catch (error) {
+    await refundUsage({ usageEventId: usage.usageEventId, reason: "Automatic Strategy refresh could not be saved." }).catch(() => undefined);
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") return;
+    throw error;
+  }
+  await enqueueStrategyGenerationJob(jobId);
+}
+
+registerStrategyRefreshScheduler(enqueueAutomaticStrategyRefresh);
+
 async function completedStrategyForGenerationJob(projectId: string, jobId: string) {
   const strategies = await prisma.strategyPlan.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 10 });
   return strategies.find((strategy) => strategyJobObject(strategy.scoreBreakdown).generationJobId === jobId) ?? null;
@@ -4528,7 +4590,7 @@ function strategyWorkerRequest(input: StrategyGenerationJobInput, jobId: string)
     originalUrl: `/api/projects-v2/${input.projectId}/strategy/generate`,
     params: { projectId: input.projectId },
     query: {},
-    body: { revisionComment: input.revisionComment || undefined, generationJobId: jobId },
+    body: { revisionComment: input.revisionComment || undefined, generationJobId: jobId, forceReview: input.forceReview, automaticRefresh: input.automaticRefresh },
     user: { userId: input.requestedBy.userId, role: input.requestedBy.role, clientId: input.requestedBy.clientId },
     header: (name: string) => headers[name.toLowerCase()],
   } as unknown as Request;
@@ -4591,7 +4653,9 @@ async function executeStrategyGenerationJob(jobId: string) {
     await prisma.aiRun.update({ where: { id: jobId }, data: {
       status: "completed",
       outputJson: { stage: "completed", progress: 100, strategyId: responsePayload.strategy.id, strategyVersion: responsePayload.strategy.version, completedAt: new Date().toISOString(), ...(usageWarning ? { usageWarning } : {}) },
-      outputText: `Strategy v${responsePayload.strategy.version ?? ""} is ready for review.`,
+      outputText: input.automaticRefresh
+        ? "New business information was added. An updated Strategy is ready for review."
+        : `Strategy v${responsePayload.strategy.version ?? ""} is ready for review.`,
       errorMessage: null,
     } });
   } catch (error) {
@@ -5082,10 +5146,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/execution-plan/approve", asyn
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const plan = project.executionPlans.find((item) => item.status === "active") ?? project.executionPlans[0];
-  const strategy = project.strategyPlans.find((item) => item.status === "approved");
-  if (!plan || !strategy || plan.strategyVersion !== strategy.version) return res.status(409).json(workflowBlockedPayload("Create or refresh the Execution Plan from the current approved Strategy.", { label: "Create Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "generate" }));
+  if (!plan) return res.status(409).json(workflowBlockedPayload("No Execution Plan exists yet. Create and review the first plan before approving it.", { label: "Create Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "generate" }));
+  const strategy = project.strategyPlans.find((item) => item.id === plan.strategyPlanId)
+    ?? project.strategyPlans.find((item) => item.version === plan.strategyVersion)
+    ?? project.strategyPlans.find((item) => item.status === "approved");
+  if (!strategy) return res.status(409).json(workflowBlockedPayload("This Execution Plan has no saved Strategy source version and cannot be approved safely.", { label: "Review Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "review" }));
   const workflow = await getProjectWorkflowController(project.id);
-  if (!workflow || workflow.executionPlanStale) return res.status(409).json(workflowBlockedPayload("Refresh the stale Execution Plan.", workflow?.nextBestAction.action ?? { label: "Open Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "review" }));
+  if (!workflow) return res.status(409).json(workflowBlockedPayload("The Execution Plan review is still being prepared. Reopen the plan and try again.", { label: "Open Execution Plan", url: `/guided-projects/${project.id}?tab=execution#execution-tasks`, type: "review" }));
   const nextWorkflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "execution_plan.approved", sourceModule: "execution_plan", sourceId: plan.id, idempotencyKey: `execution-plan.approved:${plan.id}:${plan.planVersion}:${strategy.version}`, payload: { planVersion: plan.planVersion, strategyId: strategy.id, strategyVersion: strategy.version, businessBrainVersion: plan.businessBrainVersion, evidenceVersion: plan.evidenceVersion, approvedByUserId: context.membership.userId, approvedAt: new Date().toISOString(), reason: parsed.data.reason ?? null } });
   await recordWorkspaceActivity(prisma, { context, action: "execution_plan.approved", entityType: "execution_plan", entityId: plan.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { planVersion: plan.planVersion, strategyVersion: strategy.version, reason: parsed.data.reason ?? null } });
   res.json({ workflow: nextWorkflow });

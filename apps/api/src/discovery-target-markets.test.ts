@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { discoveryTargetMarkets, latestExplicitConversationTargetMarkets, sameGeographicTargetMarkets } from "./discovery-target-markets.js";
+import { discoveryBusinessLocation, discoveryTargetMarkets, latestExplicitConversationTargetMarkets, sameGeographicTargetMarkets } from "./discovery-target-markets.js";
 
 describe("Discovery target markets", () => {
   it("keeps explicit AI-structured markets", () => {
@@ -8,7 +8,8 @@ describe("Discovery target markets", () => {
 
   it("recovers labelled markets from an older Discovery Draft", () => {
     expect(discoveryTargetMarkets({ answers: { main: "Services offered: Life insurance. We serve Edmonton and Calgary. Target audience: Alberta families." } })).toEqual(["Edmonton", "Calgary"]);
-    expect(discoveryTargetMarkets({ sourceText: "Location: Edmonton and Calgary, but able to serve clients online." })).toEqual(["Edmonton", "Calgary"]);
+    expect(discoveryTargetMarkets({ sourceText: "Location: Edmonton and Calgary, but able to serve clients online." })).toEqual([]);
+    expect(discoveryTargetMarkets({ sourceText: "Target locations: Edmonton and Calgary." })).toEqual(["Edmonton", "Calgary"]);
   });
 
   it("uses only confirmed geographic facts and ignores audience prose", () => {
@@ -19,6 +20,12 @@ describe("Discovery target markets", () => {
         { key: "target_markets", value: ["Mississauga"], state: "AI_SUGGESTED", source: "AI_INFERENCE" },
       ],
     })).toEqual(["Edmonton", "Calgary"]);
+  });
+
+  it("preserves a confirmed physical business location without treating it as a target market", () => {
+    const facts = [{ key: "businessLocation", value: "Vaughan, Ontario", state: "CONFIRMED", source: "USER_INPUT" }];
+    expect(discoveryBusinessLocation({ facts })).toBe("Vaughan, Ontario");
+    expect(discoveryTargetMarkets({ facts })).toEqual([]);
   });
 
   it("uses the latest explicitly labelled market from a conversation", () => {

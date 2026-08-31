@@ -9,6 +9,7 @@ import type { CrawlOptions } from "@webtummy/core";
 import { startWebsiteBuilderWorker } from "./website-builder.js";
 import { recoverGrowthIntelligenceCycles, startGrowthIntelligenceScheduler, startGrowthIntelligenceWorker } from "./growth-intelligence.js";
 import { startSocialImageWorker } from "./social-images.js";
+import { startChangeIntelligenceScheduler } from "./change-intelligence.js";
 // Discovery generation shares the API's authenticated generation service, but
 // its BullMQ consumer belongs to this dedicated worker lifecycle.
 import { startDiscoveryGenerationQueueWorker } from "../../api/src/routes/discovery-drafts.js";
@@ -104,16 +105,19 @@ const discoveryGenerationWorker = startDiscoveryGenerationQueueWorker();
 const strategyGenerationWorker = startStrategyGenerationQueueWorker();
 const contentPlanGenerationWorker = startContentPlanGenerationQueueWorker();
 const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
+const changeIntelligenceScheduler = startChangeIntelligenceScheduler(config.changeIntelligenceInitialDelayMs, config.changeIntelligenceIntervalMs);
 
 console.log(`[worker] SEnuke AI - AI Growth Operating System crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
 console.log(`[worker] Continuous Growth scheduler active every ${config.growthIntelligenceScheduleIntervalMs}ms with ${config.growthIntelligenceConcurrency} worker slots.`);
+console.log(`[worker] Change Intelligence scheduler active every ${config.changeIntelligenceIntervalMs}ms.`);
 
 const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
   clearInterval(notificationEmailTimer);
   clearInterval(growthIntelligenceTimer);
+  changeIntelligenceScheduler.close();
   await worker.close();
   await websiteBuilderWorker.close();
   await growthIntelligenceWorker.close();

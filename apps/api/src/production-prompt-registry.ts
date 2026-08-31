@@ -17,6 +17,13 @@ export type ProductionPromptDefinition = Readonly<{
 
 const definitions = [
   {
+    workflowId: "change_intelligence.classify", workflowName: "Internal Change Intelligence classification", promptId: "change-intelligence-classifier", version: "change-intelligence-classifier-v1", active: true,
+    changedAt: "2026-08-30", changeSummary: "Registered the internal-only official-source classification contract.",
+    requiredInputs: ["approved official source", "canonical evidence URL", "fetched evidence excerpt"], outputContract: "Change Intelligence classification batch schema",
+    compatibleProviders: ["openai"], compatibleModels: ["policy-routed low-cost JSON-capable model"],
+    validationRules: ["approved categories only", "approved capability identifiers only", "confidence bounded 0-100", "human approval required", "no automatic production mutation"],
+  },
+  {
     workflowId: "strategy.generate", workflowName: "Unified Strategy generation", promptId: "unified-strategy", version: "unified-strategy-v4", active: true,
     changedAt: "2026-08-27", changeSummary: "Registered the existing V4 Strategy contract for production provenance.",
     requiredInputs: ["approved Business Brain", "evidence version", "approved keywords", "site and gap evidence", "reviewer revision"],

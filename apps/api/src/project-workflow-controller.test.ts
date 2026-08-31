@@ -92,14 +92,22 @@ describe("DEV-046 project workflow controller", () => {
     ]);
   });
 
-  it("returns a standard backend blocker until every Strategy prerequisite is complete", () => {
-    const blocked = resolveProjectWorkflow(snapshot({ findingsReviewed: false }));
+  it("does not require a redundant Findings confirmation after conflict-free intelligence completes", () => {
+    const ready = resolveProjectWorkflow(snapshot({ findingsReviewed: false }));
+    expect(ready.stages.find((stage) => stage.key === "findings_review")).toMatchObject({
+      status: "complete",
+      action: null,
+    });
+    expect(strategyWorkflowPrerequisite(ready)).toBeNull();
+  });
+
+  it("returns a findings blocker when a critical business fact needs resolution", () => {
+    const blocked = resolveProjectWorkflow(snapshot({ findingsReviewed: false, criticalEvidenceIssueCount: 1 }));
     expect(strategyWorkflowPrerequisite(blocked)).toMatchObject({
-      error: "The action is not ready.",
+      error: "Confirm the business facts before planning. 1 business fact needs review, including claims, services, locations, or entity details that website recommendations must not assume.",
       code: "WORKFLOW_PREREQUISITE_REQUIRED",
       missingRequirement: "Findings Review must be complete before Strategy.",
     });
-    expect(strategyWorkflowPrerequisite(resolveProjectWorkflow(snapshot()))).toBeNull();
   });
 
   it("requires explicit Business Brain approval and Readiness before Opportunity Discovery", () => {
@@ -321,13 +329,14 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.changedEvidence.find((item) => item.key === "authority_analysis")?.action?.url).toContain("projectId=project-1");
   });
 
-  it("requires a Strategy update when completed Gap Analysis is newer than the approved Strategy", () => {
+  it("keeps an approved Strategy active when completed Gap Analysis is newer", () => {
     const strategyAt = new Date("2026-08-01T12:00:00.000Z");
     const gapAt = new Date("2026-08-01T13:00:00.000Z");
     const result = resolveProjectWorkflow(snapshot({ latestStrategy: { id: "strategy-1", status: "approved", createdAt: strategyAt, approvedAt: strategyAt }, latestStrategyVersion: 1, gapEvidenceAt: gapAt, latestEvidenceAt: gapAt, websitePlanRequired: true }));
-    expect(result.nextBestAction.title).toContain("Update Unified Strategy");
-    expect(result.nextBestAction.action.url).toContain("/strategy?");
-    expect(result.stages.find((item) => item.key === "growth_strategy_approval")?.status).toBe("stale");
+    expect(result.strategyStale).toBe(true);
+    expect(result.nextBestAction.title).toContain("SEO Page Map");
+    expect(result.nextBestAction.action.url).toContain("/seo-page-map?");
+    expect(result.stages.find((item) => item.key === "growth_strategy_approval")?.status).toBe("approved");
   });
 
   it("does not invalidate a fresh Strategy while its evidence cycle is settling", () => {
@@ -570,10 +579,10 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.nextBestAction.title).toBe("Review results and choose the next improvement");
   });
 
-  it("requires explicit findings review before Strategy creation", () => {
+  it("advances directly to Strategy when completed findings have no conflicts", () => {
     const result = resolveProjectWorkflow(snapshot({ findingsReviewed: false }));
-    expect(result.nextBestAction.title).toBe("Review the findings");
-    expect(result.nextBestAction.action.type).toBe("approve");
+    expect(result.nextBestAction.title).toBe("Generate Unified Strategy");
+    expect(result.nextBestAction.action.type).toBe("generate");
   });
 
   it("activates Continuous Growth only after tracking and every governed prerequisite are ready", () => {

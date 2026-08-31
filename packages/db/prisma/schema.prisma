@@ -4381,6 +4381,105 @@ model GrowthIntelligenceDecision {
   @@index([outcome, createdAt])
 }
 
+// Internal-only V1 Change Intelligence. Collection never reserves customer AI Capacity.
+model ChangeIntelligenceSource {
+  id String @id @default(cuid())
+  key String @unique @db.VarChar(120)
+  name String @db.VarChar(255)
+  sourceType String @db.VarChar(40)
+  url String @db.VarChar(1024)
+  enabled Boolean @default(true)
+  official Boolean @default(true)
+  discoveryOnly Boolean @default(false)
+  categoriesJson Json @default("[]")
+  lastCheckedAt DateTime?
+  lastSuccessfulAt DateTime?
+  lastContentHash String? @db.VarChar(64)
+  consecutiveFailures Int @default(0)
+  lastError String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  items ChangeIntelligenceItem[]
+  @@index([enabled, lastCheckedAt])
+}
+
+model ChangeIntelligenceItem {
+  id String @id @default(cuid())
+  sourceId String
+  source ChangeIntelligenceSource @relation(fields: [sourceId], references: [id], onDelete: Restrict)
+  url String @db.VarChar(2048)
+  canonicalUrl String @db.VarChar(2048)
+  title String @db.VarChar(500)
+  publishedAt DateTime?
+  detectedAt DateTime @default(now())
+  contentHash String @db.VarChar(64)
+  evidenceJson Json @default("{}")
+  category String @default("other") @db.VarChar(40)
+  summary String? @db.Text
+  whyItMatters String? @db.Text
+  affectedCapabilitiesJson Json @default("[]")
+  confidence Int @default(0)
+  meaningful Boolean @default(false)
+  status String @default("detected") @db.VarChar(40)
+  reviewNote String? @db.Text
+  reviewedByUserId String? @db.VarChar(191)
+  reviewedAt DateTime?
+  approvedByUserId String? @db.VarChar(191)
+  approvedAt DateTime?
+  deployedAt DateTime?
+  rolledBackAt DateTime?
+  classificationModel String? @db.VarChar(120)
+  classificationError String? @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  configurationVersions ChangeIntelligenceConfigurationVersion[]
+  @@unique([canonicalUrl, contentHash])
+  @@index([status, detectedAt])
+  @@index([sourceId, publishedAt])
+  @@index([meaningful, status])
+}
+
+model ChangeIntelligenceConfigurationVersion {
+  id String @id @default(cuid())
+  itemId String
+  item ChangeIntelligenceItem @relation(fields: [itemId], references: [id], onDelete: Restrict)
+  targetType String @db.VarChar(40)
+  targetKey String @db.VarChar(191)
+  version Int
+  status String @default("draft") @db.VarChar(40)
+  configurationJson Json
+  previousVersionId String? @db.VarChar(191)
+  createdByUserId String @db.VarChar(191)
+  approvedByUserId String? @db.VarChar(191)
+  approvedAt DateTime?
+  deployedByUserId String? @db.VarChar(191)
+  deployedAt DateTime?
+  rolledBackByUserId String? @db.VarChar(191)
+  rolledBackAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([targetType, targetKey, version])
+  @@index([targetType, targetKey, status])
+  @@index([itemId, createdAt])
+}
+
+model ChangeIntelligenceRevalidation {
+  id String @id @default(cuid())
+  itemId String @db.VarChar(191)
+  configurationId String @db.VarChar(191)
+  projectId String @db.VarChar(191)
+  capabilitiesJson Json @default("[]")
+  status String @default("pending") @db.VarChar(40)
+  scheduledAt DateTime @default(now())
+  checkedAt DateTime?
+  resultJson Json @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  @@unique([configurationId, projectId])
+  @@index([projectId, status, scheduledAt])
+  @@index([itemId, status])
+}
+
 model GrowthFunnelStage {
   id               String   @id @default(cuid())
   projectId        String

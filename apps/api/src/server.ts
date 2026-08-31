@@ -40,6 +40,7 @@ import { publicWebsiteTrackingRouter } from "./routes/website-tracking-public.js
 import { jvZooRouter, startJvZooQueueWorker } from "./routes/jvzoo.js";
 import { discoveryDraftsRouter } from "./routes/discovery-drafts.js";
 import { dev053VerificationRouter } from "./routes/dev053-verification.js";
+import { changeIntelligenceRouter } from "./routes/change-intelligence.js";
 import { publicGeneratedAssetsRouter } from "./routes/generated-assets.js";
 import { rawBodySaver } from "./billing.js";
 import { enforceArchivedReadOnly, enforceCommercialAccess, enforceWorkspacePermissions, requireAuth } from "./middleware.js";
@@ -203,6 +204,7 @@ app.use("/api/users", usersRouter);
 app.use("/api", guidedProjectsRouter);
 app.use("/api", growthRouter);
 app.use("/api", automationRouter);
+app.use("/api", changeIntelligenceRouter);
 app.use("/api", usageRouter);
 app.use("/api", competitiveIntelligenceRouter);
 app.use("/api", gapAnalysisRouter);

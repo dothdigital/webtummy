@@ -251,7 +251,7 @@ async function loadProject(projectId: string) {
     where: { id: projectId },
     select: {
       id: true, name: true, status: true, clientId: true, agencyClientId: true, websiteId: true, primaryGoal: true,
-      strategyPlans: { where: { status: "approved" }, orderBy: { approvedAt: "desc" }, take: 1, select: { id: true, version: true } },
+      strategyPlans: { where: { status: "approved" }, orderBy: { approvedAt: "desc" }, take: 1, select: { id: true, version: true, prioritizedRecommendations: true, growthRecommendations: true } },
       website: { select: { trackingSite: true, measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 } } },
       localBusinessProfiles: { select: { id: true, reviews: { orderBy: { createdAt: "desc" }, take: 500 }, googleBusinessConnection: { select: { status: true, snapshots: { orderBy: { sourceFetchedAt: "desc" }, take: 100 } } } } },
     },
@@ -344,6 +344,21 @@ async function updateBlueprintLearning(projectId: string, cycleId: string, findi
   return nextVersion;
 }
 
+async function processChangeIntelligenceRevalidations(projectId: string, cycleId: string, strategy: { id: string; version: number; prioritizedRecommendations: Prisma.JsonValue; growthRecommendations: Prisma.JsonValue }, now: Date) {
+  const pending = await prisma.changeIntelligenceRevalidation.findMany({ where: { projectId, status: "pending", scheduledAt: { lte: now } }, orderBy: { scheduledAt: "asc" }, take: 20 });
+  if (!pending.length) return [];
+  const futureActions = await prisma.nextBestAction.findMany({ where: { projectId }, orderBy: { updatedAt: "desc" }, take: 25, select: { id: true, title: true, status: true, sourceType: true } });
+  const strategyText = JSON.stringify({ prioritizedRecommendations: strategy.prioritizedRecommendations, growthRecommendations: strategy.growthRecommendations }).toLowerCase();
+  for (const row of pending) {
+    const capabilities = Array.isArray(row.capabilitiesJson) ? row.capabilitiesJson.map(String) : [];
+    const terms = capabilities.flatMap((capability) => capability.split("_")).filter((term) => term.length > 2);
+    const strategyMayBeAffected = terms.some((term) => strategyText.includes(term));
+    const affectedActionIds = futureActions.filter((action) => terms.some((term) => `${action.title} ${action.sourceType}`.toLowerCase().includes(term))).map((action) => action.id);
+    await prisma.changeIntelligenceRevalidation.update({ where: { id: row.id }, data: { status: strategyMayBeAffected || affectedActionIds.length ? "review_required" : "checked", checkedAt: now, resultJson: asJson({ cycleId, strategyId: strategy.id, strategyVersion: strategy.version, capabilities, strategyMayBeAffected, affectedActionIds, automaticStrategyChange: false, automaticActionChange: false, customerCapacityUnits: 0 }) } });
+  }
+  return pending.map((row) => row.id);
+}
+
 export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<GrowthIntelligenceJobData>) {
   const now = new Date();
   const cycle = await prisma.growthIntelligenceCycle.findUnique({ where: { id: cycleId } });
@@ -370,6 +385,7 @@ export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<
     await prisma.growthIntelligenceCycle.update({ where: { id: cycleId }, data: { status: "skipped", completedAt: now, skipReason: "An approved Strategy is required before continuous reprioritization begins.", nextScheduledAt: new Date(now.getTime() + 12 * HOUR) } });
     return;
   }
+  const changeRevalidationIds = await processChangeIntelligenceRevalidations(cycle.projectId, cycle.id, eligibleProject.strategyPlans[0], now);
   const { project, snapshots } = await collectSnapshots(cycle.projectId, now);
   if (!project) throw new Error(`Project ${cycle.projectId} became unavailable during monitoring collection.`);
 
@@ -493,7 +509,7 @@ export async function processGrowthIntelligenceCycle(cycleId: string, job?: Job<
   const existingActivity = await prisma.workspaceActivity.findFirst({ where: { workspaceId: cycle.workspaceId, entityType: "growth_intelligence_cycle", entityId: cycle.id, action: activityAction }, select: { id: true } });
   if (!existingActivity) await prisma.workspaceActivity.create({ data: { workspaceId: cycle.workspaceId, agencyClientId: cycle.agencyClientId, projectId: cycle.projectId, action: activityAction, entityType: "growth_intelligence_cycle", entityId: cycle.id, nextJson: asJson({ status: unchanged ? "skipped" : "completed", recordCount, meaningful, materialFindingCount: materialFindings.length, decision: outcome, dataVersionFingerprint, customerCapacityUnits: 0 }) } });
   await prisma.growthIntelligenceSourceRun.updateMany({ where: { cycleId, sourceType: { in: dueSources.map((item) => item.key) } }, data: { meaningfulChangeDetected: meaningful, growthEvaluationTriggered: meaningful, nextBestActionTriggered: !unchanged } });
-  await prisma.growthIntelligenceCycle.update({ where: { id: cycleId }, data: { status: unchanged ? "skipped" : "completed", completedAt: now, heartbeatAt: now, previousSuccessfulAt: previousCycle?.completedAt ?? null, nextScheduledAt: new Date(now.getTime() + 12 * HOUR), dataVersionFingerprint, sourceSummaryJson: asJson(Object.fromEntries(Object.entries(snapshots).map(([key, value]) => [key, { status: value.status, recordCount: value.recordCount, observedAt: value.observedAt, limitation: value.limitation ?? null }]))), snapshotJson: asJson(snapshots), recordCount, skipReason: unchanged ? "Data version is unchanged; Growth and NBA evaluation were not repeated." : null, restrictionsJson: asJson(Object.entries(snapshots).filter(([, value]) => value.status !== "available").map(([source, value]) => ({ source, status: value.status, reason: value.limitation }))), meaningfulChangeDetected: meaningful, growthEvaluationTriggered: meaningful, nextBestActionTriggered: !unchanged, notificationCreated, weeklySummaryCreated } });
+  await prisma.growthIntelligenceCycle.update({ where: { id: cycleId }, data: { status: unchanged ? "skipped" : "completed", completedAt: now, heartbeatAt: now, previousSuccessfulAt: previousCycle?.completedAt ?? null, nextScheduledAt: new Date(now.getTime() + 12 * HOUR), dataVersionFingerprint, sourceSummaryJson: asJson({ ...Object.fromEntries(Object.entries(snapshots).map(([key, value]) => [key, { status: value.status, recordCount: value.recordCount, observedAt: value.observedAt, limitation: value.limitation ?? null }])), changeIntelligenceRevalidationIds: changeRevalidationIds }), snapshotJson: asJson(snapshots), recordCount, skipReason: unchanged ? "Data version is unchanged; Growth and NBA evaluation were not repeated." : null, restrictionsJson: asJson(Object.entries(snapshots).filter(([, value]) => value.status !== "available").map(([source, value]) => ({ source, status: value.status, reason: value.limitation }))), meaningfulChangeDetected: meaningful, growthEvaluationTriggered: meaningful, nextBestActionTriggered: !unchanged, notificationCreated, weeklySummaryCreated } });
 }
 
 async function enqueueCycle(cycleId: string, scheduledAt: Date, maxAttempts = 5) {

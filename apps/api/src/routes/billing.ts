@@ -183,7 +183,15 @@ function firstPriceId(object: Record<string, unknown>) {
 
 async function clientForBillingRequest(req: Request) {
   if (!req.user) throw new Error("missing user");
-  const clientId = await projectClientIdForRequest(req);
+  const selectedClientId = req.header("x-senuke-ai-client-id")?.trim() || req.header("x-webtummy-client-id")?.trim() || null;
+  const ownedWorkspaceClient = req.user.role === "super_admin" && !selectedClientId
+    ? await prisma.workspaceMembership.findFirst({
+        where: { userId: req.user.userId, status: "active", workspace: { legacyClientId: { not: null } } },
+        orderBy: { createdAt: "asc" },
+        select: { workspace: { select: { legacyClientId: true } } },
+      })
+    : null;
+  const clientId = ownedWorkspaceClient?.workspace.legacyClientId ?? await projectClientIdForRequest(req);
   if (!clientId) throw new Error("project context required");
   const client = await prisma.client.findUnique({ where: { id: clientId } });
   if (!client || !client.isActive) throw new Error("project space inactive");

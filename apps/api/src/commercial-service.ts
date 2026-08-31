@@ -297,12 +297,17 @@ export async function authoritativePlanVersion(workspaceId: string, db: Db = pri
         if (legacyClient.aiSubscriptionStatus === "trialing" && (!legacyClient.trialEndsAt || legacyClient.trialEndsAt <= now)) desiredStatus = "read_only";
         if (legacyClient.aiSubscriptionStatus === "offline" && (!legacyClient.manualAccessEndsAt || legacyClient.manualAccessEndsAt <= now)) desiredStatus = "read_only";
         const desiredAccess = accessModeForStatus(desiredStatus);
-        if (existing.status !== desiredStatus || legacyWorkspace.accessMode !== desiredAccess || legacyWorkspace.commercialState !== desiredStatus) {
+        const currentPeriodEnd = legacyClient.aiSubscriptionStatus === "trialing"
+          ? legacyClient.trialEndsAt
+          : legacyClient.aiSubscriptionStatus === "offline"
+            ? legacyClient.manualAccessEndsAt
+            : legacyClient.subscriptionCurrentPeriodEnd;
+        if (existing.status !== desiredStatus || existing.currentPeriodEnd?.getTime() !== currentPeriodEnd?.getTime() || legacyWorkspace.accessMode !== desiredAccess || legacyWorkspace.commercialState !== desiredStatus) {
           const updated = await db.workspaceSubscription.update({
             where: { id: existing.id },
             data: {
               status: desiredStatus,
-              currentPeriodEnd: legacyClient.subscriptionCurrentPeriodEnd,
+              currentPeriodEnd,
               graceEndsAt: legacyClient.graceEndsAt,
             },
             include: { planVersion: { include: { billingPlan: true } }, price: true, policyVersion: true },
@@ -336,6 +341,11 @@ export async function authoritativePlanVersion(workspaceId: string, db: Db = pri
     orderBy: { effectiveFrom: "desc" },
   });
   const status = normalizedSubscriptionStatus(workspace.legacyClient?.aiSubscriptionStatus);
+  const currentPeriodEnd = workspace.legacyClient?.aiSubscriptionStatus === "trialing"
+    ? workspace.legacyClient.trialEndsAt
+    : workspace.legacyClient?.aiSubscriptionStatus === "offline"
+      ? workspace.legacyClient.manualAccessEndsAt
+      : workspace.legacyClient?.subscriptionCurrentPeriodEnd;
   const subscription = await db.workspaceSubscription.create({
     data: {
       workspaceId,
@@ -347,7 +357,7 @@ export async function authoritativePlanVersion(workspaceId: string, db: Db = pri
       providerSubscriptionRef: workspace.legacyClient?.stripeSubscriptionId,
       status,
       billingInterval: "monthly",
-      currentPeriodEnd: workspace.legacyClient?.subscriptionCurrentPeriodEnd,
+      currentPeriodEnd,
       graceEndsAt: workspace.legacyClient?.graceEndsAt,
     },
     include: { planVersion: { include: { billingPlan: true } }, price: true, policyVersion: true },

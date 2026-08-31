@@ -2803,8 +2803,8 @@ executionTasksRouter.post("/projects/:projectId/seo-plan/task", async (req, res)
   if (isExistingWebsiteCampaign(project)) {
     const latestGapAnalysis = project.gapAnalysisRuns[0];
     if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis first. Then update and approve Strategy before creating the SEO Page Map & Content Plan." });
-    const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
-    if (gapAnalysisAt.getTime() > project.strategyPlans[0].createdAt.getTime()) return res.status(409).json({ error: `Gap Analysis is newer than approved Strategy v${project.strategyPlans[0].version}. Update and approve Strategy before creating the SEO Page Map & Content Plan.` });
+    // New evidence never invalidates an approved Strategy. It can be reviewed and
+    // incorporated only through an explicitly requested replacement version.
   }
   const task = await withTransactionRetry(() => prisma.$transaction(async (tx) => {
     const approvedStrategy = project.strategyPlans[0] ?? null;
@@ -3010,10 +3010,8 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   if (isExistingWebsiteCampaign(task.project)) {
     const latestStrategy = task.project.strategyPlans[0];
     const latestGapAnalysis = task.project.gapAnalysisRuns[0];
-    if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis first. Then update and approve Strategy before preparing the SEO Page Map & Content Plan." });
-    if (!latestStrategy || latestStrategy.status !== "approved") return res.status(409).json({ error: "Update and approve Strategy from the latest SEO evidence before preparing the SEO Page Map & Content Plan." });
-    const gapAnalysisAt = latestGapAnalysis.completedAt ?? latestGapAnalysis.createdAt;
-    if (gapAnalysisAt.getTime() > latestStrategy.createdAt.getTime()) return res.status(409).json({ error: "The latest Gap Analysis is newer than the approved Strategy. Update and approve Strategy before preparing the SEO Page Map & Content Plan." });
+    if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis before preparing the SEO Page Map & Content Plan." });
+    if (!latestStrategy || latestStrategy.status !== "approved") return res.status(409).json({ error: "Approve a Strategy before preparing the SEO Page Map & Content Plan." });
   }
   const currentStrategy = task.project.strategyPlans[0];
   if (!currentStrategy || currentStrategy.status !== "approved") return res.status(409).json({ error: "Approve the Unified Strategy before preparing the Website Page Map & Content Plan." });

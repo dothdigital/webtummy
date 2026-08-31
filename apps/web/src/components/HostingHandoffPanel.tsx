@@ -68,10 +68,14 @@ export default function HostingHandoffPanel({
   saved,
   busy,
   onSave,
+  onSendDeveloperHandoff,
+  deliveryBusy = false,
 }: {
   saved: Record<string, unknown>;
   busy: boolean;
   onSave: (draft: HostingHandoffDraft) => Promise<void>;
+  onSendDeveloperHandoff?: () => void;
+  deliveryBusy?: boolean;
 }) {
   const [draft, setDraft] = useState<HostingHandoffDraft>(() => draftFromSaved(saved));
   const [editing, setEditing] = useState(() => !text(saved.savedAt));
@@ -101,8 +105,9 @@ export default function HostingHandoffPanel({
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-emerald-600 text-sm font-black text-white">✓</span>
         <div className="min-w-0"><div className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Deployment destination</div><b className="block truncate text-sm text-emerald-950">{draft.destination === "wordpress" ? "WordPress" : draft.destination === "developer_handoff" ? "Developer handoff" : `Static server · ${draft.sftp.host || draft.domain}`}</b></div>
       </div>
-      <button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-black text-emerald-800">Change</button>
+      <div className="flex flex-wrap gap-2">{draft.destination === "developer_handoff"&&(onSendDeveloperHandoff?<button type="button" disabled={deliveryBusy} onClick={onSendDeveloperHandoff} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{deliveryBusy?"Sending…":record(saved.lastDelivery).sentAt?"Resend Secure Link":"Send Secure Link"}</button>:<a href="#builder-step-work" className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white">{record(saved.lastDelivery).sentAt?"Resend Secure Link":"Send Secure Link"}</a>)}<button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-black text-emerald-800">Change</button></div>
     </div>
+    {draft.destination === "developer_handoff"&&<p className="mt-2 text-[10px] font-semibold text-emerald-800">Recipient: {draft.technicalContactEmail}{record(saved.lastDelivery).sentAt?` · Last sent ${new Date(text(record(saved.lastDelivery).sentAt)).toLocaleString()}`:" · Not sent yet"}</p>}
   </section>;
 
   return <section id="hosting-handoff" className="scroll-mt-6 rounded-xl border border-indigo-200 bg-white p-5">

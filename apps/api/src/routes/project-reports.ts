@@ -371,7 +371,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   const enabled = new Set(definition.sections.map(sectionKey));
   const reportSections = definition.sections.map((title, index) => ({ key: sectionKey(title), title, order: index, enabled: enabled.has(sectionKey(title)) }));
   const blueprintVersion = project.growthBlueprint?.versions[0];
-  const nextBestActions = project.workflowController?.strategyStale ? [] : project.nextBestActions.map((action) => ({ id: action.id, title: action.title, recommendation: action.recommendation, expectedImpact: action.expectedImpact, status: action.status, priorityScore: action.priorityScore, evidence: action.evidenceJson, updatedAt: action.updatedAt }));
+  const nextBestActions = project.nextBestActions.map((action) => ({ id: action.id, title: action.title, recommendation: action.recommendation, expectedImpact: action.expectedImpact, status: action.status, priorityScore: action.priorityScore, evidence: action.evidenceJson, updatedAt: action.updatedAt }));
   const experiments = project.growthExperiments.filter((experiment) => reportType === "agency_proposal" || inPeriod(experiment.completedAt) || inPeriod(experiment.startedAt) || inPeriod(experiment.updatedAt)).map((experiment) => ({ id: experiment.id, title: experiment.title, hypothesis: experiment.hypothesis, metric: experiment.metric, status: experiment.status, completedAt: experiment.completedAt, result: experiment.results[0] ? { baselineValue: experiment.results[0].baselineValue, currentValue: experiment.results[0].currentValue, status: experiment.results[0].resultStatus, evaluatedAt: experiment.results[0].evaluatedAt } : null }));
   const socialMetrics = project.socialPerformanceMetrics.filter((metric) => reportType === "agency_proposal" || inPeriod(metric.recordedAt));
   const rankingRuns = reportType === "agency_proposal" ? project.keywordResearchRuns : project.keywordResearchRuns.filter((run) => inPeriod(run.createdAt));
@@ -437,7 +437,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
   };
   const clientBrand = project.agencyClient?.brandingJson && typeof project.agencyClient.brandingJson === "object" && !Array.isArray(project.agencyClient.brandingJson) ? project.agencyClient.brandingJson as Record<string, unknown> : {};
   const recommendations = project.workflowController?.strategyStale
-    ? ["Open Strategy, regenerate it from the latest Business Brain and evidence, review the new version, and approve it before continuing execution."]
+    ? ["Review what changed since the approved Strategy. Keep the current version, or explicitly create a new version after reviewing the displayed AI Capacity estimate."]
     : nextBestActions.length
       ? nextBestActions.slice(0, 3).map((action) => action.recommendation)
       : blocked.length
@@ -514,7 +514,7 @@ function reportContent(project: Awaited<ReturnType<typeof scopedProject>>, repor
     growth: {
       blueprint: project.growthBlueprint ? { id: project.growthBlueprint.id, title: project.growthBlueprint.title, status: project.growthBlueprint.status, currentVersion: blueprintVersion?.version ?? project.growthBlueprint.currentVersion, currentPhase: project.growthBlueprint.currentPhase, primaryGoal: project.growthBlueprint.primaryGoal, goals: blueprintVersion?.goalsJson ?? [], now: blueprintVersion?.nowJson ?? [], next: blueprintVersion?.nextJson ?? [], later: blueprintVersion?.laterJson ?? [], nextReviewAt: project.growthBlueprint.nextReviewAt } : null,
       nextBestActions,
-      prioritiesStatus: project.workflowController?.strategyStale ? "reassessment_required" : "current",
+      prioritiesStatus: project.workflowController?.strategyStale ? "new_evidence_available" : "current",
       experiments,
       funnelStages: project.growthFunnelStages.map((stage) => ({ title: stage.title, status: stage.status, conversionMetric: stage.conversionMetric, issueSummary: stage.issueSummary })),
     },

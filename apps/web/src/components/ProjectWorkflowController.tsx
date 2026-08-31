@@ -40,6 +40,7 @@ export default function ProjectWorkflowController({ projectId, refreshKey = 0, c
   const [expanded, setExpanded] = useState(false);
   const [confidenceOpen, setConfidenceOpen] = useState(false);
   const [decisionBusy, setDecisionBusy] = useState("");
+  const [actionBusy, setActionBusy] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -78,6 +79,7 @@ export default function ProjectWorkflowController({ projectId, refreshKey = 0, c
     };
   }, [projectId, refreshKey, onLoaded]);
 
+  if (compact && (error || !workflow)) return null;
   if (error) return <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">{error}</div>;
   if (!workflow) return <div className="rounded-2xl border border-slate-200 bg-white p-5"><div className="h-4 w-52 animate-pulse rounded bg-slate-200"/><div className="mt-4 h-24 animate-pulse rounded-xl bg-slate-100"/></div>;
   const decideModule = async (moduleKey: string, decision: "waive" | "defer" | "resume") => {
@@ -95,9 +97,32 @@ export default function ProjectWorkflowController({ projectId, refreshKey = 0, c
     }
   };
   const next = workflow.nextBestAction;
-  const handlesCurrentNextAction = Boolean(onNextAction && /^\/gap-analysis(?:\?|$)/.test(next.action.url));
+  const governanceAction = next.title === "Review and approve the Business Brain"
+    ? { endpoint: `/api/projects-v2/${encodeURIComponent(projectId)}/workflow-controller/business-brain/approve`, followupEndpoint: `/api/projects-v2/${encodeURIComponent(projectId)}/workflow-controller/readiness/complete`, confirmation: "Approve this exact Business Brain version and confirm it is ready for Opportunity Discovery?" }
+    : next.title === "Complete the Readiness Check"
+      ? { endpoint: `/api/projects-v2/${encodeURIComponent(projectId)}/workflow-controller/readiness/complete`, confirmation: "Confirm the required project details are ready for Opportunity Discovery?" }
+      : null;
+  const runNextAction = async () => {
+    if (!governanceAction || !window.confirm(governanceAction.confirmation)) return;
+    setActionBusy(true);
+    setError("");
+    try {
+      const result = await api.post<{ workflow: Workflow }>(governanceAction.endpoint, { confirmed: true });
+      const finalResult = "followupEndpoint" in governanceAction
+        ? await api.post<{ workflow: Workflow }>(governanceAction.followupEndpoint, { confirmed: true })
+        : result;
+      setWorkflow(finalResult.workflow);
+      onLoaded?.(finalResult.workflow);
+      window.dispatchEvent(new Event("senuke:workflow-refresh"));
+      window.dispatchEvent(new Event("senuke-ai:notifications-changed"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The workflow action could not be completed.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
   const completedStages = workflow.stages.filter((stage) => done.has(stage.status)).length;
-  if (compact) return <section className="overflow-hidden rounded-xl border border-brand-200 bg-gradient-to-r from-slate-950 via-brand-950 to-violet-950 text-white shadow-sm"><div className="flex flex-col gap-4 p-4 lg:flex-row lg:items-center lg:justify-between"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-white/10 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-brand-100">Master workflow · {workflow.stateLabel}</span><span className="rounded-full bg-emerald-400/15 px-2.5 py-1 text-[9px] font-black uppercase text-emerald-200">{workflow.readinessPercent}% ready</span><span className="rounded-full bg-violet-400/15 px-2.5 py-1 text-[9px] font-black uppercase text-violet-200">{workflow.confidence.overall}% confidence</span></div><div className="mt-2 text-sm font-black">Next: {next.title}</div><p className="mt-1 max-w-4xl text-xs leading-5 text-slate-300">{next.explainability}</p></div>{handlesCurrentNextAction?<button type="button" disabled={nextActionBusy||nextActionDisabled} onClick={onNextAction} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2.5 text-xs font-black text-brand-800 hover:bg-brand-50 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">{nextActionBusy?"Analyzing evidence…":next.action.label} <span className="ml-1">→</span></button>:<Link to={scopedUrl(next.action.url, projectId)} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-white px-4 py-2.5 text-xs font-black text-brand-800 hover:bg-brand-50">{next.action.label} <span className="ml-1">→</span></Link>}</div><div className="border-t border-white/10 bg-white/[0.04] px-4 py-2 text-[10px] font-bold leading-5 text-slate-300">{canonicalLifecycle}</div></section>;
+  if (compact) return null;
   return <section className="overflow-hidden rounded-2xl border border-brand-200 bg-white shadow-sm" aria-label="Master project workflow">
     <div className="bg-gradient-to-r from-slate-950 via-brand-950 to-violet-950 px-5 py-5 text-white">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
@@ -111,7 +136,7 @@ export default function ProjectWorkflowController({ projectId, refreshKey = 0, c
     </div>
 
     <div className="grid gap-4 border-b border-brand-100 bg-gradient-to-r from-brand-50 via-white to-violet-50 p-5 xl:grid-cols-[1.25fr_.75fr]">
-      <div className="rounded-2xl border border-brand-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-700 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-white">Next Best Action</span><span className="rounded-full bg-emerald-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-800">{next.confidence}% confidence</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{next.title}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{next.reason}</p><div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/70 px-4 py-3"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Why this action</div><p className="mt-1 text-xs leading-5 text-violet-900">{next.explainability}</p></div><div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="text-xs font-bold text-emerald-700">Expected result: {next.expectedResult}</div><Link to={scopedUrl(next.action.url, projectId)} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-brand-700 to-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-brand-100 hover:from-brand-800 hover:to-violet-800">{next.action.label} <span className="ml-2">→</span></Link></div></div>
+      <div className="rounded-2xl border border-brand-200 bg-white p-5 shadow-sm"><div className="flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-700 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-white">Next Best Action</span><span className="rounded-full bg-emerald-100 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-emerald-800">{next.confidence}% confidence</span></div><h3 className="mt-3 text-lg font-black text-charcoal-950">{next.title}</h3><p className="mt-2 text-sm leading-6 text-charcoal-600">{next.reason}</p><div className="mt-3 rounded-xl border border-violet-100 bg-violet-50/70 px-4 py-3"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">Why this action</div><p className="mt-1 text-xs leading-5 text-violet-900">{next.explainability}</p></div><div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div className="text-xs font-bold text-emerald-700">Expected result: {next.expectedResult}</div>{governanceAction ? <button type="button" onClick={() => void runNextAction()} disabled={actionBusy} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-brand-700 to-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-brand-100 hover:from-brand-800 hover:to-violet-800 disabled:cursor-wait disabled:from-slate-400 disabled:to-slate-400">{actionBusy ? "Saving…" : next.action.label} <span className="ml-2">→</span></button> : <Link to={scopedUrl(next.action.url, projectId)} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-brand-700 to-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-brand-100 hover:from-brand-800 hover:to-violet-800">{next.action.label} <span className="ml-2">→</span></Link>}</div></div>
       <div className="rounded-2xl border border-violet-200 bg-white p-5"><div className="text-[10px] font-black uppercase tracking-wide text-violet-700">AI does the heavy work</div><div className="mt-3 space-y-2">{next.aiWill.map((item) => <div key={item} className="flex gap-2 text-xs leading-5 text-charcoal-700"><span className="mt-0.5 text-violet-600">✦</span><span>{item}</span></div>)}</div><div className="mt-4 rounded-xl bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-900"><b>Your role:</b> {next.userWill}</div></div>
     </div>
 

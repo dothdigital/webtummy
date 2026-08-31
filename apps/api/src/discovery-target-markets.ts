@@ -10,9 +10,30 @@ function values(value: unknown) {
   return [];
 }
 
+function text(value: unknown) {
+  return typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
+}
+
+/** Preserve a confirmed physical location separately from target markets. */
+export function discoveryBusinessLocation(input: { understanding?: unknown; facts?: unknown; answers?: unknown }) {
+  const understanding = record(input.understanding);
+  const answers = record(input.answers);
+  const structured = [understanding.businessLocation, understanding.physicalLocation, answers.businessLocation].map(text).find(Boolean);
+  if (structured) return structured.slice(0, 255);
+  for (const raw of Array.isArray(input.facts) ? input.facts : []) {
+    const fact = record(raw);
+    const key = String(fact.key ?? fact.name ?? "").trim();
+    const confirmed = String(fact.state ?? "").toUpperCase() === "CONFIRMED" || String(fact.source ?? "").toUpperCase() === "USER_INPUT";
+    if (!confirmed || !/(?:business|physical|company|office|store|headquarters?).*location|location.*(?:business|physical|company|office|store|headquarters?)/i.test(key)) continue;
+    const location = text(fact.value ?? fact.text ?? fact.description);
+    if (location) return location.slice(0, 255);
+  }
+  return null;
+}
+
 function labelledMarkets(text: string) {
   const candidates: string[] = [];
-  const pattern = /(?:^|[\n.!?])\s*(?:we\s+)?(?:target\s+markets?|target\s+locations?|service\s+areas?|locations?\s+served|markets?\s+served|locations?|serve|serving|targeting)\s*(?:are|is|include|includes|:|-)?\s*([^\n.!?]+)/gi;
+  const pattern = /(?:^|[\n.!?])\s*(?:we\s+)?(?:target\s+markets?|target\s+locations?|service\s+areas?|locations?\s+served|markets?\s+served|serve|serving|targeting)\s*(?:are|is|include|includes|:|-)?\s*([^\n.!?]+)/gi;
   for (const match of text.matchAll(pattern)) {
     const candidate = String(match[1] ?? "")
       .split(/\s*,?\s+but\b|\s+although\b|\s+while\b/i)[0]

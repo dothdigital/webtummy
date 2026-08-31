@@ -78,7 +78,6 @@ export function projectAnalysisLocationLabels(
     .filter((item) => excluded.has(item)));
   const markets = cleanGeographicTargetMarkets(raw)
     .filter((market) => !excluded.has(market.toLocaleLowerCase()) || explicitContextMarkets.has(market.toLocaleLowerCase()));
-  if (!markets.length && businessLocationJson?.city?.trim()) markets.push(businessLocationJson.city.trim());
   return [...new Map(markets.map((market) => {
     const normalizedMarket = market.toLocaleLowerCase();
     const matchedCountry = countryLocationLabel(market);

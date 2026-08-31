@@ -109,12 +109,19 @@ function analyzeProject(project: Awaited<ReturnType<typeof scopedProject>>["proj
     issueCount: page.issues.length,
   }));
   const platformHint = String(project.cmsPlatform || intake.store_type || intake.cms_platform || "Unknown");
-  return buildEcommerceIntelligence({
+  const intelligence = buildEcommerceIntelligence({
     pages,
     keywords: project.keywordResearchRuns.map((run) => ({ keyword: run.seedKeyword, location: run.locationName, averageVolume: run.averageVolume, rank: run.targetRank, rankingUrl: run.rankingUrl })),
     performance: currentPerformance(project),
     platformHint,
   });
+  if (!pages.length) {
+    const products = Array.isArray(intake.products_services) ? intake.products_services.map(String).filter(Boolean) : [];
+    if (products.length) intelligence.recommendations.unshift({ key: "prelaunch-catalog-research", category: "collection_seo", title: "Research the initial ecommerce catalogue and buying journey", explanation: "This pre-launch research uses confirmed Business Brain inputs and completed keyword evidence without claiming a live catalogue or store performance.", recommendedAction: "Research product families, collections, buyer intent, comparisons, buying guides, filters, product-data requirements, delivery and returns, custom-order paths, trust, checkout, and measurement for Strategy.", expectedImpact: "Creates an evidence-labelled ecommerce direction before the store is built.", evidenceType: "user_provided", evidence: products.slice(0, 30).map((item) => "Confirmed intake product or service: " + item + "."), affectedUrls: [], priority: "high", impactScore: 92, confidenceScore: 88, destination: "website" });
+    intelligence.evidenceCoverage[0] = { key: "public_catalog", label: "Pre-launch ecommerce research", status: products.length ? "user_provided" : "unavailable", detail: products.length ? products.length + " confirmed products or services are available for research; no public catalogue is claimed." : "Add products or services in Business Discovery." };
+    intelligence.limitations[0] = "Pre-launch research uses confirmed Business Brain inputs; no live catalogue, traffic, sales, inventory, ranking, or conversion performance is claimed.";
+  }
+  return intelligence;
 }
 
 function routes(path = "") {
@@ -151,19 +158,20 @@ ecommerceIntelligenceRouter.post(routes("/analyze"), async (req, res) => {
   if (!hasWorkspacePermission(scoped.context, "run_ai_analysis")) return res.status(403).json({ error: "AI analysis permission is required." });
   if (!scoped.ecommerceContext) return res.status(409).json({ error: "Set this project’s Business Type to Ecommerce before running Ecommerce Intelligence.", action: { label: "Edit Business Type", url: `/projects/new?edit=${scoped.project.id}` } });
   const crawl = scoped.project.website?.crawlJobs[0] ?? null;
-  if (!crawl) return res.status(409).json({ error: "Complete Site Analysis for the public store before running Ecommerce Intelligence.", action: { label: "Analyze store", url: `/site-analysis?projectId=${scoped.project.id}` } });
   const intelligence = analyzeProject(scoped.project, scoped.intake);
+  const preLaunch = !crawl;
+  if (preLaunch && !intelligence.recommendations.some((item) => item.key === "prelaunch-catalog-research")) return res.status(409).json({ error: "Add products or services in Business Discovery before starting pre-launch Ecommerce Research." });
   const run = await prisma.aiRun.create({ data: {
     projectId: scoped.project.id,
     clientId: scoped.project.clientId,
     moduleName: "ecommerce_intelligence",
     promptVersion: intelligence.version,
-    inputSnapshotJson: { crawlJobId: crawl.id, crawlCompletedAt: crawl.completedAt, keywordRunCount: scoped.project.keywordResearchRuns.length, performanceRecordCount: currentPerformance(scoped.project).length, evidencePolicy: "public_plus_user_provided" },
+    inputSnapshotJson: { mode: preLaunch ? "pre_launch_research" : "public_store", crawlJobId: crawl?.id ?? null, crawlCompletedAt: crawl?.completedAt ?? null, keywordRunCount: scoped.project.keywordResearchRuns.length, performanceRecordCount: currentPerformance(scoped.project).length, evidencePolicy: preLaunch ? "confirmed_business_brain_plus_keyword_evidence" : "public_plus_user_provided" },
     outputJson: intelligence as unknown as Prisma.InputJsonValue,
     outputText: `${intelligence.store.productCount} products, ${intelligence.store.collectionCount} collections, and ${intelligence.recommendations.length} prioritized recommendations were evaluated from public and explicitly supplied evidence.`,
     status: "completed",
   } });
-  await publishProjectWorkflowEvent({ projectId: scoped.project.id, eventType: "intelligence.ecommerce_completed", sourceModule: "ecommerce_intelligence", sourceId: run.id, idempotencyKey: `intelligence.ecommerce_completed:${run.id}`, payload: { crawlJobId: crawl.id, recommendationCount: intelligence.recommendations.length } });
+  await publishProjectWorkflowEvent({ projectId: scoped.project.id, eventType: "intelligence.ecommerce_completed", sourceModule: "ecommerce_intelligence", sourceId: run.id, idempotencyKey: `intelligence.ecommerce_completed:${run.id}`, payload: { mode: preLaunch ? "pre_launch_research" : "public_store", crawlJobId: crawl?.id ?? null, recommendationCount: intelligence.recommendations.length } });
   await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context: scoped.context, action: "ecommerce_intelligence.completed", entityType: "ai_run", entityId: run.id, agencyClientId: scoped.project.agencyClientId, projectId: scoped.project.id, nextJson: { products: intelligence.store.productCount, collections: intelligence.store.collectionCount, recommendations: intelligence.recommendations.length } }));
   res.status(201).json({ run: { id: run.id, status: run.status, createdAt: run.createdAt }, intelligence });
 });

@@ -213,7 +213,7 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
     secondary: "How it works",
   },
   strategy: {
-    title: "AI Strategy Engine",
+    title: "SEnuke AI Intelligence Strategy Engine",
     subtitle: "Turn opportunity insights into a structured execution strategy.",
     primary: "Create new Strategy version",
     secondary: "How it works",
@@ -1149,15 +1149,12 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {hasActiveProject && kind === "strategy" && workflowController?.strategyStale && activeProject?.strategyPlans?.[0] ? (
         <div className="flex flex-col gap-4 rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <div className="text-xs font-black uppercase tracking-wide text-amber-700">Previously completed · refresh required</div>
-            <div className="mt-1 text-base font-bold text-slate-950">Strategy v{activeProject.strategyPlans[0].version ?? 1} was completed, but newer evidence is now available</div>
-            <p className="mt-1 leading-6 text-amber-900">The existing version remains in history. {workflowController.intelligenceReady ? "Create a new Strategy version from the latest evidence for review." : "Complete the evidence refresh shown above first; then create a new Strategy version."}</p>
+            <div className="text-xs font-black uppercase tracking-wide text-amber-700">Approved Strategy remains active · new evidence available</div>
+            <div className="mt-1 text-base font-bold text-slate-950">Review what changed since Strategy v{activeProject.strategyPlans[0].version ?? 1}</div>
+            <p className="mt-1 leading-6 text-amber-900">Nothing will regenerate automatically and this does not block other work. Review the changed evidence below; create a new version only if you decide the changes justify it. The credit estimate is shown before generation.</p>
+            {workflowController.changedEvidence.length > 0 && <div className="mt-2 text-xs font-semibold text-amber-900">Changed: {workflowController.changedEvidence.map((item) => item.label).join(" · ")}</div>}
           </div>
-          {workflowController.intelligenceReady ? (
-            <button type="button" onClick={() => { setStrategyMessage("Creating a new Strategy version from the latest project data..."); void runStrategyAction("generate"); }} disabled={Boolean(strategyBusy)} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-black text-white hover:bg-brand-700 disabled:bg-slate-300">{strategyBusy === "generate" ? "Creating version…" : "Create new Strategy version"}</button>
-          ) : (
-            <Link to={workflowController.nextBestAction.action.url} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-center text-sm font-black text-white hover:bg-brand-700">{workflowController.nextBestAction.action.label}</Link>
-          )}
+          <span className="shrink-0 rounded-lg border border-amber-300 bg-white px-4 py-2.5 text-sm font-black text-amber-900">Review first · regeneration optional</span>
         </div>
       ) : hasActiveProject && kind === "strategy" ? (
         <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>

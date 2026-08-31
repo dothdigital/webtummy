@@ -13,7 +13,7 @@ import { commitUsage, modelForFeature, preflightUsage, refundUsage } from "../us
 import { canAccessAgencyClient, hasWorkspacePermission, recordWorkspaceActivity, requireWorkspaceRole, workspaceContext, type WorkspaceContext } from "../workspace-access.js";
 import { createDiscoveryIdeaPdf } from "../discovery-idea-pdf.js";
 import { normalizeComplianceAdvisories } from "../compliance-advisories.js";
-import { discoveryTargetMarkets } from "../discovery-target-markets.js";
+import { discoveryBusinessLocation, discoveryTargetMarkets } from "../discovery-target-markets.js";
 import { readGeneratedAsset, storeGeneratedAsset } from "../generated-assets.js";
 import { normalizeDiscoveryWebsiteUrl } from "../discovery-website.js";
 
@@ -1093,6 +1093,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     // belong to the selected direction, not the customer-facing offer.
     const productsServices = Array.isArray(summary.productsServices) ? summary.productsServices.map(String).map((item) => item.trim()).filter(Boolean).slice(0, 20) : [];
     const offerSummary = productsServices.join(", ");
+    const businessLocation = discoveryBusinessLocation({ understanding: summary, facts: draft.factsJson, answers });
     const targetMarkets = discoveryTargetMarkets({ understanding: summary, facts: draft.factsJson, answers, sourceText: draft.sourceText });
     const project = await prisma.$transaction(async (tx) => {
       let website = normalizedWebsite ? await tx.website.findFirst({ where: { clientId, domain: normalizedWebsite.domain } }) : null;
@@ -1107,6 +1108,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
         websiteUrl,
         businessName: draft.agencyClientId ? null : businessName,
         niche,
+        businessLocation,
         targetLocations: targetMarkets,
         targetLocation: targetMarkets.join(", ").slice(0, 180) || null,
         primaryGoal,
@@ -1126,6 +1128,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
       await tx.projectIntakeAnswer.createMany({ data: [
         { projectId: row.id, questionKey: "discovery_start_path", questionText: "How did this project begin?", answerValue: draft.startPath, answerType: "select", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "products_services", questionText: "Which products and services were stated in discovery?", answerValue: productsServices, answerType: "multiselect", moduleContext: "adaptive_business_discovery" },
+        { projectId: row.id, questionKey: "business_location", questionText: "Which physical business location was stated in discovery?", answerValue: businessLocation, answerType: "text", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "target_location", questionText: "Which target markets were stated in discovery?", answerValue: targetMarkets, answerType: "multiselect", moduleContext: "adaptive_business_discovery" },
         { projectId: row.id, questionKey: "selected_direction", questionText: "Which discovery direction was confirmed?", answerValue: { ideaId: idea.id, title: idea.title, description: idea.description, userConfirmed: true }, answerType: "structured", moduleContext: "adaptive_business_discovery" },
       ] });

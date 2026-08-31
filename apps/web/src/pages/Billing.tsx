@@ -111,6 +111,9 @@ export default function Billing() {
   const helpersRemaining = Math.max(0, helperLimit - helpersUsed);
   const providerLifecycle = billing?.commercial?.providerLifecycle ?? null;
   const experience = workspaceExperience(billing?.commercial?.workspace.workspaceType);
+  const commercialUsage = billing?.commercial?.usage;
+  const capacity = commercialUsage?.capacity;
+  const planName = billing?.commercial?.subscription?.plan.name ?? billing?.plan?.name ?? (billing?.status === "trialing" ? `${experience.workspaceLabel.replace(" Workspace", "")} Trial` : "Plan setup pending");
   const capacityAddons = addons.filter((addon) => addon.kind === "capacity_pack");
   const seatAddons = addons.filter((addon) => addon.kind !== "capacity_pack");
 
@@ -169,15 +172,15 @@ export default function Billing() {
           <div className="grid gap-4 lg:grid-cols-4">
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current plan</div>
-              <div className="mt-2 text-3xl font-bold text-charcoal-900">{billing.commercial?.subscription?.plan.name ?? billing.plan?.name ?? "Not assigned"}</div>
-              <div className="mt-1 text-sm capitalize text-charcoal-500">{billing.commercial?.subscription?.billingInterval ? `${billing.commercial.subscription.billingInterval} billing` : "Billing schedule unavailable"}</div>
+              <div className="mt-2 text-3xl font-bold text-charcoal-900">{planName}</div>
+              <div className="mt-1 text-sm capitalize text-charcoal-500">{billing.commercial?.subscription?.billingInterval ? `${billing.commercial.subscription.billingInterval} billing` : billing.status === "trialing" ? "Trial · no recurring billing yet" : "Billing setup pending"}</div>
               <div className="mt-4"><StatusPill status={billing.status} /></div>
             </Card>
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Workspace access</div>
               <div className="mt-2 text-2xl font-bold capitalize text-charcoal-900">{billing.commercial?.workspace.accessMode.replace(/_/g, " ") ?? (billing.hasAccess ? "Full" : "Read only")}</div>
               <div className="mt-1 text-sm text-charcoal-500">Provider: {billing.billingProvider === "jvzoo" ? "JVZoo" : billing.billingProvider ?? "Not connected"}</div>
-              <div className="mt-4 text-xs text-charcoal-500">Grace: {billing.commercial?.subscription?.policy.graceDays ?? "—"} days</div>
+              <div className="mt-4 text-xs text-charcoal-500">{billing.commercial?.subscription?.policy.graceDays != null ? `Grace: ${billing.commercial.subscription.policy.graceDays} days` : "Grace period: Not applicable"}</div>
             </Card>
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Current access period</div>
@@ -186,28 +189,28 @@ export default function Billing() {
             </Card>
             <Card className="p-5">
               <div className="text-xs font-semibold uppercase tracking-wide text-charcoal-400">Price protection</div>
-              <div className="mt-2 text-2xl font-bold text-charcoal-900">{billing.commercial?.subscription?.foundingMember ? "Founding" : "Standard"}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.foundingMember ? "Protected while continuously eligible" : "Current commercial price"}</div>
+              <div className="mt-2 text-2xl font-bold text-charcoal-900">{billing.commercial?.subscription ? billing.commercial.subscription.foundingMember ? "Founding" : "Standard" : "Not applicable"}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.subscription?.foundingMember ? "Protected while continuously eligible" : billing.commercial?.subscription ? "Current commercial price" : "No paid price is attached to this trial"}</div>
             </Card>
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">Active projects</div>
-              <div className="mt-3 text-4xl font-bold text-brand-700">{billing.commercial?.usage.activeProjects ?? 0}</div>
-              <div className="mt-1 text-sm text-charcoal-500">{billing.commercial?.usage.archivedProjects ?? 0} archived · {billing.commercial?.entitlements.limits.activeProjects == null ? "Unlimited active projects" : `${billing.commercial.entitlements.limits.activeProjects} active-project allowance`}</div>
+              <div className="mt-3 text-4xl font-bold text-brand-700">{commercialUsage?.activeProjects ?? "—"}</div>
+              <div className="mt-1 text-sm text-charcoal-500">{commercialUsage ? `${commercialUsage.archivedProjects} archived · ${billing.commercial?.entitlements.limits.activeProjects == null ? "Unlimited active projects" : `${billing.commercial.entitlements.limits.activeProjects} active-project allowance`}` : "Usage is being prepared"}</div>
             </Card>
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">{experience.kind === "personal" ? "Workspace user" : experience.kind === "agency" ? "Agency team seats" : "Business team seats"}</div>
-              <div className="mt-3 text-4xl font-bold text-cyan-700">{billing.commercial?.usage.assignedSeats ?? 0}/{billing.commercial?.entitlements.seatLimit ?? "—"}</div>
+              <div className="mt-3 text-4xl font-bold text-cyan-700">{commercialUsage ? `${commercialUsage.assignedSeats}/${billing.commercial?.entitlements.seatLimit ?? "—"}` : "—"}</div>
               <div className="mt-1 text-sm text-charcoal-500">{experience.kind === "personal" ? "Entrepreneur is a single-user Owner/Admin workspace and does not support team invitations." : experience.kind === "agency" ? "Named internal users consume seats; external Client Viewers do not by default." : "Named business users consume seats. Business workspaces do not include external client accounts."}</div>
             </Card>
             <Card className="p-5">
               <div className="text-sm font-semibold text-charcoal-800">AI Capacity in {monthLabel()}</div>
-              <div className="mt-3 text-4xl font-bold text-emerald-700">{(billing.commercial?.usage.capacity?.balance ?? 0).toLocaleString()}</div>
-              <div className="mt-1 text-sm font-semibold text-charcoal-700">remaining · {(billing.commercial?.usage.capacity?.monthlyUsed ?? 0).toLocaleString()} used this period</div>
-              <div className="mt-1 text-xs text-charcoal-500">{(billing.commercial?.usage.capacity?.included.available ?? 0).toLocaleString()} included available · {(billing.commercial?.usage.capacity?.purchased.available ?? 0).toLocaleString()} purchased available · {billing.commercial?.usage.capacity?.reserved ?? 0} reserved{billing.commercial?.usage.capacity?.resetAt ? ` · Included Capacity resets ${dateLabel(billing.commercial.usage.capacity.resetAt)}` : ""}</div>
-              {billing.commercial?.usage.capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{billing.commercial.usage.capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
+              <div className="mt-3 text-4xl font-bold text-emerald-700">{capacity ? capacity.balance.toLocaleString() : "—"}</div>
+              <div className="mt-1 text-sm font-semibold text-charcoal-700">{capacity ? `remaining · ${capacity.monthlyUsed.toLocaleString()} used this period` : "Capacity balance is being prepared"}</div>
+              {capacity && <div className="mt-1 text-xs text-charcoal-500">{capacity.included.available.toLocaleString()} included available · {capacity.purchased.available.toLocaleString()} purchased available · {capacity.reserved} reserved{capacity.resetAt ? ` · Included Capacity resets ${dateLabel(capacity.resetAt)}` : ""}</div>}
+              {capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
 
@@ -224,12 +227,15 @@ export default function Billing() {
               {experience.kind === "agency" && <div className="text-xs font-semibold text-charcoal-500">Agency clients: {billing.commercial?.usage.activeAgencyClients ?? 0} / {billing.commercial?.entitlements.limits.activeAgencyClients == null ? "Unlimited" : billing.commercial.entitlements.limits.activeAgencyClients}</div>}
             </div>
             <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-              {Object.entries(billing.commercial?.entitlements.features ?? {}).filter(([key]) => key !== "*").map(([key, value]) => (
-                <div key={key} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
-                  <span className="capitalize text-charcoal-600">{key.replace(/_/g, " ")}</span>
-                  <span className={`font-bold ${value === false ? "text-rose-600" : "text-emerald-700"}`}>{value === false ? "Not included" : "Included"}</span>
-                </div>
-              ))}
+              {Object.entries(billing.commercial?.entitlements.features ?? {}).filter(([key]) => key !== "*").map(([key, value]) => {
+                const included = key === "client_viewer" && experience.kind !== "agency" ? false : value;
+                return (
+                  <div key={key} className="flex items-center justify-between rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm">
+                    <span className="capitalize text-charcoal-600">{key.replace(/_/g, " ")}</span>
+                    <span className={`font-bold ${included === false ? "text-rose-600" : "text-emerald-700"}`}>{included === false ? "Not included" : "Included"}</span>
+                  </div>
+                );
+              })}
             </div>
           </Card>
 

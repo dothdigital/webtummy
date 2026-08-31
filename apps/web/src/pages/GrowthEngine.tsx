@@ -469,7 +469,7 @@ function IntelligenceReadiness({ controller }: { controller: NonNullable<GrowthO
               <div className="flex items-center justify-between gap-3"><div className="text-xs font-black uppercase tracking-wide text-slate-500">Existing approved plan</div><span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-700">Strategy v{controller.strategyVersion || 1}</span></div>
               <h3 className="mt-3 font-bold text-slate-950">Continue with the existing Strategy</h3>
               <p className="mt-2 text-sm leading-6 text-slate-600">Keep reviewing and executing the approved version already in history. It was created {controller.strategyCreatedAt ? formatDate(controller.strategyCreatedAt) : "before the latest evidence"} and does not include the changes shown here.</p>
-              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-900"><b>Limitation:</b> new Growth recommendations remain paused until a current Strategy version is generated and approved.</div>
+              <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-900"><b>Still active:</b> newer evidence does not pause the approved Strategy or force regeneration.</div>
             </div>
             <div className="rounded-xl border border-brand-200 bg-brand-50/40 p-4">
               <div className="flex items-center justify-between gap-3"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Current evidence</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">Recommended</span></div>
@@ -484,7 +484,7 @@ function IntelligenceReadiness({ controller }: { controller: NonNullable<GrowthO
           </div>
           <div className="flex flex-wrap gap-3">
             <Link to={`/strategy?projectId=${controller.projectId}&view=existing`} className="inline-flex items-center justify-center rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-bold text-slate-800 hover:bg-slate-50">Continue with existing Strategy</Link>
-            <Link to={`/strategy?projectId=${controller.projectId}&action=regenerate`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Create new Strategy version</Link>
+            <Link to={`/strategy?projectId=${controller.projectId}&action=regenerate`} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Review regeneration options</Link>
           </div>
         </div>
       )}
@@ -506,6 +506,7 @@ export default function GrowthEngine() {
   const [contentPlanStartDate, setContentPlanStartDate] = useState("");
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
+  const [generationReview, setGenerationReview] = useState<null | { title: string; description: string; path: string; nextTab?: Tab; body?: Record<string, unknown> }>(null);
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
@@ -556,6 +557,10 @@ export default function GrowthEngine() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function reviewGeneration(title: string, description: string, path: string, nextTab?: Tab, body: Record<string, unknown> = {}) {
+    setGenerationReview({ title, description, path, nextTab, body });
   }
 
   async function decideRecommendation(action: GrowthCandidateAction, decision: "accepted" | "edited" | "deferred" | "rejected" | "alternatives") {
@@ -741,7 +746,7 @@ export default function GrowthEngine() {
           key: "refresh-growth",
           label: busy ? "Refreshing…" : data.growth.blueprint ? "Refresh Growth Engine" : "Run Growth Engine",
           disabled: busy || !canRunGrowth,
-          onClick: () => { void runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations"); },
+          onClick: () => reviewGeneration(data.growth.blueprint ? "Review Growth refresh" : "Review first Growth Blueprint", "Review the current approved Strategy and evidence. Your existing plan remains unchanged unless you continue.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations"),
         }]}
         showExecution
       />
@@ -754,6 +759,23 @@ export default function GrowthEngine() {
 
       {error && <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>}
 
+      {generationReview && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-label={generationReview.title}>
+        <Card className="w-full max-w-xl border-brand-200 p-6 shadow-2xl">
+          <div className="text-xs font-black uppercase tracking-wide text-brand-700">Review before generation</div>
+          <h2 className="mt-2 text-xl font-bold text-charcoal-950">{generationReview.title}</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-600">{generationReview.description}</p>
+          <div className="mt-4 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+            <div className="text-xs font-black uppercase tracking-wide text-emerald-700">AI Capacity notice</div>
+            <div className="mt-1 text-lg font-bold text-emerald-950">Estimated consumption: 0 AI Capacity</div>
+            <p className="mt-1 text-xs leading-5 text-emerald-800">This Growth planning action uses deterministic project evidence. If a later action uses AI Capacity, its exact estimate and reservation will be shown before it starts.</p>
+          </div>
+          <div className="mt-5 flex flex-wrap justify-end gap-2">
+            <Button variant="ghost" onClick={() => setGenerationReview(null)} disabled={busy}>Cancel · keep current plan</Button>
+            <Button onClick={() => { const request = generationReview; setGenerationReview(null); void runAction(request.path, request.nextTab, request.body); }} disabled={busy}>Continue with generation</Button>
+          </div>
+        </Card>
+      </div>}
+
       {!foundationReady && <ReadinessChecklist items={data.readiness.items} />}
       {foundationReady && data.workflowController && !workflowReady && <IntelligenceReadiness controller={data.workflowController} />}
 
@@ -764,20 +786,20 @@ export default function GrowthEngine() {
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-4xl">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="rounded-full bg-amber-600 px-2.5 py-1 text-xs font-bold text-white">Strategy refresh required</span>
+              <span className="rounded-full bg-amber-600 px-2.5 py-1 text-xs font-bold text-white">New Strategy available for review</span>
               <span className="text-xs font-bold text-amber-900">Approved Strategy v{data.strategyContext?.version ?? "—"}</span>
               <span className="text-xs font-semibold text-slate-500">{data.strategyContext?.focusAreas.length ?? 0} focus areas drive Growth</span>
             </div>
             <h2 className="mt-3 font-bold text-charcoal-950">Synchronize Growth with the approved Strategy</h2>
             <p className="mt-1 text-sm leading-6 text-slate-600">
-              A newer Strategy is approved. Refresh the Growth Engine to rebuild the Blueprint and Next Best Action from that exact Strategy version and current evidence.
+              A newer Strategy is approved. Your existing Growth Blueprint stays active. Review the change and refresh only if you want a replacement version.
             </p>
             {data.strategyContext?.phases[0] && (
               <p className="mt-2 text-xs font-semibold text-amber-800">Current strategic phase: {data.strategyContext.phases[0].name} · {data.strategyContext.phases[0].timeframe}</p>
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Refresh Growth Engine</Button>
+            <Button onClick={() => reviewGeneration("Review Growth Blueprint refresh", "A newer approved Strategy is available. Continuing creates a replacement Blueprint; cancelling keeps the current Blueprint active.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Review &amp; Decide</Button>
             <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">Review Strategy</Link>
           </div>
         </div>
@@ -862,7 +884,7 @@ export default function GrowthEngine() {
           <Card className="p-5">
             <h2 className="font-bold text-charcoal-950">Decision loop</h2>
             <div className="mt-4 space-y-3">
-              <button type="button" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
+              <button type="button" onClick={() => reviewGeneration("Review evidence and recommendation refresh", "Review the current evidence first. Continuing recalculates the Blueprint recommendation; cancelling preserves the current version.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
                 <div className="font-bold text-charcoal-950">Refresh evidence and recommendation</div>
                 <div className="mt-1 text-sm text-slate-500">Normalize current signals, diagnose constraints, score candidates, and select one action. No task is created yet.</div>
               </button>
@@ -925,7 +947,7 @@ export default function GrowthEngine() {
               ))}
             </div>
           ) : (
-            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Intelligence" title="No Growth Blueprint exists yet" description="Create the first evidence-led Blueprint from the approved Strategy and current project signals." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Generate Blueprint</Button>} /></Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Intelligence" title="No Growth Blueprint exists yet" description="Review the approved Strategy and current evidence, then choose whether to create the first Blueprint." action={<Button onClick={() => reviewGeneration("Review first Growth Blueprint", "Confirm that the approved Strategy and current evidence are the inputs you want to use.", `/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Review &amp; Generate</Button>} /></Card>
           )}
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-violet-50 to-white p-5">
@@ -934,7 +956,7 @@ export default function GrowthEngine() {
                 <h2 className="mt-2 text-xl font-bold text-charcoal-950">Supporting Content Distribution Plan</h2>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{contentRoadmap?.recommendationRationale || "Map the complete supporting-content opportunity, then generate only the current approved phase."}</p>
               </div>
-              <Button onClick={() => contentRoadmap ? (setTab("content"), setParams({ projectId, tab: "content" })) : runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{contentRoadmap ? "Open Content Plan" : "Generate Content Plan"}</Button>
+              <Button onClick={() => contentRoadmap ? (setTab("content"), setParams({ projectId, tab: "content" })) : reviewGeneration("Review Supporting Content Plan", "Review the Strategy, Blueprint, keywords, pages, markets, and goals that will be used before creating this plan.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{contentRoadmap ? "Open Content Plan" : "Review & Generate"}</Button>
             </div>
             {contentRoadmap && <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
               <Stat label="Total opportunity" value={contentRoadmap.opportunityCount} />
@@ -972,7 +994,7 @@ export default function GrowthEngine() {
       {tab === "content" && (
         <div className="space-y-5">
           {!contentRoadmap ? (
-            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Generate the Supporting Content Plan" description="SEnuke AI - AI Growth Operating System will use the approved Strategy, keyword research, website pages, target markets, and business goals to build a complete opportunity map. It will not generate the articles yet." action={<Button onClick={() => runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Generate Supporting Content Plan"}</Button>} /></Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Review before creating the Supporting Content Plan" description="SEnuke AI will use the approved Strategy, keyword research, website pages, target markets, and business goals. Nothing is generated until you review and continue." action={<Button onClick={() => reviewGeneration("Review Supporting Content Plan", "Confirm these approved project inputs before creating the opportunity map. Articles will not be generated by this action.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Review & Generate"}</Button>} /></Card>
           ) : (
             <>
               <Card className="overflow-hidden">
@@ -985,7 +1007,7 @@ export default function GrowthEngine() {
                   </div>
                   <div className="flex flex-wrap items-end gap-2">
                     <label className="text-xs font-bold text-slate-600"><span className="mb-1 block">Plan start date (optional)</span><input type="date" value={contentPlanStartDate} onChange={(event) => setContentPlanStartDate(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-charcoal-950" /></label>
-                    <Button variant="ghost" onClick={() => { if (window.confirm("Recreate the 180-day plan? Approved, scheduled, and published work will keep its current status and dates.")) void runAction(`/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content", contentPlanStartDate ? { startDate: contentPlanStartDate } : {}); }} disabled={busy}>{busy ? "Recreating plan…" : "Recreate Content Plan"}</Button>
+                    <Button variant="ghost" onClick={() => reviewGeneration("Review Content Plan recreation", "Approved, scheduled, and published work keeps its status and dates. Continue only if you want to recreate the remaining 180-day plan.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content", contentPlanStartDate ? { startDate: contentPlanStartDate } : {})} disabled={busy}>{busy ? "Recreating plan…" : "Review & Recreate Plan"}</Button>
                   </div>
                 </div>
                 <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
@@ -1086,7 +1108,7 @@ export default function GrowthEngine() {
               <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusBadge(data.growth.decisionState.key === "NO_MATERIAL_ACTION" ? "evidence_available" : data.growth.decisionState.key === "BLOCKED_BY_DEPENDENCY" ? "blocked" : "watch")}`}>{titleCase(data.growth.decisionState.key)}</span>
               <h2 className="mt-3 font-bold text-charcoal-950">{data.growth.decisionState.title}</h2>
               <p className="mt-2 text-sm text-slate-500">{data.growth.decisionState.message}</p>
-              <Button className="mt-4" onClick={() => runAction(`/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Refresh Evidence &amp; Actions</Button>
+              <Button className="mt-4" onClick={() => reviewGeneration("Review evidence and actions refresh", "Review the missing and changed evidence first. Continue only if you want Growth recommendations recalculated.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Review &amp; Refresh</Button>
             </Card>
           )}
           {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).length > 0 && (
