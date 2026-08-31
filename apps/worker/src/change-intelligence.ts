@@ -92,7 +92,8 @@ async function classifyBatch(items: Array<{ id: string; title: string; url: stri
     const id = String(raw.id ?? "");
     if (!items.some((item) => item.id === id)) continue;
     const classification = validateClassification(raw);
-    await prisma.changeIntelligenceItem.update({ where: { id }, data: { ...classification, affectedCapabilitiesJson: classification.affectedCapabilities, classificationModel: result.model, status: "review" } });
+    const { affectedCapabilities, ...classificationData } = classification;
+    await prisma.changeIntelligenceItem.update({ where: { id }, data: { ...classificationData, affectedCapabilitiesJson: affectedCapabilities, classificationModel: result.model, status: "review" } });
   }
 }
 
