@@ -1,5 +1,18 @@
 export const BACKGROUND_JOBS_KEY = "senuke-ai:background-jobs";
 export const BACKGROUND_JOBS_EVENT = "senuke-ai:background-jobs-changed";
+export const BACKGROUND_JOBS_SCOPE_KEY = "senuke-ai:background-jobs-scope";
+
+export function bindBackgroundJobsScope(scope: string) {
+  const normalized = scope.trim();
+  if (!normalized) return;
+  const previous = window.localStorage.getItem(BACKGROUND_JOBS_SCOPE_KEY);
+  if (previous !== normalized) {
+    window.localStorage.removeItem(BACKGROUND_JOBS_KEY);
+    window.localStorage.removeItem("senuke-ai:site-analysis-job");
+    window.dispatchEvent(new CustomEvent(BACKGROUND_JOBS_EVENT, { detail: [] }));
+  }
+  window.localStorage.setItem(BACKGROUND_JOBS_SCOPE_KEY, normalized);
+}
 
 export type BackgroundJob = {
   id: string;

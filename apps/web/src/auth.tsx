@@ -10,6 +10,7 @@ import {
   SESSION_EXPIRED_EVENT,
   type AppUser,
 } from "./api.js";
+import { bindBackgroundJobsScope } from "./background-jobs.js";
 
 interface AuthCtx {
   user: AppUser | null;
@@ -32,14 +33,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const onSessionExpired = () => setUser(null);
     window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
     fetchMe()
-      .then(setUser)
+      .then((nextUser) => {
+        bindBackgroundJobsScope(`${nextUser.id}:${nextUser.workspace?.id ?? "no-workspace"}`);
+        setUser(nextUser);
+      })
       .catch(() => undefined)
       .finally(() => setLoading(false));
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, []);
 
   const login = async (email: string, password: string) => {
-    setUser(await apiLogin(email, password));
+    const nextUser = await apiLogin(email, password);
+    bindBackgroundJobsScope(`${nextUser.id}:${nextUser.workspace?.id ?? "no-workspace"}`);
+    setUser(nextUser);
   };
   const register = async (input: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => {
     return apiRegister(input);
