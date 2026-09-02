@@ -1971,6 +1971,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
   const strategyVersions = (project?.strategyPlans ?? []) as Array<typeof latestStrategy>;
   const previousStrategy = strategyVersions[1];
   const strategyApproved = latestStrategy?.status === "approved";
+  const strategyRevisionAvailable = !strategyApproved || Boolean(workflowController?.strategyStale);
   const unifiedStrategyPlan = unifiedStrategyPlanFrom(latestStrategy?.prioritizedRecommendations);
   const unifiedDecisionSet = unifiedStrategyDecisionSetFrom(latestStrategy?.prioritizedRecommendations);
   const savedAdvancedAnalyses = (Array.isArray(latestStrategy?.advancedAnalysis) ? latestStrategy.advancedAnalysis : []) as StrategyAnalysisItem[];
@@ -2125,7 +2126,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
           <StrategyTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <Card className="px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">{latestStrategy.status === "approved" ? "Current approved Strategy" : "Current Strategy draft"}, version {latestStrategy.version ?? strategyVersions.length} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2">{activeTab !== "overview" && <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "generate" ? "Creating version…" : latestStrategy.status === "approved" ? "Optional: Create revised Strategy" : "Create new Strategy version"}</button>}<button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">{latestStrategy.status === "approved" ? "Current approved Strategy" : "Current Strategy draft"}, version {latestStrategy.version ?? strategyVersions.length} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2">{activeTab !== "overview" && strategyRevisionAvailable && <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "generate" ? "Creating version…" : latestStrategy.status === "approved" ? "Review changed evidence" : "Create new Strategy version"}</button>}<button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
             {compareVersionId && (() => {
               const compared = strategyVersions.find((version) => version?.id === compareVersionId);
               if (!compared) return null;
@@ -2148,6 +2149,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
             busy={busy}
             notice={inlineNotice}
             workflowController={workflowController}
+            allowRevision={strategyRevisionAvailable}
             onApprove={() => void runInlineAction("approve")}
             onRegenerate={() => setRegenerateConfirmOpen(true)}
             onExecution={() => void runInlineAction("execution")}
@@ -2319,6 +2321,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
                 strategyApproved={strategyApproved}
                 executionTasks={projectExecutionTasks}
                 hasExecutionPlan={Boolean(project.executionPlans?.[0])}
+                allowRevision={strategyRevisionAvailable}
                 busy={busy}
                 onApprove={() => void runInlineAction("approve")}
                 onCreateExecution={() => void runInlineAction("execution")}
@@ -2331,7 +2334,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
                   <div className="text-xs font-bold uppercase tracking-[0.18em] text-violet-200">AI Funnel Evaluator</div>
                   <h2 className="mt-2 text-2xl font-bold">Evaluate the complete funnel with the latest project evidence</h2>
                   <p className="mt-2 max-w-3xl text-sm leading-6 text-violet-100">This Strategy version predates the AI-guided funnel contract. Create a revised Strategy so AI can select one Next Best Action, explain why, rank the remaining journey, and connect every step to Execution.</p>
-                  <button type="button" onClick={() => void runInlineAction("generate", { revisionComment: "Evaluate the complete growth funnel with AI using all current project evidence. Select one Next Best Action and rank the remaining execution journey by evidence, dependency, expected impact, confidence, and effort." })} disabled={Boolean(busy)} className="mt-5 rounded-xl bg-white px-5 py-3 text-sm font-bold text-violet-950 shadow-lg disabled:opacity-60">{busy === "generate" ? "AI is evaluating the funnel…" : "Create new Strategy version"}</button>
+                  {strategyRevisionAvailable && <button type="button" onClick={() => void runInlineAction("generate", { revisionComment: "Evaluate the complete growth funnel with AI using all current project evidence. Select one Next Best Action and rank the remaining execution journey by evidence, dependency, expected impact, confidence, and effort." })} disabled={Boolean(busy)} className="mt-5 rounded-xl bg-white px-5 py-3 text-sm font-bold text-violet-950 shadow-lg disabled:opacity-60">{busy === "generate" ? "AI is evaluating the funnel…" : "Review changed evidence"}</button>}
                 </div>
               </Card>
             )
@@ -2416,7 +2419,7 @@ function StrategyExecutiveBrief({ summary, objectives, summaryShown = false }: {
   );
 }
 
-function UnifiedStrategyOverview({ plan, decisionSet, strategy, score, scoreRows, approved, busy, notice, workflowController, onApprove, onRegenerate, onExecution }: {
+function UnifiedStrategyOverview({ plan, decisionSet, strategy, score, scoreRows, approved, busy, notice, workflowController, allowRevision, onApprove, onRegenerate, onExecution }: {
   plan: UnifiedStrategyPlanView | null;
   decisionSet: UnifiedStrategyDecisionSet | null;
   strategy: { version?: number; strategySummary?: string | null; positioningStatement?: string | null; audienceProfile?: string | null; offerRecommendation?: string | null };
@@ -2426,11 +2429,12 @@ function UnifiedStrategyOverview({ plan, decisionSet, strategy, score, scoreRows
   busy: "generate" | "analyze" | "approve" | "execution" | null;
   notice: { tone: "info" | "success" | "error"; message: string } | null;
   workflowController: ProjectWorkflowControllerState | null;
+  allowRevision: boolean;
   onApprove: () => void;
   onRegenerate: () => void;
   onExecution: () => void;
 }) {
-  const reviewActions = <div className="flex flex-wrap gap-3">{!approved && <button type="button" onClick={onApprove} disabled={Boolean(busy)} className="rounded-xl bg-brand-600 px-5 py-3 text-sm font-black text-white shadow-md shadow-brand-200 transition hover:bg-brand-700 disabled:bg-slate-300 disabled:shadow-none">{busy === "approve" ? "Approving…" : "Approve Strategy"}</button>}<button type="button" onClick={onRegenerate} disabled={Boolean(busy)} className="rounded-xl border-2 border-brand-200 bg-white px-5 py-3 text-sm font-black text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 disabled:text-slate-400">{plan ? (approved ? "Optional: Create revised Strategy" : "Create new Strategy version") : "Generate Unified AI Strategy"}</button></div>;
+  const reviewActions = <div className="flex flex-wrap gap-3">{!approved && <button type="button" onClick={onApprove} disabled={Boolean(busy)} className="rounded-xl bg-brand-600 px-5 py-3 text-sm font-black text-white shadow-md shadow-brand-200 transition hover:bg-brand-700 disabled:bg-slate-300 disabled:shadow-none">{busy === "approve" ? "Approving…" : "Approve Strategy"}</button>}{allowRevision && <button type="button" onClick={onRegenerate} disabled={Boolean(busy)} className="rounded-xl border-2 border-brand-200 bg-white px-5 py-3 text-sm font-black text-brand-700 shadow-sm transition hover:border-brand-300 hover:bg-brand-50 disabled:text-slate-400">{plan ? (approved ? "Review changed evidence" : "Create new Strategy version") : "Generate Unified AI Strategy"}</button>}</div>;
   const nextAction = workflowController?.nextBestAction;
   const executionReady = approved && (!nextAction || /execution plan/i.test(nextAction.title));
   const executionAction = approved && (executionReady
@@ -2990,7 +2994,7 @@ function customerFunnelMeta(step: UnifiedGrowthFunnelStep, index: number) {
   return customerFunnelStageMeta[step.funnelStage ?? fallbackStages[Math.min(index, fallbackStages.length - 1)]];
 }
 
-function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHealth, pagesCrawled, strategyApproved, executionTasks, hasExecutionPlan, busy, onApprove, onCreateExecution, onNavigate, onReevaluate }: {
+function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHealth, pagesCrawled, strategyApproved, executionTasks, hasExecutionPlan, allowRevision, busy, onApprove, onCreateExecution, onNavigate, onReevaluate }: {
   projectId: string;
   funnel: UnifiedGrowthFunnel;
   strategyDecision: UnifiedStrategyDecision | null;
@@ -2999,6 +3003,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
   strategyApproved: boolean;
   executionTasks: GuidedExecutionTask[];
   hasExecutionPlan: boolean;
+  allowRevision: boolean;
   busy: "generate" | "analyze" | "approve" | "execution" | null;
   onApprove: () => void;
   onCreateExecution: () => void;
@@ -3063,7 +3068,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
             </div>
             <div className="mt-5 flex flex-wrap gap-3">
               <button type="button" onClick={startPrimary} disabled={Boolean(busy)} className="rounded-xl bg-emerald-400 px-6 py-3 text-sm font-black text-slate-950 shadow-lg shadow-emerald-950/30 transition hover:bg-emerald-300 disabled:opacity-60">{busy ? "Working…" : primaryButton} <span aria-hidden="true">→</span></button>
-              {!aiEvaluated && <button type="button" onClick={onReevaluate} disabled={Boolean(busy)} className="rounded-xl border border-white/20 bg-white/10 px-6 py-3 text-sm font-black text-white transition hover:bg-white/15 disabled:opacity-60">{busy === "generate" ? "AI is evaluating…" : "Create new Strategy version"}</button>}
+              {!aiEvaluated && allowRevision && <button type="button" onClick={onReevaluate} disabled={Boolean(busy)} className="rounded-xl border border-white/20 bg-white/10 px-6 py-3 text-sm font-black text-white transition hover:bg-white/15 disabled:opacity-60">{busy === "generate" ? "AI is evaluating…" : "Review changed evidence"}</button>}
             </div>
           </div>
           <div className="rounded-2xl border border-white/10 bg-white/[0.06] p-4 backdrop-blur">
@@ -3079,7 +3084,7 @@ function AiEvaluatedGrowthFunnel({ projectId, funnel, strategyDecision, siteHeal
         </div>
       </Card>
 
-      {!aiEvaluated && <Card className="border-amber-200 bg-amber-50 p-4"><div className="text-sm font-bold text-amber-950">Full AI funnel evaluation is recommended</div><p className="mt-1 text-xs leading-5 text-amber-800">This funnel was reconstructed from an older AI Strategy response. Use <strong>Create new Strategy version</strong> above to evaluate current evidence and save a fully ranked AI funnel without replacing the approved version.</p></Card>}
+      {!aiEvaluated && allowRevision && <Card className="border-amber-200 bg-amber-50 p-4"><div className="text-sm font-bold text-amber-950">Changed evidence is ready for review</div><p className="mt-1 text-xs leading-5 text-amber-800">Review the workflow-detected changes before deciding whether a revised Strategy is worth the additional credits.</p></Card>}
 
       <Card className="overflow-hidden">
         <div className="border-b border-slate-100 px-5 py-4 sm:px-6">
