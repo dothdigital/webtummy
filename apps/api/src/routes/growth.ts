@@ -251,12 +251,12 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
   if (!hasWebsite) {
     items.push({
       key: "website",
-      title: "No website found",
-      description: "Create or connect a website first so SEnuke AI - AI Growth Operating System can analyze and optimize it.",
+      title: "No website or domain connected yet",
+      description: "You can create and preview the website now without a domain. Connect a domain or add an existing website URL only when you are ready to publish or analyze a live site.",
       status: "missing",
       required: true,
       actions: [
-        { label: "Create Website", url: `/site-architect?projectId=${project.id}` },
+        { label: "Create Website Without Domain", url: `/site-architect?projectId=${project.id}` },
         { label: "Add Website URL", url: `/guided-projects/${project.id}/intake` },
       ],
     });

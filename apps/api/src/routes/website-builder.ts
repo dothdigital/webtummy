@@ -9305,12 +9305,19 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/launch-readiness
   if (!release) return res.status(409).json({ error: "Approve the current website version before running Launch Readiness." });
   const model = approvedReleaseWebsiteModel(release);
   const rawWebsiteUrl = String(project.websiteUrl || "").trim();
+  const connectedWordPressUrl = project.wordpressIntegrations.find((integration) => integration.connectionStatus === "connected")?.siteUrl;
+  if (!rawWebsiteUrl && !connectedWordPressUrl) {
+    return res.status(409).json({
+      error: "Add the website domain before running Launch Readiness. You can build and preview the complete website without a domain; it is required only now because this release is entering the launch workflow.",
+      code: "WEBSITE_DOMAIN_REQUIRED_FOR_LAUNCH",
+      nextAction: { label: "Add Website Domain", url: `/guided-projects/${project.id}/intake`, type: "navigate" },
+    });
+  }
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
     ? rawWebsiteUrl
     : rawWebsiteUrl
       ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}`
       : undefined;
-  const connectedWordPressUrl = project.wordpressIntegrations.find((integration) => integration.connectionStatus === "connected")?.siteUrl;
   const websiteTracking = await trackingForProject(project, context.membership.userId, connectedWordPressUrl, { allowUnpublishableEndpoint: true });
   const measurementReadiness = measurementReadinessFor(model, websiteTracking);
   const redirectCount = Array.isArray(jsonRecord(build.settingsJson).redirects)
