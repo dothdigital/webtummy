@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { Card } from "../components/ui.js";
 import { useAuth } from "../auth.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
+import { projectDiscoveryInProgress } from "../project-discovery-status.js";
 
 type ProjectFilter = "all" | "draft" | "in_progress" | "needs_review" | "completed" | "archived";
 
@@ -19,7 +20,6 @@ type ProjectDiscoveryDraft = {
 
 const completedStatuses = new Set(["completed", "skipped", "published"]);
 const reviewStatuses = new Set(["submitted_for_approval", "needs_review", "changes_requested", "waiting_for_approval", "pending_approval", "needs_approval"]);
-
 const priorityRank: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const taskStatusRank: Record<string, number> = { changes_requested: 0, needs_review: 1, submitted_for_approval: 2, ready_to_publish: 3, ready: 4, in_progress: 5, pending: 6, blocked: 7 };
 
@@ -235,6 +235,11 @@ export default function GuidedProjects() {
   };
 
   useEffect(() => { void load().catch(() => undefined); }, [user?.workspace?.type]);
+  useEffect(() => {
+    if (!projects.some(projectDiscoveryInProgress)) return;
+    const timer = window.setInterval(() => { void load().catch(() => undefined); }, 5000);
+    return () => window.clearInterval(timer);
+  }, [projects, user?.workspace?.type]);
   const agencyNeedsClient = user?.workspace?.type === "agency" && !agencyHasActiveClient;
   const personalWorkspace = ["personal", "entrepreneur", "individual"].includes(String(user?.workspace?.type || "").toLowerCase());
 
@@ -378,6 +383,7 @@ export default function GuidedProjects() {
             const progress = projectProgress(project);
             const breakdown = projectProgressBreakdown(project);
             const needsReview = projectNeedsReview(project);
+            const discoveryRunning = projectDiscoveryInProgress(project);
             const nextTitle = masterAction?.title ?? task?.title ?? workflowStep?.title ?? (project.status === "completed" ? "Project complete" : "Review project overview");
             const nextHref = masterWorkflowHref(project) ?? nextActionHref(project, task, workflowStep);
             const projectHref = `/guided-projects/${project.id}`;
@@ -387,7 +393,8 @@ export default function GuidedProjects() {
                   <div className={`flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl text-lg font-bold ${avatarTones[index % avatarTones.length]}`}>{project.name.slice(0, 2).toUpperCase()}</div>
                   <div className="w-full min-w-0">
                     {project.agencyClient?.name && <div className="mb-0.5 truncate text-[11px] font-black uppercase tracking-[0.12em] text-teal-700">Client · {project.agencyClient.name}</div>}
-                    <Link to={`/guided-projects/${project.id}`} className="block break-words text-lg font-bold leading-6 text-slate-950 hover:text-teal-700">{project.name}</Link>
+                    <div className="flex flex-wrap items-center gap-2"><Link to={`/guided-projects/${project.id}`} className="block break-words text-lg font-bold leading-6 text-slate-950 hover:text-teal-700">{project.name}</Link>{discoveryRunning && <span role="status" title="AI discovery is continuing in the background. You can safely leave this page." className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-blue-800"><span className="h-2 w-2 animate-pulse rounded-full bg-blue-600" aria-hidden="true" />AI discovery in progress</span>}</div>
+                    {discoveryRunning && <p className="mt-1 text-xs font-semibold text-blue-700">Research and analysis are continuing in the background—you can keep working elsewhere.</p>}
                     <div className="mt-2 grid min-w-0 gap-x-5 gap-y-1.5 text-sm text-slate-500 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-5">
                       <div className="min-w-0"><b className="font-semibold text-slate-700">Website:</b>{" "}{project.website?.id ? <Link to={`/website-projects/${project.website.id}`} title={project.website.rootUrl ?? project.websiteUrl ?? project.website.domain} className="break-all font-semibold text-teal-700 hover:underline">{project.website.rootUrl ?? project.websiteUrl ?? project.website.domain}</Link> : <span className="break-all">{project.websiteUrl ?? "No website connected"}</span>}</div>
                       <div className="min-w-0 break-words"><b className="font-semibold text-slate-700">Project type:</b> {projectTypeLabel(project)}</div>

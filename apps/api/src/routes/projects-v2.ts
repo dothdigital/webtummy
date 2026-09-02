@@ -2788,6 +2788,20 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
       _count: { select: { intakeAnswers: true, strategyPlans: true, opportunities: true } },
     },
   }) : [];
+  const projectLaunchAnalyses = projects.length ? await prisma.workspaceAiIntakeSession.findMany({
+    where: {
+      workspaceId: context.workspace.id,
+      contextType: "project",
+      mode: "project_launch_research",
+      appliedProjectId: { in: projects.map((project) => project.id) },
+    },
+    orderBy: { updatedAt: "desc" },
+    select: { id: true, appliedProjectId: true, status: true, errorCode: true, completedAt: true },
+  }) : [];
+  const latestLaunchAnalysisByProject = new Map<string, typeof projectLaunchAnalyses[number]>();
+  for (const analysis of projectLaunchAnalyses) {
+    if (analysis.appliedProjectId && !latestLaunchAnalysisByProject.has(analysis.appliedProjectId)) latestLaunchAnalysisByProject.set(analysis.appliedProjectId, analysis);
+  }
   const taskStatusCounts = projects.length ? await prisma.executionTask.groupBy({
     by: ["projectId", "status"],
     where: { projectId: { in: projects.map((project) => project.id) } },
@@ -2807,6 +2821,7 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
   ] as const)));
   res.json({ projects: projects.map((project) => ({
     ...project,
+    projectLaunchAnalysis: latestLaunchAnalysisByProject.get(project.id) ?? null,
     workflowController: workflowControllers.get(project.id) ?? null,
     executionProgress: executionByProject.get(project.id) ?? { total: 0, completed: 0 },
   })) });
