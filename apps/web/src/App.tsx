@@ -115,15 +115,15 @@ function Shell() {
   const workspaceRole = user.workspace?.primaryRole;
   const platformOnlySuperAdmin = user.role === "super_admin" && !user.workspace;
   const landingPath = platformOnlySuperAdmin ? "/admin" : user.workspace?.landingPath ?? "/";
-  if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
-  if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
-  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && !/^\/projects\/[^/]+\/website\/performance$/.test(location.pathname) && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
-
   const welcomeEligible = Boolean(user.workspace && user.workspace.primaryRole === "admin" && user.workspace.onboardingRequired);
   const showWelcome = welcomeEligible && welcomePending(user.id, user.workspace?.id);
   if (showWelcome && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (!showWelcome && location.pathname === "/welcome") return <Navigate to="/" replace />;
   if (showWelcome) return <Welcome />;
+
+  if (location.pathname === "/login") return <Navigate to={landingPath} replace />;
+  if (platformOnlySuperAdmin && location.pathname !== "/users" && !location.pathname.startsWith("/admin")) return <Navigate to="/admin" replace />;
+  if (workspaceRole === "client_viewer" && location.pathname !== "/workspace" && location.pathname !== "/reports" && !location.pathname.startsWith("/site-architect") && !/^\/projects\/[^/]+\/website\/performance$/.test(location.pathname) && location.pathname !== "/seo-page-map" && location.pathname !== "/lead-magnets" && !location.pathname.startsWith("/agency/clients/")) return <Navigate to="/workspace" replace />;
 
   // First-time owners must be able to finish Welcome before commercial
   // routing begins. Checking payment first creates a /welcome ↔ /pricing loop:
