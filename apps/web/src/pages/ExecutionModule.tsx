@@ -1971,7 +1971,7 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
   const strategyVersions = (project?.strategyPlans ?? []) as Array<typeof latestStrategy>;
   const previousStrategy = strategyVersions[1];
   const strategyApproved = latestStrategy?.status === "approved";
-  const strategyRevisionAvailable = !strategyApproved || Boolean(workflowController?.strategyStale);
+  const strategyRevisionAvailable = Boolean(workflowController?.strategyStale);
   const unifiedStrategyPlan = unifiedStrategyPlanFrom(latestStrategy?.prioritizedRecommendations);
   const unifiedDecisionSet = unifiedStrategyDecisionSetFrom(latestStrategy?.prioritizedRecommendations);
   const savedAdvancedAnalyses = (Array.isArray(latestStrategy?.advancedAnalysis) ? latestStrategy.advancedAnalysis : []) as StrategyAnalysisItem[];
