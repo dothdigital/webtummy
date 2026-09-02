@@ -4,7 +4,7 @@ import { config } from "../config.js";
 import { requireAuth, requireRole } from "../middleware.js";
 import { prisma } from "@webtummy/db";
 import { startTaskPublishing, verifyTaskPublishing } from "../publishing-workflow.js";
-import { workspaceContext } from "../workspace-access.js";
+import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
 export const socialConnectRouter = Router();
 socialConnectRouter.use(requireAuth);
@@ -42,6 +42,7 @@ const scheduleSchema = z.object({
   sourceId: z.string().min(1).max(191),
 });
 const publishNowSchema = z.object({ sourceId: z.string().min(1).max(191) });
+const quickPostSchema = createPostSchema.extend({ projectId: z.string().min(1).max(191), confirmed: z.literal(true) });
 
 function requireSocialConnectConfig() {
   if (!config.socialConnectApiKey || !config.socialConnectAppKey) {
@@ -112,11 +113,16 @@ type SocialConnectAccountRecord = {
   [key: string]: unknown;
 };
 
+function accountBelongsToUser(account: SocialConnectAccountRecord, userId: string) {
+  return account.external_user_id === userId
+    || (typeof account.external_user_id === "string" && account.external_user_id.startsWith(`${userId}:oauth:`));
+}
+
 export function accountsForExternalUser(value: unknown, userId: string) {
   const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
   const accounts = Array.isArray(payload.accounts) ? payload.accounts : [];
   const owned = accounts.filter((item): item is SocialConnectAccountRecord => Boolean(
-    item && typeof item === "object" && (item as SocialConnectAccountRecord).external_user_id === userId,
+    item && typeof item === "object" && accountBelongsToUser(item as SocialConnectAccountRecord, userId),
   ));
   const unique = new Map<string, SocialConnectAccountRecord>();
   for (const account of owned) {
@@ -135,7 +141,7 @@ export function accountsForExternalUser(value: unknown, userId: string) {
 function rawAccountsForExternalUser(value: unknown, userId: string) {
   const payload = value && typeof value === "object" ? value as Record<string, unknown> : {};
   return (Array.isArray(payload.accounts) ? payload.accounts : []).filter((item): item is SocialConnectAccountRecord => Boolean(
-    item && typeof item === "object" && (item as SocialConnectAccountRecord).external_user_id === userId,
+    item && typeof item === "object" && accountBelongsToUser(item as SocialConnectAccountRecord, userId),
   ));
 }
 
@@ -158,6 +164,30 @@ function socialDeliveryState(value: unknown): "verified" | "pending" | "failed" 
   if (statuses.some((status) => /failed|error|rejected|cancelled/.test(status))) return "failed";
   if (statuses.length && statuses.every((status) => /published|posted|completed|success/.test(status))) return "verified";
   return "pending";
+}
+
+export function socialResponseIsMock(value: unknown) {
+  let mock = false;
+  const visit = (item: unknown, depth = 0) => {
+    if (mock || depth > 5 || !item || typeof item !== "object") return;
+    if (Array.isArray(item)) return item.forEach((entry) => visit(entry, depth + 1));
+    for (const [key, child] of Object.entries(item as Record<string, unknown>)) {
+      if ((key === "mode" && typeof child === "string" && child.toLowerCase() === "mock")
+        || (key === "remote_url" && typeof child === "string" && child.includes("/mock-platform/"))) {
+        mock = true;
+        return;
+      }
+      visit(child, depth + 1);
+    }
+  };
+  visit(value);
+  return mock;
+}
+
+function assertLiveSocialDelivery(value: unknown) {
+  if (socialResponseIsMock(value)) {
+    throw Object.assign(new Error("Instagram/Facebook live publishing is not enabled for this Social Connect environment. The test submission was not posted to your public account."), { statusCode: 409 });
+  }
 }
 
 function toSocialPostPayload(input: z.infer<typeof postPayloadSchema>) {
@@ -183,7 +213,9 @@ async function connectProvider(req: Request, res: ExpressResponse, provider: "fa
   try {
     const data = await socialRequest(`/api/social/accounts/connect/${provider}`, {
       method: "POST",
-      body: JSON.stringify({ external_user_id: externalUserId(req), redirect_url: parsed.data.redirectUrl }),
+      // A fresh scoped key avoids stale disconnected rows in Social Connect blocking
+      // reauthorization. Account reads still constrain the key to this signed-in user.
+      body: JSON.stringify({ external_user_id: `${externalUserId(req)}:oauth:${Date.now()}`, redirect_url: parsed.data.redirectUrl }),
     });
     res.json(data);
   } catch (error) {
@@ -198,7 +230,8 @@ socialConnectRouter.get("/social-connect/accounts", async (req, res) => {
   try {
     res.json({ accounts: await ownedSocialAccounts(req) });
   } catch (error) {
-    res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
+    const typed = error as { statusCode?: number };
+    res.status(typed.statusCode ?? 502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
 });
 
@@ -240,6 +273,31 @@ socialConnectRouter.post("/social-connect/posts", async (req, res) => {
     res.status(201).json(data);
   } catch (error) {
     res.status(502).json({ error: String(error).replace(/^Error:\s*/, "") });
+  }
+});
+
+socialConnectRouter.post("/social-connect/quick-post", async (req, res) => {
+  const parsed = quickPostSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+  try {
+    const context = await workspaceContext(req);
+    if (!hasWorkspacePermission(context, "publish")) return res.status(403).json({ error: "Publishing permission is required." });
+    if (!await canAccessProject(context, parsed.data.projectId)) return res.status(404).json({ error: "Project not found." });
+    const ownedAccounts = await ownedSocialAccounts(req);
+    const invalidAccount = parsed.data.platforms.find((requested) => !ownedAccounts.some((account) => account.id === requested.accountId && account.platform === requested.platform && account.status === "connected"));
+    if (invalidAccount) return res.status(403).json({ error: `The selected ${invalidAccount.platform} account is not connected to this user.` });
+    const created = await socialRequest("/api/social/posts", { method: "POST", body: JSON.stringify(toSocialPostPayload(parsed.data)) });
+    const record = created && typeof created === "object" ? created as Record<string, unknown> : {};
+    const nested = record.post && typeof record.post === "object" ? record.post as Record<string, unknown> : {};
+    const postId = typeof record.id === "string" ? record.id : typeof record.post_id === "string" ? record.post_id : typeof nested.id === "string" ? nested.id : "";
+    if (!postId) return res.status(502).json({ error: "Social Connect created the draft but did not return a post ID." });
+    const published = await socialRequest(`/api/social/posts/${encodeURIComponent(postId)}/post-now`, { method: "POST", body: JSON.stringify({}) });
+    assertLiveSocialDelivery(published);
+    await prisma.$transaction(async (tx) => recordWorkspaceActivity(tx, { context, action: "social_quick_post.published", entityType: "social_quick_post", entityId: postId, projectId: parsed.data.projectId, nextJson: { postId, title: parsed.data.title, platforms: parsed.data.platforms.map((item) => item.platform), externalReference: parsed.data.externalReference }, metadataJson: { executionPlanBypassed: true, userConfirmed: true } }));
+    res.json({ postId, created, published, quickPost: true });
+  } catch (error) {
+    const typed = error as { statusCode?: number };
+    res.status(typed.statusCode ?? 502).json({ error: String(error).replace(/^Error:\s*/, "") });
   }
 });
 
@@ -289,6 +347,7 @@ socialConnectRouter.post("/social-connect/posts/:postId/post-now", async (req, r
     try {
       const data = await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}/post-now`, { method: "POST", body: JSON.stringify({}) });
       const checked = socialDeliveryState(data) === "pending" ? await socialRequest(`/api/social/posts/${encodeURIComponent(req.params.postId)}`) : data;
+      assertLiveSocialDelivery(checked);
       const status = socialDeliveryState(checked);
       await verifyTaskPublishing(context, task.id, { attemptId, status, externalId: req.params.postId, error: status === "failed" ? "Social provider reported that publishing failed." : undefined, trustedVerification: true });
       res.json(data);

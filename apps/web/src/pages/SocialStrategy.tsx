@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedProject, SocialCalendarPost, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
@@ -273,7 +273,10 @@ type SocialPostPlatform = {
 
 type SocialPublisherProps = {
   websiteId: string;
+  projectId?: string | null;
   strategy?: SocialStrategyType | null;
+  providerAccounts?: SocialConnectAccount[];
+  initialQuick?: boolean;
   onPostUpdated?: (post: SocialCalendarPost) => void;
 };
 
@@ -310,7 +313,7 @@ function PrettyJson({ value }: { value: unknown }) {
   return <pre className="max-h-80 overflow-auto rounded-lg bg-slate-950 p-3 text-xs leading-5 text-slate-100">{JSON.stringify(value, null, 2)}</pre>;
 }
 
-function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisherProps) {
+function SocialPublisher({ websiteId, projectId, strategy, providerAccounts, initialQuick = false, onPostUpdated }: SocialPublisherProps) {
   const strategyPosts = strategy?.posts ?? [];
   const defaultPost = strategyPosts[0] ?? null;
   const savedPublishingProfile = campaignPublishingProfile(strategy);
@@ -318,7 +321,7 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
   const [selectedPostId, setSelectedPostId] = useState(defaultPost?.id ?? "");
   const [selectedFacebookAccountId, setSelectedFacebookAccountId] = useState("");
   const [selectedInstagramAccountId, setSelectedInstagramAccountId] = useState("");
-  const [publisherTab, setPublisherTab] = useState<"post" | "schedule" | "manage">("post");
+  const [publisherTab, setPublisherTab] = useState<"post" | "schedule" | "quick" | "manage">(initialQuick ? "quick" : "post");
   const [title, setTitle] = useState(defaultPost?.topic ?? strategy?.monthlyTheme ?? "Social post");
   const [caption, setCaption] = useState(defaultPost?.caption ?? "");
   const [imageUrl, setImageUrl] = useState(defaultPost?.imageUrl ?? "");
@@ -332,6 +335,11 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
   const [logsResult, setLogsResult] = useState<unknown>(null);
   const [calendarResult, setCalendarResult] = useState<unknown>(null);
   const [approvedPostIds, setApprovedPostIds] = useState<string[]>(strategyPosts.filter((post) => ["approved", "scheduled", "published"].includes(post.status)).map((post) => post.id));
+  const [quickContext, setQuickContext] = useState("");
+  const [quickGenerateImage, setQuickGenerateImage] = useState(true);
+  const [quickConfirmed, setQuickConfirmed] = useState(false);
+  const [quickPublishState, setQuickPublishState] = useState<"idle" | "publishing" | "published" | "failed">("idle");
+  const quickPublishingRef = useRef(false);
 
   const connectedAccounts = accounts.filter((account) => account.status === "connected");
   const facebookAccounts = connectedAccounts.filter((account) => account.platform === "facebook");
@@ -367,6 +375,10 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (providerAccounts) setAccounts(providerAccounts);
+  }, [providerAccounts]);
 
   useEffect(() => {
     const profile = campaignPublishingProfile(strategy);
@@ -414,6 +426,37 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
     if (!platforms.length) return "Select at least one connected Facebook or Instagram account.";
     if (platforms.some((platform) => platform.platform === "instagram") && !/^https:\/\//i.test(imageUrl.trim())) return "Instagram requires a public HTTPS image URL. Upload or host the approved image before scheduling.";
     return "";
+  };
+
+  const generateQuickPost = async () => {
+    if (!projectId) return setError("Select a project so AI can use its verified business context.");
+    if (quickContext.trim().length < 10) return setError("Describe what you want to post, including the purpose, offer or update, and desired action.");
+    const platform = selectedInstagramAccountId ? "instagram" : "facebook";
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const generated = await api.post<{ topic: string; caption: string; cta: string | null; hashtags: string[]; imageUrl: string | null }>("/api/social-strategy/quick-post/generate", { projectId, strategyId: strategy?.id, platform, context: quickContext, generateImage: quickGenerateImage });
+      setTitle(generated.topic);
+      setCaption([generated.caption, generated.cta, generated.hashtags.join(" ")].filter(Boolean).join("\n\n"));
+      if (generated.imageUrl) setImageUrl(generated.imageUrl);
+      setQuickConfirmed(false);
+      setQuickPublishState("idle");
+      setMessage("AI created a Quick Post with relevant hashtags. Review and confirm it before publishing.");
+    } catch (err) { setError(String(err).replace(/^Error:\s*/, "")); } finally { setBusy(false); }
+  };
+
+  const publishQuickPost = async () => {
+    if (quickPublishingRef.current) return;
+    if (!projectId) return setError("Select a project before publishing a Quick Post.");
+    const platforms = buildPlatforms();
+    const validation = validatePost(platforms);
+    if (validation) return setError(validation);
+    if (!quickConfirmed) return setError("Confirm the final content, image, hashtags, and destination accounts before posting.");
+    quickPublishingRef.current = true;
+    setBusy(true); setQuickPublishState("publishing"); setError(""); setMessage("");
+    try {
+      const result = await api.post<{ postId: string; published: unknown; quickPost: true }>("/api/social-connect/quick-post", { projectId, confirmed: true, externalReference: `social-strategy:${websiteId}:quick:${Date.now()}`, title, mainCaption: caption, imageUrl: /^https:\/\//i.test(imageUrl.trim()) ? imageUrl.trim() : undefined, timezone, platforms });
+      setCreatedPostId(result.postId); setStatusResult(result); setQuickPublishState("published"); setMessage(`Quick Post published successfully to ${platforms.map((item) => platformLabel(item.platform)).join(" and ")}. Post ID: ${result.postId}`); setQuickConfirmed(false);
+    } catch (err) { setQuickPublishState("failed"); setError(`Quick Post was not published. ${String(err).replace(/^Error:\s*/, "")}`); } finally { quickPublishingRef.current = false; setBusy(false); }
   };
 
   const createPost = async (mode: "draft" | "publish" | "schedule") => {
@@ -605,10 +648,11 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
         </div>
       </div>
       <div className="p-5">
-        <div className="mb-5 grid gap-2 rounded-lg border border-slate-300 bg-white p-2 shadow-sm sm:grid-cols-3">
+        <div className="mb-5 grid gap-2 rounded-lg border border-slate-300 bg-white p-2 shadow-sm sm:grid-cols-4">
           {[
             { id: "post" as const, label: "Post now" },
             { id: "schedule" as const, label: "Schedule" },
+            { id: "quick" as const, label: "Quick Post" },
             { id: "manage" as const, label: "Manage posts" },
           ].map((tab) => (
             <button key={tab.id} type="button" onClick={() => setPublisherTab(tab.id)} className={`rounded-md border px-4 py-3 text-sm font-bold shadow-sm transition ${publisherTab === tab.id ? "border-brand-500 bg-brand-600 text-white" : "border-slate-300 bg-slate-100 text-slate-800 hover:border-brand-300 hover:bg-brand-50 hover:text-brand-800"}`}>
@@ -643,7 +687,7 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
                   </div>
                 )}
               </div>
-              {strategyPosts.length > 0 && (
+              {strategyPosts.length > 0 && publisherTab !== "quick" && (
                 <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Use calendar post</span>
                   <select value={selectedPostId} onChange={(event) => applyCalendarPost(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
@@ -651,6 +695,14 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
                   </select>
                   {selectedPost && <span className={`mt-2 block rounded-lg px-3 py-2 text-xs font-bold ${selectedPostApproved ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-800"}`}>{selectedPostApproved ? "Approved for publishing" : "Review and approve this calendar post before external publishing."}</span>}
                 </label>
+              )}
+              {publisherTab === "quick" && (
+                <div className="space-y-3 rounded-xl border border-violet-200 bg-violet-50 p-4">
+                  <div><div className="text-sm font-bold text-violet-950">AI Quick Post</div><p className="mt-1 text-xs leading-5 text-violet-800">Publish immediately without an Execution Plan. Your instructions control the post; compatible project context helps keep details accurate.</p></div>
+                  <label className="block"><span className="mb-1 block text-sm font-medium text-slate-700">What should this post communicate?</span><textarea value={quickContext} onChange={(event) => setQuickContext(event.target.value)} rows={4} placeholder="Example: Announce our Saturday workshop for first-time home buyers, focus on practical preparation, and invite people to book a place. Do not mention a price." className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /></label>
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-700"><input type="checkbox" checked={quickGenerateImage} onChange={(event) => setQuickGenerateImage(event.target.checked)} /> Generate a new AI image</label>
+                  <Button variant="ghost" onClick={() => void generateQuickPost()} disabled={busy}>{busy ? "Generating…" : "Generate content, image & hashtags"}</Button>
+                </div>
               )}
               <Input label="Post title" value={title} onChange={setTitle} />
               <label className="block">
@@ -669,8 +721,19 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
                 </div>
               )}
               <div className="flex flex-wrap gap-2">
-                {selectedPost && !selectedPostApproved && <Button variant="ghost" onClick={() => void approveSelectedPost()} disabled={busy}>Approve selected post</Button>}
-                {publisherTab === "post" ? (
+                {publisherTab !== "quick" && selectedPost && !selectedPostApproved && <Button variant="ghost" onClick={() => void approveSelectedPost()} disabled={busy}>Approve selected post</Button>}
+                {publisherTab === "quick" ? (
+                  <div className="w-full space-y-3">
+                    {quickPublishState !== "published" && <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950"><input className="mt-1" type="checkbox" checked={quickConfirmed} disabled={quickPublishState === "publishing"} onChange={(event) => setQuickConfirmed(event.target.checked)} /><span>I have reviewed the final caption, hashtags, image, and selected accounts. Publish immediately without an Execution Plan.</span></label>}
+                    {quickPublishState === "publishing" ? (
+                      <div role="status" aria-live="polite" className="flex items-center gap-3 rounded-xl border border-violet-200 bg-violet-50 px-4 py-3 text-sm font-semibold text-violet-900"><span className="h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-violet-200 border-t-violet-700" aria-hidden="true" /><span>Publishing your Quick Post now… Please keep this window open until confirmation appears.</span></div>
+                    ) : quickPublishState === "published" ? (
+                      <div role="status" aria-live="polite" className="rounded-xl border border-emerald-300 bg-emerald-50 px-4 py-3 text-sm text-emerald-900"><div className="font-bold">✓ Quick Post published successfully</div><div className="mt-1">The publishing service accepted the post{createdPostId ? ` · Post ID: ${createdPostId}` : ""}.</div></div>
+                    ) : (
+                      <Button onClick={() => void publishQuickPost()} disabled={busy || !quickConfirmed}>{quickPublishState === "failed" ? "Retry publishing Quick Post" : "Publish Quick Post now"}</Button>
+                    )}
+                  </div>
+                ) : publisherTab === "post" ? (
                   <>
                     <Button variant="ghost" onClick={() => void createPost("draft")} disabled={busy}>Create draft</Button>
                     <Button onClick={() => void createPost("publish")} disabled={busy}>Post now</Button>
@@ -683,7 +746,7 @@ function SocialPublisher({ websiteId, strategy, onPostUpdated }: SocialPublisher
               {error && <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
             </div>
             <div className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
-              <div className="text-sm font-semibold text-charcoal-800">{publisherTab === "post" ? "Publishing summary" : "Scheduling summary"}</div>
+              <div className="text-sm font-semibold text-charcoal-800">{publisherTab === "schedule" ? "Scheduling summary" : publisherTab === "quick" ? "Quick Post summary" : "Publishing summary"}</div>
               <div className="mt-3 space-y-2 text-sm leading-6 text-charcoal-600">
                 <div><span className="font-semibold text-charcoal-800">Facebook:</span> {facebookAccounts.find((account) => account.id === selectedFacebookAccountId)?.account_name ?? "Not selected"}</div>
                 <div><span className="font-semibold text-charcoal-800">Instagram:</span> {instagramAccounts.find((account) => account.id === selectedInstagramAccountId)?.account_name ?? "Not selected"}</div>
@@ -791,6 +854,7 @@ export default function SocialStrategy() {
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(ENABLED_CAMPAIGN_PLATFORMS);
   const [mode, setMode] = useState<"posting" | "strategy" | "performance">("strategy");
+  const [quickPostOpen, setQuickPostOpen] = useState(false);
   const [step, setStep] = useState<WizardStep>("strategy");
   const [loading, setLoading] = useState(true);
   const [pageError, setPageError] = useState("");
@@ -1204,9 +1268,12 @@ export default function SocialStrategy() {
   const loadProviderAccounts = async () => {
     try {
       const result = await api.get<SocialConnectAccountsResponse>("/api/social-connect/accounts");
-      setProviderAccounts(result.accounts ?? []);
+      const accounts = result.accounts ?? [];
+      setProviderAccounts(accounts);
+      return accounts;
     } catch {
       setProviderAccounts([]);
+      return [];
     }
   };
 
@@ -1226,11 +1293,33 @@ export default function SocialStrategy() {
     }
   };
 
+  const disconnectSocialProvider = async (platform: "facebook" | "instagram") => {
+    const accounts = providerAccounts.filter((account) => account.platform === platform && account.status === "connected");
+    if (!accounts.length) return;
+    if (!window.confirm(`Disconnect all ${accounts.length} connected ${platformLabel(platform)} account${accounts.length === 1 ? "" : "s"}? Existing scheduled posts may need to be reviewed or cancelled separately.`)) return;
+    setProviderActionBusy(true);
+    setPageError("");
+    try {
+      for (const account of accounts) await api.delete(`/api/social-connect/accounts/${encodeURIComponent(account.id)}`);
+      const removedIds = new Set(accounts.map((account) => account.id));
+      setProviderAccounts((items) => items.filter((item) => !removedIds.has(item.id)));
+      setPostingProfileAccountIds((items) => items.filter((id) => !removedIds.has(id)));
+      setWorkflowMessage(`${platformLabel(platform)} was completely disconnected.`);
+    } catch (err) {
+      await loadProviderAccounts();
+      setPageError(`Some ${platformLabel(platform)} accounts may not have disconnected. ${String(err).replace(/^Error:\s*/, "")}`);
+    } finally {
+      setProviderActionBusy(false);
+    }
+  };
+
   const connectSocialProvider = async (provider: "facebook" | "instagram") => {
     setProviderActionBusy(true);
     setPageError("");
     try {
-      const redirectUrl = `${window.location.origin}${window.location.pathname}?project=${encodeURIComponent(websiteId)}${selectedProject?.id ? `&projectId=${encodeURIComponent(selectedProject.id)}` : ""}`;
+      const returnParams = new URLSearchParams({ project: websiteId });
+      if (selectedProject?.id) returnParams.set("projectId", selectedProject.id);
+      const redirectUrl = `${window.location.origin}/social-oauth-return.html?${returnParams.toString()}`;
       const result = await api.post<{ authorization_url: string }>(`/api/social-connect/accounts/connect/${provider}`, { redirectUrl });
       window.location.href = result.authorization_url;
     } catch (err) {
@@ -1265,7 +1354,29 @@ export default function SocialStrategy() {
 
   useEffect(() => {
     void load();
-    void loadProviderAccounts();
+    const oauthStatus = searchParams.get("social_connect_status") ?? searchParams.get("status");
+    const oauthProvider = searchParams.get("provider");
+    const oauthAccountCount = searchParams.get("accounts_count") ?? searchParams.get("account_count");
+    if (oauthStatus === "connected" && (oauthProvider === "facebook" || oauthProvider === "instagram" || oauthProvider === "meta")) {
+      setMode("posting");
+      setWorkflowMessage(`${platformLabel(oauthProvider === "meta" ? "facebook" : oauthProvider)} connected. ${oauthAccountCount ? `${oauthAccountCount} account${oauthAccountCount === "1" ? "" : "s"} returned. ` : ""}Loading connected accounts…`);
+      void (async () => {
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          if (attempt > 0) await new Promise((resolve) => window.setTimeout(resolve, attempt * 750));
+          const accounts = await loadProviderAccounts();
+          const connected = accounts.some((account) => account.status === "connected" && (
+            oauthProvider === "meta" || account.platform === oauthProvider
+          ));
+          if (connected) {
+            setWorkflowMessage(`${platformLabel(oauthProvider === "meta" ? "facebook" : oauthProvider)} connected successfully${oauthAccountCount ? ` — ${oauthAccountCount} account${oauthAccountCount === "1" ? "" : "s"} returned` : ""}.`);
+            return;
+          }
+        }
+        setWorkflowMessage("Facebook authorization completed, but the connected accounts are still syncing. Refresh this page in a few seconds if they do not appear.");
+      })();
+    } else {
+      void loadProviderAccounts();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -1727,7 +1838,7 @@ export default function SocialStrategy() {
       {pageError && <div className="order-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
       {workflowMessage && <div className="order-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{workflowMessage}</div>}
 
-      <div className="order-3 grid gap-4 md:grid-cols-3">
+      <div className="order-3 grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <button type="button" onClick={() => setMode("strategy")} className={`rounded-xl border p-5 text-left shadow-sm transition ${mode === "strategy" ? "border-brand-300 bg-brand-50" : "border-slate-200 bg-white hover:border-brand-200 hover:bg-slate-50"}`}>
           <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">1 · Strategy</div>
           <div className="mt-2 text-lg font-bold text-charcoal-900">Build the Growth-aligned plan</div>
@@ -1743,7 +1854,22 @@ export default function SocialStrategy() {
           <div className="mt-2 text-lg font-bold text-charcoal-900">Measure and improve</div>
           <p className="mt-2 text-sm leading-6 text-charcoal-500">Feed engagement, clicks, leads, and conversions into Growth and Next Best Action.</p>
         </button>
+        <button type="button" onClick={() => setQuickPostOpen(true)} disabled={!selectedProject?.id} className="rounded-xl border border-violet-300 bg-violet-600 p-5 text-left text-white shadow-sm transition hover:bg-violet-700 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-200 disabled:text-slate-500">
+          <div className="text-xs font-semibold uppercase tracking-wide text-violet-100">Quick Post</div>
+          <div className="mt-2 text-lg font-bold">Create and post now</div>
+          <p className="mt-2 text-sm leading-6 text-violet-100">Open a popup to generate content, an image, and hashtags, then publish immediately without an Execution Plan.</p>
+        </button>
       </div>
+
+      {quickPostOpen && selectedProject?.id && (
+        <div className="fixed inset-0 z-[180] flex items-start justify-center overflow-y-auto bg-slate-950/70 p-4 sm:p-8" role="dialog" aria-modal="true" aria-label="Quick Post">
+          <button type="button" className="fixed inset-0" aria-label="Close Quick Post" onClick={() => setQuickPostOpen(false)} />
+          <div className="relative z-10 w-full max-w-6xl">
+            <div className="mb-3 flex items-center justify-between rounded-xl bg-white px-5 py-3 shadow-xl"><div><div className="font-bold text-slate-950">Quick Post</div><div className="text-xs text-slate-500">Generate, review, and publish immediately.</div></div><button type="button" onClick={() => setQuickPostOpen(false)} className="grid h-9 w-9 place-items-center rounded-lg border border-slate-200 text-xl text-slate-600">×</button></div>
+            <SocialPublisher websiteId={websiteId} projectId={selectedProject.id} strategy={selectedStrategy ?? activeStrategy} providerAccounts={providerAccounts} initialQuick onPostUpdated={replaceCalendarPost} />
+          </div>
+        </div>
+      )}
 
       {mode === "posting" && (
         websiteId ? (
@@ -1771,7 +1897,10 @@ export default function SocialStrategy() {
                       </div>
                       <div className="mt-1.5 border-t border-slate-100 pt-1.5">
                         {connected ? (
-                          <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700"><span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[8px] text-white">✓</span>Connected</span>
+                          <div className="flex flex-col items-stretch gap-1.5">
+                            <span className="flex items-center gap-1 text-[10px] font-bold text-emerald-700"><span className="flex h-3.5 w-3.5 items-center justify-center rounded-full bg-emerald-500 text-[8px] text-white">✓</span>Connected</span>
+                            {connectable && <button type="button" onClick={() => void disconnectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="w-full rounded border border-red-200 bg-white px-2 py-1 text-[9px] font-bold text-red-700 hover:bg-red-50 disabled:opacity-50">Disconnect all</button>}
+                          </div>
                         ) : connectable ? (
                           <button type="button" onClick={() => void connectSocialProvider(provider.platform as "facebook" | "instagram")} disabled={providerActionBusy} className="rounded bg-brand-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-brand-700 disabled:opacity-60">Connect</button>
                         ) : (
@@ -1800,7 +1929,7 @@ export default function SocialStrategy() {
                 <b>Coming soon:</b> LinkedIn, YouTube, TikTok, X, Threads, Pinterest, and Google Business publishing tools are visible for planning but cannot yet be connected or scheduled. Facebook and Instagram are currently available.
               </div>
             </Card>
-            <SocialPublisher websiteId={websiteId} strategy={selectedStrategy ?? activeStrategy} onPostUpdated={replaceCalendarPost} />
+            <SocialPublisher websiteId={websiteId} projectId={selectedProject?.id} strategy={selectedStrategy ?? activeStrategy} providerAccounts={providerAccounts} onPostUpdated={replaceCalendarPost} />
           </div>
         ) : (
           <Card className="order-4 p-6 text-center">

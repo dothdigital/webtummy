@@ -10,6 +10,7 @@ import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, work
 import { approvedStrategyContext } from "../strategy-ai.js";
 import { storeGeneratedImage } from "../generated-assets.js";
 import { socialImageQueue } from "../queue.js";
+import { buildQuickPostPrompt } from "../quick-post-prompt.js";
 
 export const socialStrategyRouter = Router();
 socialStrategyRouter.use(requireAuth);
@@ -182,6 +183,14 @@ const socialPostChangeRequestSchema = z.object({
   changeContent: z.boolean().default(true),
   changeImage: z.boolean().default(false),
 }).refine((input) => input.changeContent || input.changeImage, { message: "Choose content, image, or both." });
+
+const quickPostGenerateSchema = z.object({
+  projectId: z.string().min(1).max(191),
+  strategyId: z.string().min(1).max(191).optional(),
+  platform: z.enum(["facebook", "instagram"]),
+  context: z.string().trim().min(10).max(6000),
+  generateImage: z.boolean().default(true),
+});
 
 type SocialProfileInput = z.infer<typeof socialProfileSchema>;
 type CompetitorInput = z.infer<typeof competitorSchema>;
@@ -1045,6 +1054,51 @@ socialStrategyRouter.delete("/social-strategy/campaigns/:strategyId", async (req
     await tx.socialStrategy.delete({ where: { id: strategy.id } });
   });
   res.json({ deletedCampaignId: strategy.id, ...(await socialResponse(req, strategy.websiteId, strategy.projectId)) });
+});
+
+socialStrategyRouter.post("/social-strategy/quick-post/generate", async (req, res) => {
+  const parsed = quickPostGenerateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
+  const context = await workspaceContext(req);
+  if (!hasWorkspacePermission(context, "run_ai_analysis")) return res.status(403).json({ error: "AI generation permission is required." });
+  if (!await canAccessProject(context, parsed.data.projectId)) return res.status(404).json({ error: "Project not found." });
+  const project = await prisma.project.findUnique({ where: { id: parsed.data.projectId }, include: { businessProfile: true, intakeAnswers: true, strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 } } });
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const strategy = parsed.data.strategyId ? await prisma.socialStrategy.findFirst({ where: { id: parsed.data.strategyId, projectId: project.id } }) : null;
+  try {
+    if (!config.openaiApiKey) return res.status(409).json({ error: "Configure OpenAI before generating a Quick Post." });
+    const generated = await centralAiJson({
+      system: "Create one immediately publishable social post. The user's explicit instruction is authoritative; saved project data is secondary and must never replace a conflicting requested topic or business. Never invent prices, offers, credentials, statistics, locations, results, testimonials, or claims. Return JSON only.",
+      prompt: buildQuickPostPrompt({
+        platform: parsed.data.platform,
+        userInstruction: parsed.data.context,
+        projectContext: {
+          businessName: project.businessName || project.name,
+          goal: strategy?.goal || project.primaryGoal,
+          audience: strategy?.audience,
+          businessProfile: project.businessProfile,
+          serviceFocus: strategy?.productServiceFocus || project.niche,
+          cta: strategy?.campaignCta,
+          tone: strategy?.tone || project.brandVoice,
+          locations: project.targetLocations,
+          intake: project.intakeAnswers,
+          approvedStrategy: project.strategyPlans[0],
+          socialStrategy: strategy?.intelligenceSnapshotJson,
+        },
+      }),
+      temperature: 0.35, maxInputBytes: 22000, maxOutputTokens: 1800,
+    });
+    const content = socialPostRevisionSchema.parse(generated.result);
+    let imageUrl: string | null = null;
+    if (parsed.data.generateImage) {
+      const dataUrl = await reviseSocialPostImage({ topic: content.topic, caption: content.caption, targetKeyword: null, targetUrl: null, platform: parsed.data.platform, imageSuggestion: content.imageSuggestion, strategy: { campaignName: "Quick Post", imageDirection: strategy?.imageDirection || null, audience: strategy?.audience || null, intelligenceSnapshotJson: (strategy?.intelligenceSnapshotJson || { businessProfile: project.businessProfile, targetLocations: project.targetLocations }) as Prisma.JsonValue, project } }, parsed.data.context);
+      imageUrl = await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, filename: `quick-post-${Date.now()}.png`, dataUrl, source: "openai_generated", visibility: "published", altText: content.topic.slice(0, 500), sourceEntityType: "social_quick_post", sourceEntityId: project.id, createdByUserId: context.membership.userId });
+    }
+    await prisma.$transaction(async (tx) => recordWorkspaceActivity(tx, { context, action: "social_quick_post.generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { platform: parsed.data.platform, topic: content.topic, hashtags: content.hashtags, imageGenerated: Boolean(imageUrl) } }));
+    res.json({ ...content, imageUrl });
+  } catch (error) {
+    res.status((error as { statusCode?: number }).statusCode ?? 502).json({ error: String(error).replace(/^Error:\s*/, "") });
+  }
 });
 
 socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {

@@ -4,7 +4,9 @@ import { z } from "zod";
 import { requireAuth, requireRole } from "../middleware.js";
 
 export const changeIntelligenceRouter = Router();
-changeIntelligenceRouter.use(requireAuth, requireRole("super_admin"));
+// Scope the admin guard to this router's actual prefix. This router is mounted
+// at /api, so an unscoped guard would intercept unrelated customer routes.
+changeIntelligenceRouter.use("/admin/change-intelligence", requireAuth, requireRole("super_admin"));
 
 const statusTransitions: Record<string, readonly string[]> = {
   detected: ["review", "ignored"], review: ["ignored", "investigate", "validated"],

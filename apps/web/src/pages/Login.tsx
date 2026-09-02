@@ -156,6 +156,8 @@ function AuthInput({
   onChange,
   placeholder,
   autoComplete,
+  passwordVisible,
+  onTogglePassword,
 }: {
   label: string;
   icon: string;
@@ -164,6 +166,8 @@ function AuthInput({
   onChange: (value: string) => void;
   placeholder?: string;
   autoComplete?: string;
+  passwordVisible?: boolean;
+  onTogglePassword?: () => void;
 }) {
   return (
     <label className="block">
@@ -178,8 +182,15 @@ function AuthInput({
           onChange={(event) => onChange(event.target.value)}
           placeholder={placeholder}
           autoComplete={autoComplete}
-          className="h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 pr-4 text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base"
+          className={`h-11 w-full rounded-lg border border-slate-200 bg-white pl-11 ${onTogglePassword ? "pr-12" : "pr-4"} text-sm text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-brand-400 focus:ring-2 focus:ring-brand-100 xl:h-12 xl:text-base`}
         />
+        {onTogglePassword && (
+          <button type="button" onClick={onTogglePassword} aria-label={passwordVisible ? "Hide password" : "Show password"} aria-pressed={passwordVisible} className="absolute right-3 top-1/2 grid h-8 w-8 -translate-y-1/2 place-items-center rounded-md text-slate-500 hover:bg-slate-100 hover:text-slate-800 focus:outline-none focus:ring-2 focus:ring-brand-300">
+            <svg viewBox="0 0 24 24" aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              {passwordVisible ? <><path d="M3 3l18 18" /><path d="M10.6 10.6a2 2 0 0 0 2.8 2.8" /><path d="M9.9 4.2A10.8 10.8 0 0 1 12 4c5.5 0 9 5 9 5a16 16 0 0 1-2.1 2.8" /><path d="M6.6 6.6C4.3 8 3 10 3 10s3.5 5 9 5c1 0 2-.2 2.9-.5" /></> : <><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" /><circle cx="12" cy="12" r="3" /></>}
+            </svg>
+          </button>
+        )}
       </span>
     </label>
   );
@@ -302,6 +313,7 @@ function SignInForm({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [passwordVisible, setPasswordVisible] = useState(false);
   const [err, setErr] = useState<{ email?: string; password?: string; form?: string }>({});
   const [verificationMessage, setVerificationMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -356,7 +368,7 @@ function SignInForm({
           <FieldError msg={err.email} />
         </div>
         <div>
-          <AuthInput label="Password" icon="password" type="password" value={password} onChange={setPassword} autoComplete="current-password" placeholder="Enter your password" />
+          <AuthInput label="Password" icon="password" type={passwordVisible ? "text" : "password"} value={password} onChange={setPassword} autoComplete="current-password" placeholder="Enter your password" passwordVisible={passwordVisible} onTogglePassword={() => setPasswordVisible((visible) => !visible)} />
           <FieldError msg={err.password} />
         </div>
       </div>
