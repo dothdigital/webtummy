@@ -1211,7 +1211,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
       {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} capacityEstimate={opportunityCapacityEstimate} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onDeleteData={deleteOpportunityData} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} onAction={runStrategyAction} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} workflowController={workflowController} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
         <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-slate-200 bg-white px-6 py-12 shadow-sm">
@@ -1928,7 +1928,7 @@ function StrategyGenerateConfirmModal({ estimate, onCancel, onConfirm }: { estim
   </div>;
 }
 
-function StrategyScreen({ data, busy, onAction }: { data: ModuleData; busy: "generate" | "analyze" | "approve" | "execution" | null; onAction: (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string; confirmed?: boolean }) => Promise<StrategyActionResult | undefined> }) {
+function StrategyScreen({ data, busy, workflowController, onAction }: { data: ModuleData; busy: "generate" | "analyze" | "approve" | "execution" | null; workflowController: ProjectWorkflowControllerState | null; onAction: (action: "generate" | "analyze" | "approve" | "execution", options?: { revisionComment?: string; confirmed?: boolean }) => Promise<StrategyActionResult | undefined> }) {
   const navigate = useNavigate();
   const [activeTab, setActiveTab] = useState<StrategyTab>("overview");
   const [inlineNotice, setInlineNotice] = useState<{ tone: "info" | "success" | "error"; message: string } | null>(null);
