@@ -147,6 +147,10 @@ export function completeWelcome(workspaceId?: string | null) {
   localStorage.removeItem(WELCOME_USER_KEY);
 }
 
+export function resetWelcome(workspaceId?: string | null) {
+  if (workspaceId) sessionStorage.removeItem(WELCOME_WORKSPACE_PREFIX + workspaceId);
+}
+
 export function getActiveClientId() {
   return activeClientId;
 }

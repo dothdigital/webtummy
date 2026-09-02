@@ -8,6 +8,7 @@ import {
   resetPassword as apiResetPassword,
   fetchMe,
   SESSION_EXPIRED_EVENT,
+  resetWelcome,
   type AppUser,
 } from "./api.js";
 import { bindBackgroundJobsScope } from "./background-jobs.js";
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     const nextUser = await apiLogin(email, password);
     bindBackgroundJobsScope(`${nextUser.id}:${nextUser.workspace?.id ?? "no-workspace"}`);
+    if (nextUser.workspace?.onboardingRequired) resetWelcome(nextUser.workspace.id);
     setUser(nextUser);
   };
   const register = async (input: { name: string; workspaceType: string; email: string; password: string; captchaToken?: string }) => {
