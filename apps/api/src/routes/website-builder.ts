@@ -1387,7 +1387,7 @@ async function approvedWordPressWebFontCss(typography: WebsiteModel["designSyste
 // Bump whenever WordPress synchronization behavior changes so an already
 // successful draft is not returned before the connector can refresh its theme
 // files and managed navigation.
-const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.16.0";
+const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.17.0";
 const STATIC_HTML_RENDERER_VERSION = "senuke-static-html-1.1.0";
 const STATIC_SFTP_RENDERER_VERSION = "senuke-static-sftp-1.1.0";
 

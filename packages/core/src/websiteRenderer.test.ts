@@ -124,6 +124,8 @@ describe("Approved Release website renderer", () => {
     };
     const css = String(createStaticWebsiteFiles(alignedModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
     expect(css).toContain(".senuke-align-center");
+    expect(css).toContain(".senuke-card,.senuke-faq details,.senuke-contact-form form");
+    expect(css).toContain("color-mix(in srgb,var(--senuke-primary) 22%,var(--senuke-background))");
   });
 
   it("renders nested section columns, colours, and a saved background image for static and WordPress output", () => {
