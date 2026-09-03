@@ -8156,9 +8156,14 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/a
   const nextVersion = page.version + 1;
   const contentJson = canonicalContentFromComponents(page.contentJson, components) as Prisma.InputJsonValue;
   const pageWasApproved = ["approved", "deployed", "published"].includes(page.status);
+  const placementAlreadyApplied = currentComponents.some((component) =>
+    (input.placement === "hero" && component.componentId === "hero.local_service" && component.props.imageAssetId === asset.id)
+    || (["banner", "inline"].includes(input.placement) && component.componentId === "media.image" && component.props.imageAssetId === asset.id)
+    || (input.placement === "library" && asset.role === "library"),
+  );
   const result = await prisma.$transaction(async (tx) => {
     const updatedAsset = await tx.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { role: input.placement, status: "approved", approvedAt: new Date() } });
-    await tx.websiteBuildPageVersion.upsert({
+    if (!placementAlreadyApplied) await tx.websiteBuildPageVersion.upsert({
       where: { pageId_version: { pageId: page.id, version: nextVersion } },
       update: { briefJson: page.briefJson, contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: input.placement === "none" ? "Confirmed that this page does not require an image." : `Approved image and placed it as ${input.placement}.`, createdById: context.membership.userId },
       create: { pageId: page.id, version: nextVersion, briefJson: page.briefJson, contentJson, seoJson: page.seoJson, layoutJson: page.layoutJson, comment: input.placement === "none" ? "Confirmed that this page does not require an image." : `Approved image and placed it as ${input.placement}.`, createdById: context.membership.userId },
@@ -8166,15 +8171,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/a
     // Approving an image placement is the approval for this media-only
     // revision. Preserve an existing content approval while the assembled
     // preview and website-level Quality Review are correctly invalidated.
-    const updatedPage = await tx.websiteBuildPage.update({
-      where: { id: page.id },
-      data: {
-        contentJson,
-        version: nextVersion,
-        status: pageWasApproved ? "approved" : page.status,
-        approvedAt: pageWasApproved ? page.approvedAt ?? new Date() : page.approvedAt,
-      },
-    });
+    const updatedPage = placementAlreadyApplied
+      ? page
+      : await tx.websiteBuildPage.update({
+        where: { id: page.id },
+        data: {
+          contentJson,
+          version: nextVersion,
+          status: pageWasApproved ? "approved" : page.status,
+          approvedAt: pageWasApproved ? page.approvedAt ?? new Date() : page.approvedAt,
+        },
+      });
     await tx.websiteBuild.update({
       where: { id: build.id },
       data: {
@@ -8194,7 +8201,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/a
     });
     return { updatedAsset, updatedPage };
   });
-  await recordWorkspaceActivity(prisma, { context, action: "website_builder.image_placed", entityType: "website_build_page", entityId: page.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { assetId: asset.id, placement: input.placement, pageVersion: nextVersion } });
+  await recordWorkspaceActivity(prisma, { context, action: "website_builder.image_placed", entityType: "website_build_page", entityId: page.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { assetId: asset.id, placement: input.placement, pageVersion: placementAlreadyApplied ? page.version : nextVersion, imageOnlyRevision: placementAlreadyApplied } });
   res.json({ asset: result.updatedAsset, page: result.updatedPage, placement: input.placement });
 });
 

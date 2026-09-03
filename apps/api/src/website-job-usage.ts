@@ -19,7 +19,18 @@ export async function reserveWebsiteJobUsage(jobId: string) {
 
   const input = objectValue(job.inputJson);
   const mode = String(input.mode || "website_generation");
-  const revision = websiteJobIsIncludedRevision(input);
+  const earlierCompletedWebsiteBuild = mode === "website_generation"
+    ? await prisma.websiteBuildJob.findFirst({
+        where: {
+          buildId: job.buildId,
+          id: { not: job.id },
+          status: "completed",
+          inputJson: { path: ["mode"], equals: "website_generation" },
+        },
+        select: { id: true },
+      })
+    : null;
+  const revision = websiteJobIsIncludedRevision(input) || Boolean(earlierCompletedWebsiteBuild);
   // User-requested revisions replace previously generated work and are
   // included. They still run through the worker, but must not reserve or
   // commit Capacity a second time.
