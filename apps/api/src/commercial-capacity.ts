@@ -2,12 +2,12 @@ import { prisma, type Prisma } from "@webtummy/db";
 
 type Db = typeof prisma | Prisma.TransactionClient;
 
-export const COMMERCIAL_CAPACITY_VERSION = 1;
+export const COMMERCIAL_CAPACITY_VERSION = 2;
 
 export const COMMERCIAL_PLAN_CAPACITY = {
-  entrepreneur: 2_000,
-  business: 5_000,
-  agency: 18_000,
+  entrepreneur: 4_000,
+  business: 10_000,
+  agency: 36_000,
   internal: 1_000_000,
 } as const;
 
@@ -89,7 +89,7 @@ export async function ensureWorkspaceCapacityAccount(workspaceId: string, db: Db
   if (existing) {
     const allowanceDelta = allowance - existing.includedAllowance;
     if (!allowanceDelta && existing.periodEnd.getTime() === periodEnd.getTime()) return existing;
-    return db.workspaceCapacityAccount.update({
+    const updated = await db.workspaceCapacityAccount.update({
       where: { id: existing.id },
       data: {
         includedAllowance: allowance,
@@ -98,6 +98,26 @@ export async function ensureWorkspaceCapacityAccount(workspaceId: string, db: Db
         pricingVersion: COMMERCIAL_CAPACITY_VERSION,
       },
     });
+    if (allowanceDelta) {
+      await db.workspaceCapacityTransaction.create({
+        data: {
+          workspaceId,
+          accountId: existing.id,
+          bucket: "included",
+          type: "adjustment",
+          amount: allowanceDelta,
+          balanceAfter: updated.includedBalance,
+          reason: `${planCode} monthly AI Capacity allowance updated`,
+          metadataJson: {
+            planCode,
+            pricingVersion: COMMERCIAL_CAPACITY_VERSION,
+            previousAllowance: existing.includedAllowance,
+            includedAllowance: allowance,
+          },
+        },
+      });
+    }
+    return updated;
   }
   const prior = await db.workspaceCapacityAccount.findFirst({
     where: { workspaceId, periodStart: { lt: periodStart } },

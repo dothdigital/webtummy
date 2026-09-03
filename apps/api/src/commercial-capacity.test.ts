@@ -7,7 +7,7 @@ describe("DEV-059 commercial capacity policy", () => {
     expect(canonicalCommercialPlanCode("personal")).toBe("entrepreneur");
     expect(canonicalCommercialPlanCode("growth")).toBe("business");
     expect(canonicalCommercialPlanCode("pro")).toBe("agency");
-    expect(COMMERCIAL_PLAN_CAPACITY).toMatchObject({ entrepreneur: 2_000, business: 5_000, agency: 18_000 });
+    expect(COMMERCIAL_PLAN_CAPACITY).toMatchObject({ entrepreneur: 4_000, business: 10_000, agency: 36_000 });
   });
 
   it("prices keyword research once per batch plus country and local checks", () => {

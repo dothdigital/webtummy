@@ -172,9 +172,9 @@ const commercialWorkflowPricing: Record<string, { units: number; model?: string;
 };
 
 const planDefaults: Record<string, { monthlyCredits: number; limits: Record<string, number | null> }> = {
-  entrepreneur: { monthlyCredits: 2_000, limits: {} },
-  business: { monthlyCredits: 5_000, limits: {} },
-  agency: { monthlyCredits: 18_000, limits: {} },
+  entrepreneur: { monthlyCredits: 4_000, limits: {} },
+  business: { monthlyCredits: 10_000, limits: {} },
+  agency: { monthlyCredits: 36_000, limits: {} },
   internal: { monthlyCredits: 1_000_000, limits: {} },
 };
 
