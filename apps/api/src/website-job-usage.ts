@@ -7,6 +7,11 @@ const objectValue = (value: unknown): Record<string, unknown> =>
 const stringList = (value: unknown) =>
   Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 
+export const websiteJobIsIncludedRevision = (value: unknown) => {
+  const input = objectValue(value);
+  return input.regenerate === true || input.regenerateImages === true;
+};
+
 export async function reserveWebsiteJobUsage(jobId: string) {
   const job = await prisma.websiteBuildJob.findUnique({ where: { id: jobId } });
   if (!job) throw new Error("Website build job not found.");
@@ -14,10 +19,15 @@ export async function reserveWebsiteJobUsage(jobId: string) {
 
   const input = objectValue(job.inputJson);
   const mode = String(input.mode || "website_generation");
-  const revision = input.regenerate === true || input.regenerateImages === true;
+  const revision = websiteJobIsIncludedRevision(input);
+  // User-requested revisions replace previously generated work and are
+  // included. They still run through the worker, but must not reserve or
+  // commit Capacity a second time.
+  if (revision) return job;
   const recovery = Boolean(input.resumedFromJobId);
   const pageCount = Math.max(1, stringList(input.pageIds).length);
   const generateImages = input.generateImages !== false;
+  const billPageContent = mode === "content_generation" || input.generateMissingContent === true;
   const imageCount = mode === "image_generation"
     ? Math.max(1, Number(input.imageCount || pageCount))
     : generateImages ? pageCount + 2 : 0;
@@ -43,7 +53,7 @@ export async function reserveWebsiteJobUsage(jobId: string) {
         actionKey,
         inputUnits: pageCount,
         idempotencyKey,
-        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, revision, recovery, billingReason: revision ? "user_requested_revision" : recovery ? "failed_job_recovery" : "new_generation", execution: "background_job" },
+        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, billPageContent, revision, recovery, billingReason: recovery ? "failed_job_recovery" : "new_generation", execution: "background_job" },
       });
 
   const linked = await prisma.$transaction(async (tx) => {

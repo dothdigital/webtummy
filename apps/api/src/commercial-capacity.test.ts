@@ -19,10 +19,22 @@ describe("DEV-059 commercial capacity policy", () => {
     })).toBe(450);
   });
 
-  it("prices website generation by base, pages, and generated images", () => {
+  it("does not charge approved page content again during website assembly", () => {
+    expect(calculateWorkflowUnits("website_page_generate", 1, {
+      inputUnits: 9,
+      metadata: { pageCount: 9, imageCount: 11, mode: "website_generation" },
+      pricingModel: "website",
+      pricingConfig: { baseUnits: 250, perPageUnits: 25, perImageUnits: 25 },
+    })).toBe(525);
     expect(calculateWorkflowUnits("website_page_generate", 1, {
       inputUnits: 18,
       metadata: { pageCount: 18, imageCount: 20, mode: "website_generation" },
+      pricingModel: "website",
+      pricingConfig: { baseUnits: 250, perPageUnits: 25, perImageUnits: 25 },
+    })).toBe(750);
+    expect(calculateWorkflowUnits("website_page_generate", 1, {
+      inputUnits: 18,
+      metadata: { pageCount: 18, imageCount: 20, mode: "website_generation", billPageContent: true },
       pricingModel: "website",
       pricingConfig: { baseUnits: 250, perPageUnits: 25, perImageUnits: 25 },
     })).toBe(1_200);

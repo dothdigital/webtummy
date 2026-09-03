@@ -2104,7 +2104,7 @@ async function settleWebsiteJobCapacity(jobId: string) {
       const requestedImages = Math.max(0, Number(metadata.imageCount || 0));
       const completedImages = Math.min(requestedImages, completedPageCount + 2);
       actualUnits = Math.max(0, Number(pricingConfig.baseUnits || 250))
-        + completedPageCount * perPageUnits
+        + (metadata.billPageContent === true ? completedPageCount * perPageUnits : 0)
         + completedImages * Math.max(0, Number(pricingConfig.perImageUnits || 25));
     }
     actualUnits = Math.max(Number(metadata.minimumUnitCost || 0), Math.min(usage.creditsReserved, Math.floor(actualUnits)));
@@ -2710,6 +2710,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
   const checkpointRunId = String(input.checkpointRunId || job.id);
   const completedPageIds = new Set(strings(record(job.resultJson).completedPageIds));
   const requestedPageIds = new Set(strings(input.pageIds));
+  const requestedAssetIds = new Set(strings(input.assetIds));
   const selectedPages = ["content_generation", "image_generation"].includes(mode)
     ? build.pages.filter((page) =>
       page.status !== "deferred" &&
@@ -2751,6 +2752,30 @@ export async function executeWebsiteBuildJob(jobId: string) {
   });
   if (websiteGeneration) await prisma.websiteBuild.update({ where: { id: build.id }, data: { status: "processing" } });
   try {
+    if (mode === "image_generation" && requestedAssetIds.size) {
+      const requestedAssets = build.pages.flatMap((page) => page.mediaAssets.map((asset) => ({ page, asset }))).filter(({ asset }) => requestedAssetIds.has(asset.id));
+      if (requestedAssets.length !== requestedAssetIds.size) throw new Error("One or more requested website image slots could not be found.");
+      let completedAssets = 0;
+      for (const { page, asset } of requestedAssets) {
+        const placement = ["hero", "banner", "inline", "library"].includes(asset.role) ? asset.role as VisualPlacement : asset.id === `${page.id}-hero` ? "hero" : "library";
+        await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `generating_image:${page.slug || "home"}`.slice(0, 80), progress: Math.max(10, Math.round((completedAssets / requestedAssets.length) * 85)) } });
+        const prompt = [asset.prompt, instructions].filter(Boolean).join("\n");
+        const sourceUrl = await generateVisual({ placement, prompt, altText: asset.altText || page.title, rationale: "User-requested website image regeneration.", componentVariants: [] });
+        if (!sourceUrl) throw new Error(`AI did not return the requested image for ${page.title}.`);
+        const stored = sourceUrl.startsWith("data:")
+          ? await storeWorkerWebsiteImage({ workspaceId: job.workspaceId, projectId: job.projectId, mediaAssetId: asset.id, dataUrl: sourceUrl, filename: asset.fileName || `${page.slug || "home"}-${placement}.png`, altText: asset.altText || page.title })
+          : { sourceUrl, storageKey: asset.storageKey, mimeType: asset.mimeType || "image/png" };
+        await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { role: placement, sourceUrl: stored.sourceUrl, storageKey: stored.storageKey, mimeType: stored.mimeType, width: 1536, height: 1024, status: "review", approvedAt: null, prompt, altText: asset.altText || page.title } });
+        completedPageIds.add(page.id);
+        completedAssets += 1;
+        await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { progress: Math.min(95, Math.round((completedAssets / requestedAssets.length) * 95)), resultJson: { completedPageIds: [...completedPageIds], completedAssetIds: requestedAssets.slice(0, completedAssets).map(({ asset: completed }) => completed.id), savedImages: completedAssets } as Prisma.InputJsonValue } });
+      }
+      const completedAt = new Date();
+      await prisma.websiteBuild.update({ where: { id: build.id }, data: { status: "media", settingsJson: websiteChangeSettings({ ...record(build.settingsJson), backgroundImagesGeneratedAt: completedAt.toISOString(), backgroundImageJobId: job.id }, { category: "images", summary: `${completedAssets} website image${completedAssets === 1 ? " was" : "s were"} regenerated.`, section: "media" }) as Prisma.InputJsonValue } });
+      await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "completed", stage: "images_ready_for_review", progress: 100, completedAt, resultJson: { completedPageIds: [...completedPageIds], completedAssetIds: requestedAssets.map(({ asset }) => asset.id), savedImages: completedAssets } } });
+      if (job.requestedByUserId) await notifyWebsiteJob(job, { type: "website_images_ready", title: completedAssets === 1 ? "Website image ready" : "Website images ready", body: `${completedAssets} regenerated website image${completedAssets === 1 ? " is" : "s are"} ready to review in Site Architect.`, emailSubject: completedAssets === 1 ? "Your regenerated website image is ready" : "Your regenerated website images are ready", reviewLabel: "Review website images" });
+      return;
+    }
     const total = Math.max(1, pages.length);
     const structuralRepairs: Array<{ pageId: string; pageTitle: string; insertedComponents: string[] }> = [];
     const failedPages: Array<{ pageId: string; pageTitle: string; error: string }> = [];

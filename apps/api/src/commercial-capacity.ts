@@ -184,7 +184,8 @@ export function calculateWorkflowUnits(featureKey: string, defaultUnits: number,
     if (mode === "content_generation") calculated = pageCount * perPage;
     else {
       const imageCount = positiveInt(metadata.imageCount, metadata.generateImages === false ? 0 : pageCount + 2);
-      calculated = positiveInt(config.baseUnits, 250) + pageCount * perPage + imageCount * positiveInt(config.perImageUnits, 25);
+      const pageContentUnits = metadata.billPageContent === true ? pageCount * perPage : 0;
+      calculated = positiveInt(config.baseUnits, 250) + pageContentUnits + imageCount * positiveInt(config.perImageUnits, 25);
     }
   } else if (model === "per_image") {
     calculated = positiveInt(metadata.imageCount, items) * positiveInt(config.perImageUnits, defaultUnits || 25);

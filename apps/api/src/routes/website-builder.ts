@@ -7971,17 +7971,33 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/g
   const asset = await prisma.websiteBuildMediaAsset.findFirst({ where: { id: req.params.mediaId, build: { projectId: project.id } } });
   if (!asset) return res.status(404).json({ error: "Website media plan not found." });
   const input = z.object({ comment: z.string().trim().max(1000).optional().default("") }).parse(req.body ?? {});
-  const usage = await preflightUsage({ clientId: project.clientId, userId: context.membership.userId, projectId: project.id, websiteId: project.websiteId, featureKey: "website_image_generate", actionKey: "Generate website image", idempotencyKey: `website-image:${asset.id}:${Date.now()}`, metadata: { imageCount: 1 } });
-  try {
-    const generated = await requestOpenAiWebsiteImage(`${asset.prompt}\n${input.comment}`);
-    const stored = generated.sourceUrl.startsWith("data:") ? await persistWebsiteMediaImage({ workspaceId: context.workspace.id, projectId: project.id, assetId: asset.id, dataUrl: generated.sourceUrl, filename: asset.fileName || `${asset.id}.png`, altText: asset.altText, source: "openai_generated" }) : { sourceUrl: generated.sourceUrl, storageKey: asset.storageKey, mimeType: generated.mimeType };
-    const updated = await prisma.websiteBuildMediaAsset.update({ where: { id: asset.id }, data: { ...generated, ...stored, status: "review" } });
-    await commitUsage({ usageEventId: usage.usageEventId, provider: "openai", model: config.openaiImageModel, metadata: { assetId: asset.id, workspaceId: context.workspace.id } });
-    res.json({ asset: updated });
-  } catch (error) {
-    await refundUsage({ usageEventId: usage.usageEventId, reason: error instanceof Error ? error.message : "website image generation failed" });
-    throw error;
-  }
+  const build = project.websiteBuilds[0];
+  if (!build || asset.buildId !== build.id) return res.status(404).json({ error: "Website build not found." });
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "image_generation", {
+    buildId: build.id,
+    projectId: project.id,
+    clientId: project.clientId,
+    workspaceId: context.workspace.id,
+    requestedByUserId: context.membership.userId,
+    status: "queued",
+    stage: "queued_single_image",
+    progress: 0,
+    queuedAt: new Date(),
+    inputJson: {
+      mode: "image_generation",
+      instructions: input.comment,
+      regenerate: Boolean(asset.sourceUrl),
+      imageCount: 1,
+      pageIds: [asset.pageId],
+      assetIds: [asset.id],
+      seoPlan: jsonRecord(build.settingsJson).seoPlan,
+    } as Prisma.InputJsonValue,
+  });
+  const job = queued.job;
+  if (queued.reused) return res.status(202).json({ job, reused: true, queuedImages: 1 });
+  await enqueueMeteredWebsiteJob(job.id);
+  await recordWorkspaceActivity(prisma, { context, action: "website_builder.single_image_generation_queued", entityType: "website_build_job", entityId: job.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { assetId: asset.id, pageId: asset.pageId, regenerate: Boolean(asset.sourceUrl) } });
+  res.status(202).json({ job, queuedImages: 1 });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/upload", async (req, res) => {
