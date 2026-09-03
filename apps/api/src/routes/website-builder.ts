@@ -83,7 +83,6 @@ import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { refundWebsiteJobUsage, reserveWebsiteJobUsage } from "../website-job-usage.js";
 import { isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 import { captureWebsiteTracking, productionTrackingEndpointIssue, trackingEmbed, websiteTrackingMetrics } from "../website-tracking.js";
-import { requireApprovedExecutionPlanForExternalAction } from "../publishing-workflow.js";
 import { optimizeEmbeddedWebsiteMedia, optimizeWebsiteImage, websiteAssetRole } from "../website-media-optimization.js";
 import { decodeImageDataUrl, storeGeneratedAsset } from "../generated-assets.js";
 import { sendMail } from "../email.js";
@@ -9509,13 +9508,6 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
     publishingJobId: z.string().optional(),
   }).parse(req.body);
   if (input.mode === "publish" && !input.confirmed) return res.status(409).json({ error: "Confirm the live publishing action before continuing." });
-  if (input.mode === "publish") {
-    try { await requireApprovedExecutionPlanForExternalAction(project.id); }
-    catch (error) {
-      const typed = error as { statusCode?: number; message?: string; payload?: Record<string, unknown> };
-      return res.status(typed.statusCode ?? 409).json(typed.payload ?? { error: typed.message ?? "The action is not ready." });
-    }
-  }
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
   const release = await activeApprovedReleaseForBuild(build);
