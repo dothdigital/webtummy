@@ -74,7 +74,11 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
         featureKey: requestContext.featureKey,
         actionKey: requestContext.actionKey,
         idempotencyKey: `commercial-ai:${requestContext.requestId}:${requestContext.usageSequence}`,
-        metadata: { workspaceId: requestContext.workspaceId, source: "central_ai_service" },
+        metadata: {
+          workspaceId: requestContext.workspaceId,
+          source: "central_ai_service",
+          ...(requestContext.featureKey === "website_page_generate" ? { mode: "content_generation", pageCount: 1, generateImages: false, imageCount: 0 } : {}),
+        },
       });
       automaticUsageEventId = reservation.usageEventId;
       requestContext.manualUsageReservation = false;
