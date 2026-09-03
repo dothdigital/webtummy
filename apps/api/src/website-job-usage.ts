@@ -14,6 +14,8 @@ export async function reserveWebsiteJobUsage(jobId: string) {
 
   const input = objectValue(job.inputJson);
   const mode = String(input.mode || "website_generation");
+  const revision = input.regenerate === true || input.regenerateImages === true;
+  const recovery = Boolean(input.resumedFromJobId);
   const pageCount = Math.max(1, stringList(input.pageIds).length);
   const generateImages = input.generateImages !== false;
   const imageCount = mode === "image_generation"
@@ -21,10 +23,10 @@ export async function reserveWebsiteJobUsage(jobId: string) {
     : generateImages ? pageCount + 2 : 0;
   const featureKey = mode === "image_generation" ? "website_image_generate" : "website_page_generate";
   const actionKey = mode === "image_generation"
-    ? "Generate website images"
+    ? revision ? "Regenerate website images" : "Generate website images"
     : mode === "content_generation"
-      ? "Generate website page content"
-      : "Generate complete website";
+      ? revision ? "Regenerate website page content" : "Generate website page content"
+      : revision ? "Regenerate complete website and images" : "Generate complete website";
   const baseIdempotencyKey = `website-build-job:${job.id}`;
   const existingUsage = await prisma.usageEvent.findUnique({
     where: { clientId_idempotencyKey: { clientId: job.clientId, idempotencyKey: baseIdempotencyKey } },
@@ -41,7 +43,7 @@ export async function reserveWebsiteJobUsage(jobId: string) {
         actionKey,
         inputUnits: pageCount,
         idempotencyKey,
-        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, execution: "background_job" },
+        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, revision, recovery, billingReason: revision ? "user_requested_revision" : recovery ? "failed_job_recovery" : "new_generation", execution: "background_job" },
       });
 
   const linked = await prisma.$transaction(async (tx) => {
