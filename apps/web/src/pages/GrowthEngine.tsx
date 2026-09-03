@@ -754,7 +754,9 @@ export default function GrowthEngine() {
   const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
   const recommendedContentOpportunity = selectableContentOpportunities[0] ?? null;
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
-  const growthStrategySynced = Boolean(data.strategyContext?.strategyId && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId && data.growth.blueprint?.status === "active");
+  const growthStrategySynced = Boolean(data.strategyContext?.strategyId
+    && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId
+    && ["active", "approved"].includes(data.growth.blueprint?.status ?? ""));
   const officialNextAction = data.workflowController?.nextBestAction ?? null;
   const contentQueueHelp = contentQueue === "now"
     ? "Now contains the content worth executing first. Create one task and open it, or select several to create a small working batch."
@@ -854,6 +856,15 @@ export default function GrowthEngine() {
             <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">Review Strategy</Link>
           </div>
         </div>
+      </Card>}
+
+      {growthStrategySynced && officialNextAction?.action && !/growth engine|growth blueprint/i.test(officialNextAction.title) && <Card className="flex flex-col gap-4 border-emerald-200 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <div className="text-xs font-black uppercase tracking-wide text-emerald-700">Growth Blueprint synchronized · Next plan action</div>
+          <h2 className="mt-1 text-lg font-bold text-emerald-950">{officialNextAction.title}</h2>
+          <p className="mt-1 max-w-3xl text-sm leading-6 text-emerald-800">{officialNextAction.reason}</p>
+        </div>
+        <Link to={officialNextAction.action.url} className="shrink-0 rounded-lg bg-emerald-700 px-4 py-2.5 text-center text-sm font-black text-white hover:bg-emerald-800">{officialNextAction.action.label} →</Link>
       </Card>}
 
       <div className="grid gap-4 md:grid-cols-4">
