@@ -121,6 +121,52 @@ usageRouter.get("/usage/me", async (req, res) => {
   res.json(await usageSummaryForClient(clientId));
 });
 
+usageRouter.get("/usage/history", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
+  if (!clientId) return res.status(400).json({ error: "client context required" });
+  const workspace = await prisma.workspace.findUnique({ where: { legacyClientId: clientId }, select: { id: true } });
+  if (!workspace) return res.json({ transactions: [], charged: 0, refunded: 0 });
+  const now = new Date();
+  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const transactions = await prisma.workspaceCapacityTransaction.findMany({
+    where: { workspaceId: workspace.id, createdAt: { gte: periodStart }, amount: { not: 0 } },
+    orderBy: { createdAt: "desc" },
+    take: 100,
+  });
+  const usageIds = transactions.map((item) => item.usageEventId).filter((id): id is string => Boolean(id));
+  const usageEvents = usageIds.length ? await prisma.usageEvent.findMany({
+    where: { id: { in: usageIds }, workspaceId: workspace.id },
+    select: { id: true, actionKey: true, featureKey: true, projectId: true, status: true, feature: { select: { label: true } } },
+  }) : [];
+  const projectIds = [...new Set(usageEvents.map((item) => item.projectId).filter((id): id is string => Boolean(id)))];
+  const projects = projectIds.length ? await prisma.project.findMany({ where: { id: { in: projectIds }, clientId }, select: { id: true, name: true, businessName: true } }) : [];
+  const usageById = new Map(usageEvents.map((item) => [item.id, item]));
+  const projectById = new Map(projects.map((item) => [item.id, item.businessName || item.name]));
+  const rows = transactions.map((item) => {
+    const usage = item.usageEventId ? usageById.get(item.usageEventId) : null;
+    return {
+      id: item.id,
+      type: item.type,
+      bucket: item.bucket,
+      units: Math.abs(item.amount),
+      effect: item.amount < 0 ? "charged" : "restored",
+      balanceAfter: item.balanceAfter,
+      reason: item.reason,
+      action: usage?.actionKey || usage?.feature.label || item.reason,
+      feature: usage?.feature.label || usage?.featureKey || null,
+      projectId: usage?.projectId || null,
+      projectName: usage?.projectId ? projectById.get(usage.projectId) || "Project" : null,
+      status: usage?.status || item.type,
+      createdAt: item.createdAt,
+    };
+  });
+  res.json({
+    transactions: rows,
+    charged: rows.filter((item) => item.effect === "charged").reduce((sum, item) => sum + item.units, 0),
+    refunded: rows.filter((item) => item.effect === "restored").reduce((sum, item) => sum + item.units, 0),
+  });
+});
+
 usageRouter.get("/usage/feature-costs", async (_req, res) => {
   await ensureUsageControlDefaults();
   const features = await prisma.featureCostCatalog.findMany({

@@ -5,6 +5,8 @@ import { Button, Card, StatusPill } from "../components/ui.js";
 import type { AiContentStatus, BillingInvoice, BillingStatus } from "../types.js";
 import { workspaceExperience } from "../workspace-experience.js";
 
+type CapacityHistory = { charged: number; refunded: number; transactions: Array<{ id:string;type:string;bucket:string;units:number;effect:"charged"|"restored";balanceAfter:number;reason:string;action:string;feature:string|null;projectId:string|null;projectName:string|null;status:string;createdAt:string }> };
+
 function monthLabel() {
   return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
 }
@@ -28,23 +30,26 @@ export default function Billing() {
   const [portalBusy, setPortalBusy] = useState(false);
   const [savingReports, setSavingReports] = useState(false);
   const [governanceConfirmed, setGovernanceConfirmed] = useState(false);
+  const [capacityHistory, setCapacityHistory] = useState<CapacityHistory | null>(null);
 
   const load = async () => {
     setLoading(true);
     setMessage(null);
     try {
-      const [billingResult, usageResult, invoiceResult, addonResult, workspaceResult] = await Promise.all([
+      const [billingResult, usageResult, invoiceResult, addonResult, workspaceResult, capacityHistoryResult] = await Promise.all([
         api.get<BillingStatus>("/api/billing/status"),
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ invoices: BillingInvoice[] }>("/api/billing/invoices"),
         api.get<{ addons: typeof addons }>("/api/billing/commercial-addons"),
         api.get<{ governanceConfirmed?: boolean }>("/api/agency/workspace"),
+        api.get<CapacityHistory>("/api/usage/history"),
       ]);
       setBilling(billingResult);
       setUsage(usageResult);
       setInvoices(invoiceResult.invoices);
       setAddons(addonResult.addons);
       setGovernanceConfirmed(workspaceResult.governanceConfirmed === true);
+      setCapacityHistory(capacityHistoryResult);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load billing details");
     } finally {
@@ -213,6 +218,14 @@ export default function Billing() {
               {capacity?.warningLevel && <div className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{capacity.warningLevel}% capacity threshold reached. Add a non-expiring Capacity Pack before the balance is exhausted.</div>}
             </Card>
           </div>
+
+          <Card className="overflow-hidden">
+            <div className="flex flex-col gap-2 border-b border-slate-200 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div><div className="text-lg font-bold text-charcoal-900">Capacity Usage History</div><p className="mt-1 text-sm text-charcoal-500">Every Capacity charge and restoration for this workspace during {monthLabel()}.</p></div>
+              <div className="flex gap-2 text-xs font-bold"><span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{capacityHistory?.charged.toLocaleString() ?? 0} charged</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{capacityHistory?.refunded.toLocaleString() ?? 0} restored</span></div>
+            </div>
+            {!capacityHistory?.transactions.length?<div className="p-5 text-sm text-charcoal-500">No Capacity transactions were recorded this month.</div>:<div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Action</th><th className="px-4 py-3">Project</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Balance after</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{capacityHistory.transactions.map(item=><tr key={item.id}><td className="px-4 py-4"><div className="font-semibold text-charcoal-900">{item.action}</div><div className="mt-0.5 text-xs text-charcoal-500">{item.feature||item.reason} · {item.bucket}</div></td><td className="px-4 py-4 text-charcoal-600">{item.projectId?<Link className="font-semibold text-brand-700 hover:underline" to={`/projects/${item.projectId}`}>{item.projectName}</Link>:"Workspace"}</td><td className="whitespace-nowrap px-4 py-4 text-charcoal-600">{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(new Date(item.createdAt))}</td><td className={`whitespace-nowrap px-4 py-4 font-bold ${item.effect==="restored"?"text-emerald-700":"text-rose-700"}`}>{item.effect==="restored"?"+":"−"}{item.units.toLocaleString()}</td><td className="whitespace-nowrap px-4 py-4 font-semibold text-charcoal-700">{item.balanceAfter.toLocaleString()}</td></tr>)}</tbody></table></div>}
+          </Card>
 
           <Card className={`p-5 ${governanceConfirmed ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/40"}`}>
             <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-lg font-bold text-charcoal-900">AI Capacity and approval rules</div><p className="mt-1 max-w-3xl text-sm leading-6 text-charcoal-600">Chargeable work shows its estimated AI Capacity before it starts and reserves Capacity only after confirmation. Failed work is refunded. Publishing and protected external actions require the appropriate approval.</p></div>{governanceConfirmed ? <span className="shrink-0 rounded-full bg-emerald-100 px-4 py-2 text-xs font-bold text-emerald-800">Reviewed and confirmed</span> : <Button onClick={() => void api.post<{ governanceConfirmed: boolean }>("/api/workspace/settings/governance-confirmation", {}).then(() => { setGovernanceConfirmed(true); setMessage("Capacity and approval rules confirmed."); }).catch((error) => setMessage(error instanceof Error ? error.message : "Could not save confirmation."))}>I understand and confirm</Button>}</div>
