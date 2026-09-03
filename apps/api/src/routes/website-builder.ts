@@ -7807,6 +7807,17 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-ima
     return preparedImages < requiredImages;
   }).slice(0, 500);
   if (!pages.length) return res.status(409).json({ error: "Every generated page already has an AI image decision ready for review. Refresh the page or use Regenerate for a new visual direction." });
+  const imageCount = pages.reduce((total, page) => {
+    const homePage = page.pageType === "home" || /^home$/i.test(page.title) || !page.slug.replaceAll("/", "").trim();
+    const requiredImages = homePage ? 3 : 1;
+    if (input.regenerate) return total + requiredImages;
+    const preparedImages = page.mediaAssets.filter((asset) =>
+      ["review", "approved", "uploaded"].includes(asset.status)
+      && asset.role !== "none"
+      && Boolean(asset.sourceUrl)
+    ).length;
+    return total + Math.max(0, requiredImages - preparedImages);
+  }, 0);
   const resumeSource = input.resumeFromJobId
     ? await prisma.websiteBuildJob.findFirst({
         where: {
@@ -7836,6 +7847,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-ima
       mode: "image_generation",
       instructions: input.comment,
       regenerate: input.regenerate,
+      imageCount,
       pageIds: pages.map((page) => page.id),
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
       ...(checkpointRunId ? { checkpointRunId, resumedFromJobId: resumeSource?.id } : {}),
@@ -7845,7 +7857,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-ima
   if (queued.reused) return res.status(202).json({ job, reused: true, queuedPages: jsonStrings(jsonRecord(job.inputJson).pageIds).length });
   await enqueueMeteredWebsiteJob(job.id);
   await recordWorkspaceActivity(prisma, { context, action: "website_builder.image_generation_queued", entityType: "website_build_job", entityId: job.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { pageCount: pages.length, regenerate: input.regenerate } });
-  res.status(202).json({ job, queuedPages: pages.length });
+  res.status(202).json({ job, queuedPages: pages.length, queuedImages: imageCount });
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/approve-image-placements", async (req, res) => {
