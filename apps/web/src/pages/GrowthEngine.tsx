@@ -353,7 +353,7 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
   );
 }
 
-function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
+function ReadinessChecklist({ items, onAddWebsiteUrl }: { items: GrowthReadinessItem[]; onAddWebsiteUrl: () => void }) {
   const missing = items.filter((item) => item.status !== "complete");
   const complete = items.filter((item) => item.status === "complete");
   return (
@@ -378,7 +378,11 @@ function ReadinessChecklist({ items }: { items: GrowthReadinessItem[] }) {
               <span className={`rounded-full bg-white px-2 py-1 text-xs font-bold ${inProgress ? "text-blue-700" : "text-amber-700"}`}>{inProgress ? "In progress" : "Required"}</span>
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
-              {item.actions.map((action) => (
+              {item.actions.map((action) => action.label === "Add Website URL" ? (
+                <button type="button" key={`${item.key}-${action.label}`} onClick={onAddWebsiteUrl} className="inline-flex items-center justify-center rounded-lg border border-brand-300 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
+                  Add Website URL
+                </button>
+              ) : (
                 <Link
                   key={`${item.key}-${action.label}`}
                   to={action.url}
@@ -507,6 +511,10 @@ export default function GrowthEngine() {
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const [generationReview, setGenerationReview] = useState<null | { title: string; description: string; path: string; nextTab?: Tab; body?: Record<string, unknown> }>(null);
+  const [websiteUrlPromptOpen, setWebsiteUrlPromptOpen] = useState(false);
+  const [websiteUrl, setWebsiteUrl] = useState("");
+  const [websiteUrlError, setWebsiteUrlError] = useState("");
+  const [websiteUrlBusy, setWebsiteUrlBusy] = useState(false);
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
@@ -556,6 +564,30 @@ export default function GrowthEngine() {
       setError(err instanceof Error ? err.message : "Action failed");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function saveWebsiteUrl() {
+    const value = websiteUrl.trim();
+    if (!value) return setWebsiteUrlError("Enter the website URL or domain.");
+    try {
+      new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`);
+    } catch {
+      return setWebsiteUrlError("Enter a valid website URL, for example example.com.");
+    }
+    setWebsiteUrlBusy(true);
+    setWebsiteUrlError("");
+    try {
+      await api.patch(`/api/projects-v2/${projectId}/intake-draft`, { websiteUrl: value });
+      const fresh = await api.get<GrowthOverviewResponse>(`/api/projects-v2/${projectId}/growth/overview`);
+      setData(fresh);
+      setWorkflowRefreshKey((current) => current + 1);
+      setWebsiteUrlPromptOpen(false);
+      setWebsiteUrl("");
+    } catch (err) {
+      setWebsiteUrlError(err instanceof Error ? err.message : "The website URL could not be saved.");
+    } finally {
+      setWebsiteUrlBusy(false);
     }
   }
 
@@ -776,7 +808,23 @@ export default function GrowthEngine() {
         </Card>
       </div>}
 
-      {!foundationReady && <ReadinessChecklist items={data.readiness.items} />}
+      {websiteUrlPromptOpen && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="growth-website-url-title">
+        <Card className="w-full max-w-lg border-brand-200 p-6 shadow-2xl">
+          <div className="text-xs font-black uppercase tracking-wide text-brand-700">Continue Growth setup</div>
+          <h2 id="growth-website-url-title" className="mt-2 text-xl font-bold text-charcoal-950">Add the website URL</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">Enter the domain here and stay in Growth. We’ll save it to this project and immediately refresh the next required step.</p>
+          <label className="mt-5 block text-sm font-bold text-slate-800">Website URL
+            <input autoFocus value={websiteUrl} onChange={(event) => { setWebsiteUrl(event.target.value); setWebsiteUrlError(""); }} onKeyDown={(event) => { if (event.key === "Enter") void saveWebsiteUrl(); }} placeholder="example.com" className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-3 font-normal outline-none focus:border-brand-500 focus:ring-4 focus:ring-brand-100" />
+          </label>
+          {websiteUrlError && <p className="mt-2 text-sm font-semibold text-red-700">{websiteUrlError}</p>}
+          <div className="mt-5 flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setWebsiteUrlPromptOpen(false)} disabled={websiteUrlBusy}>Cancel</Button>
+            <Button onClick={() => void saveWebsiteUrl()} disabled={websiteUrlBusy}>{websiteUrlBusy ? "Saving…" : "Save & Continue Growth"}</Button>
+          </div>
+        </Card>
+      </div>}
+
+      {!foundationReady && <ReadinessChecklist items={data.readiness.items} onAddWebsiteUrl={() => { setWebsiteUrlError(""); setWebsiteUrlPromptOpen(true); }} />}
       {foundationReady && data.workflowController && !workflowReady && <IntelligenceReadiness controller={data.workflowController} />}
 
       {!canRunGrowth ? null : (
