@@ -132,6 +132,8 @@ describe("DEV-046 project workflow controller", () => {
       measurementStarted: false,
     }));
     expect(published.nextBestAction.title).not.toBe("Review and approve the Business Brain");
+    expect(published.nextBestAction.title).toBe("Review the published website and next growth action");
+    expect(published.nextBestAction.action.url).toContain("/growth?");
     expect(published.stages.find((stage) => stage.key === "business_brain_approval")?.status).toBe("approved");
     expect(published.stages.find((stage) => stage.key === "readiness_check")?.status).toBe("complete");
   });
