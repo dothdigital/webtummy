@@ -4340,7 +4340,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId", a
   if (!build) return res.status(404).json({ error: "Website build not found." });
   const page = await prisma.websiteBuildPage.findFirst({
     where: { id: req.params.pageId, buildId: build.id },
-    include: { mediaAssets: { select: { id: true, role: true, status: true, prompt: true, altText: true } } },
+    include: { mediaAssets: { select: { id: true, role: true, status: true, prompt: true, altText: true, updatedAt: true } } },
   });
   if (!page) return res.status(404).json({ error: "Website page not found." });
   const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
@@ -4357,7 +4357,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/med
   const mediaAssets = await prisma.websiteBuildMediaAsset.findMany({
     where: { pageId: page.id },
     orderBy: { createdAt: "asc" },
-    select: { id: true, role: true, status: true, prompt: true, altText: true },
+    select: { id: true, role: true, status: true, prompt: true, altText: true, updatedAt: true },
   });
   const availableMediaIds = new Set((await prisma.websiteBuildMediaAsset.findMany({ where: { pageId: page.id, sourceUrl: { not: null } }, select: { id: true } })).map((asset) => asset.id));
   sendMeasuredJson(res, { mediaAssets: mediaAssets.map((asset) => compactWebsiteBuilderMediaAsset(asset, availableMediaIds.has(asset.id))) }, "website_builder_page_media");
@@ -4368,7 +4368,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/pages/:pageId/med
   if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
   const asset = await prisma.websiteBuildMediaAsset.findFirst({
     where: { id: req.params.assetId, pageId: req.params.pageId, page: { build: { projectId: req.params.projectId } } },
-    select: { id: true, role: true, status: true, prompt: true, sourceUrl: true, altText: true },
+    select: { id: true, role: true, status: true, prompt: true, sourceUrl: true, altText: true, updatedAt: true },
   });
   if (!asset) return res.status(404).json({ error: "Website image not found." });
   sendMeasuredJson(res, { asset }, "website_builder_media_asset");

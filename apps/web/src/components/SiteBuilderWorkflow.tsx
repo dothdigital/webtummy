@@ -35,7 +35,7 @@ import {
   websitePageContentIsProcessing,
 } from "./websiteGenerationState.js";
 
-type MediaAsset = {id:string;role:string;status:string;prompt:string;sourceUrl:string|null;sourceAvailable?:boolean;altText:string|null};
+type MediaAsset = {id:string;role:string;status:string;prompt:string;sourceUrl:string|null;sourceAvailable?:boolean;altText:string|null;updatedAt?:string};
 const mediaAssetHasApprovedDecision=(asset:Pick<MediaAsset,"status">)=>websiteMediaStatusHasApprovedDecision(asset.status);
 const mediaAssetHasSource=(asset:MediaAsset)=>asset.sourceAvailable===true||Boolean(asset.sourceUrl);
 type ImagePlacement = "hero"|"banner"|"inline"|"library"|"none";
@@ -402,7 +402,7 @@ function footerMenuIncludingAllPages(saved:Record<string,unknown>[],pages:Page[]
 export default function SiteBuilderWorkflow({projectId,architectureId,architectureStatus,onArchitectureChanged}:{projectId:string;architectureId?:string|null;architectureStatus?:string|null;onArchitectureChanged?:()=>Promise<void>}){
  const [searchParams,setSearchParams]=useSearchParams();
  const navigate=useNavigate();
- const [data,setData]=useState<Response|null>(null),[selectedPageDetail,setSelectedPageDetail]=useState<Page|null>(null),[selectedPageMedia,setSelectedPageMedia]=useState<{pageId:string;version:number;assets:MediaAsset[]}|null>(null),[siteFileDetails,setSiteFileDetails]=useState<Response["siteFiles"]|null>(null),[step,setStep]=useState<Step>("foundation"),[pendingStep,setPendingStep]=useState<Step|null>(null),[pageId,setPageId]=useState(""),[busy,setBusy]=useState(""),[message,setMessage]=useState(""),[comment,setComment]=useState("");
+ const [data,setData]=useState<Response|null>(null),[selectedPageDetail,setSelectedPageDetail]=useState<Page|null>(null),[selectedPageMedia,setSelectedPageMedia]=useState<{pageId:string;version:number;assets:MediaAsset[]}|null>(null),[mediaRefreshVersion,setMediaRefreshVersion]=useState(0),[siteFileDetails,setSiteFileDetails]=useState<Response["siteFiles"]|null>(null),[step,setStep]=useState<Step>("foundation"),[pendingStep,setPendingStep]=useState<Step|null>(null),[pageId,setPageId]=useState(""),[busy,setBusy]=useState(""),[message,setMessage]=useState(""),[comment,setComment]=useState("");
  const [publicationScopes,setPublicationScopes]=useState<PublicationScopes|null>(null);
  const [publicationScopeState,setPublicationScopeState]=useState<"idle"|"loading"|"ready"|"error">("idle");
  const [publicationScopeError,setPublicationScopeError]=useState("");
@@ -468,7 +468,7 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
    if(!cancelled)setSelectedPageMedia({pageId:selectedPageSummary.id,version:selectedPageSummary.version,assets:result.mediaAssets});
   }).catch(reason=>{if(!cancelled)setMessage(reason instanceof Error?reason.message:"The selected page images could not be loaded.")});
   return()=>{cancelled=true};
- },[projectId,step,selectedPageSummary?.id,selectedPageSummary?.version]);
+ },[projectId,step,selectedPageSummary?.id,selectedPageSummary?.version,mediaRefreshVersion]);
  useEffect(()=>{
   if(step!=="structure"||structureView==="pages"||siteFileDetails)return;
   let cancelled=false;
@@ -511,7 +511,7 @@ export default function SiteBuilderWorkflow({projectId,architectureId,architectu
     if(cancelled)return;
     failures=0;
     setData(current=>current?.build?{...current,build:{...current.build,jobs:current.build.jobs.map(job=>job.id===result.job.id?{...job,...result.job}:job)}}:current);
-    if(["completed","failed","cancelled"].includes(result.job.status)){setSelectedPageMedia(null);await load();return}
+    if(["completed","failed","cancelled"].includes(result.job.status)){setSelectedPageMedia(null);setMediaRefreshVersion(version=>version+1);await load();return}
     schedule(2500);
    }catch{
     if(cancelled)return;
@@ -1614,7 +1614,7 @@ function MediaSidebarThumbnail({projectId,pageId,asset,generating}:{projectId:st
       return()=>{cancelled=true;observer.disconnect()};
     }
     return()=>{cancelled=true};
-  },[projectId,pageId,asset?.id,asset?.sourceAvailable,asset?.sourceUrl]);
+  },[projectId,pageId,asset?.id,asset?.sourceAvailable,asset?.sourceUrl,asset?.updatedAt]);
   return <span ref={containerRef} className={`grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-lg border text-lg ${source?"border-slate-200 bg-slate-100":generating?"animate-pulse border-indigo-300 bg-indigo-50 text-indigo-500":"border-dashed border-slate-300 bg-slate-50 text-slate-400"}`}>{source?<img src={source} alt="" className="h-full w-full object-cover" loading="lazy"/>:generating?"…":"◇"}</span>;
 }
 function ImageReview({page,busy,replacing,generationState,idea,setIdea,hasText,setHasText,overlayText,setOverlayText,onGenerate,onUpload,onPlace,onOpenEditor}:{page:Page;busy:string;replacing:boolean;generationState:"generating"|"queued"|"idle";idea:string;setIdea:(value:string)=>void;hasText:boolean;setHasText:(value:boolean)=>void;overlayText:string;setOverlayText:(value:string)=>void;onGenerate:(asset:MediaAsset)=>void;onUpload:(asset:MediaAsset,file:File|undefined)=>void;onPlace:(asset:MediaAsset,placement:ImagePlacement)=>void;onOpenEditor:()=>void}){
@@ -1631,7 +1631,7 @@ function ImageReview({page,busy,replacing,generationState,idea,setIdea,hasText,s
     setLoadedAsset(null);
     void api.get<{asset:MediaAsset}>(`/api/projects/${projectId}/website-builder/pages/${page.id}/media/${assetSummary.id}`).then(result=>{if(!cancelled)setLoadedAsset({...result.asset,sourceAvailable:Boolean(result.asset.sourceUrl)})}).catch(()=>undefined);
     return()=>{cancelled=true};
-  },[projectId,page.id,assetSummary?.id,assetSummary?.sourceAvailable,assetSummary?.sourceUrl]);
+  },[projectId,page.id,assetSummary?.id,assetSummary?.sourceAvailable,assetSummary?.sourceUrl,assetSummary?.updatedAt]);
   useEffect(()=>{if(asset?.id===`${page.id}-hero`&&asset.role!=="none")setPlacement("hero");else if(asset&&["hero","banner","inline","library","none"].includes(asset.role))setPlacement(asset.role as ImagePlacement)},[page.id,asset?.id,asset?.role]);
   useEffect(()=>{setIdea("");setHasText(false);setOverlayText("")},[asset?.id]);
   if(!asset)return <div className={`rounded-xl border border-dashed p-8 text-center ${generationState==="generating"?"border-indigo-300 bg-indigo-50":"border-slate-300 bg-slate-50"}`}><div className={`mx-auto grid h-11 w-11 place-items-center rounded-full text-lg font-black ${generationState==="generating"?"animate-pulse bg-indigo-600 text-white":"bg-white text-slate-400"}`}>{generationState==="generating"?"…":"◇"}</div><b className={`mt-3 block text-sm ${generationState==="generating"?"text-indigo-950":"text-slate-800"}`}>{generationState==="generating"?"SEnuke AI - AI Growth Operating System is creating this page’s image":generationState==="queued"?"This page is waiting in the image queue":"Image generation has not started for this page"}</b><p className="mx-auto mt-1 max-w-xl text-xs leading-5 text-slate-500">{generationState==="generating"?"The image will appear here automatically as soon as it is saved.":generationState==="queued"?"Its page-specific brief, title, H1, intent, content, business context, and verified location will be used when its turn begins.":"Start Design & Images from the banner above."}</p></div>;

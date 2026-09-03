@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionPlanWorkflowBlocker, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { executionPlanWorkflowBlocker, hasCurrentBusinessBrainGovernance, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -83,6 +83,14 @@ function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEv
 }
 
 describe("DEV-046 project workflow controller", () => {
+  it("renews Business Brain governance only after an Intake change", () => {
+    const approval = { eventType: "business_brain.approved", sourceId: "1", sourceModule: "workflow_controller", occurredAt: new Date("2026-08-01T10:00:00Z") };
+    const nonIntakeChange = { eventType: "business_brain.user_fact_updated", sourceId: "project-1", sourceModule: "project_locations", occurredAt: new Date("2026-08-01T11:00:00Z") };
+    const intakeChange = { eventType: "business_brain.user_fact_updated", sourceId: "project-1", sourceModule: "project_intake", occurredAt: new Date("2026-08-01T12:00:00Z") };
+    expect(hasCurrentBusinessBrainGovernance([approval, nonIntakeChange], "business_brain.approved")).toBe(true);
+    expect(hasCurrentBusinessBrainGovernance([approval, intakeChange], "business_brain.approved")).toBe(false);
+    expect(hasCurrentBusinessBrainGovernance([approval, intakeChange, { ...approval, sourceId: "2", sourceModule: "project_intake", occurredAt: new Date("2026-08-01T12:00:01Z") }], "business_brain.approved")).toBe(true);
+  });
   it("uses the canonical 19-stage lifecycle in the customer checklist", () => {
     expect(resolveProjectWorkflow(snapshot()).stages.map((stage) => stage.key)).toEqual([
       "project_created", "intake", "business_brain_approval", "readiness_check", "opportunity_discovery",

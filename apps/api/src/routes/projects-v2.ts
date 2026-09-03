@@ -126,6 +126,7 @@ const intakeAnswerSchema = z.object({
 
 const saveIntakeSchema = z.object({
   answers: z.array(intakeAnswerSchema).min(1),
+  approveBusinessBrain: z.literal(true),
 });
 const projectLocationsSchema = z.object({
   businessLocationDetails: z.object({
@@ -3383,7 +3384,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     else await syncProjectWorkflow(tx, project.id);
     await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
   });
-  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `business-brain.user-fact:${project.id}:${Date.now()}`, payload: { source: "project_settings", provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
+  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_settings", sourceId: project.id, idempotencyKey: `business-brain.user-fact:${project.id}:${Date.now()}`, payload: { source: "project_settings", provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
   res.json({ project: await scopedProject(req, project.id), workflow });
 });
 
@@ -3847,9 +3848,14 @@ guidedProjectsRouter.post("/projects-v2/:projectId/intake", async (req, res) => 
   });
 
   const updated = await scopedProject(req, project.id);
-  const opportunityGenerationDeferred = "Approve the Business Brain and complete the Readiness Check before Opportunity Discovery.";
-  const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: `intake.saved:${project.id}:${Date.now()}`, payload: { answerCount: parsed.data.answers.length, provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
-  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow, opportunityGenerationDeferred });
+  const intakeEventKey = `intake.saved:${project.id}:${Date.now()}`;
+  let workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_intake", sourceId: project.id, idempotencyKey: intakeEventKey, payload: { answerCount: parsed.data.answers.length, provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
+  if (!workflow) return res.status(409).json({ error: "The Business Brain could not be approved after Intake was saved." });
+  const approvedAt = new Date();
+  workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.approved", sourceModule: "project_intake", sourceId: String(workflow.businessBrainVersion), idempotencyKey: "business-brain.intake-approved:" + intakeEventKey, payload: { businessBrainVersion: workflow.businessBrainVersion, confirmationMode: "intake_save_popup", approvedByUserId: context.membership.userId, approvedAt: approvedAt.toISOString(), sourceEvent: intakeEventKey } });
+  if (workflow) workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "readiness.completed", sourceModule: "project_intake", sourceId: String(workflow.businessBrainVersion), idempotencyKey: "readiness.intake-confirmed:" + intakeEventKey, payload: { businessBrainVersion: workflow.businessBrainVersion, confirmationMode: "intake_save_popup", confirmedByUserId: context.membership.userId, confirmedAt: approvedAt.toISOString(), sourceEvent: intakeEventKey } });
+  await recordWorkspaceActivity(prisma, { context, action: "business_brain.approved_with_intake", entityType: "business_brain_version", entityId: String(workflow?.businessBrainVersion ?? "unknown"), agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { confirmationMode: "intake_save_popup" } });
+  res.json({ project: updated, opportunityMode: updated ? opportunityRunMode(updated).mode : null, workflow, businessBrainApproved: true });
 });
 
 guidedProjectsRouter.post("/projects-v2/:projectId/opportunities/generate", async (req, res) => {

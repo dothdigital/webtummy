@@ -7,6 +7,17 @@ import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
 
 export const WORKFLOW_CONTROLLER_VERSION = "workflow-controller-v1";
 
+type BrainGovernanceEvent = { eventType: string; sourceId: string | null; sourceModule: string; occurredAt: Date };
+
+/** Keep approval across non-Intake snapshot changes; only a later Intake save renews the gate. */
+export function hasCurrentBusinessBrainGovernance(events: BrainGovernanceEvent[], eventType: "business_brain.approved" | "readiness.completed") {
+  const latestIntakeChangeAt = events
+    .filter((event) => event.eventType === "business_brain.user_fact_updated" && event.sourceModule === "project_intake")
+    .reduce<Date | null>((latest, event) => !latest || event.occurredAt > latest ? event.occurredAt : latest, null);
+  return events.some((event) => event.eventType === eventType
+    && (!latestIntakeChangeAt || event.occurredAt >= latestIntakeChangeAt));
+}
+
 export type StrategyRefreshRequest = {
   projectId: string;
   sourceEventId: string;
@@ -815,7 +826,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       workflowController: { select: { businessBrainVersion: true, evidenceVersion: true } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, select: { id: true, title: true, recommendation: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
-      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, payloadJson: true } },
+      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.user_fact_updated", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, sourceModule: true, occurredAt: true, payloadJson: true } },
     },
   });
   if (!project) return null;
@@ -950,8 +961,8 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const discoveryComplete = Boolean(project.businessProfile && project.intakeAnswers.length && (project.businessName || project.agencyClient?.name || project.name) && project.niche && project.primaryGoal);
   const currentBrainVersion = project.workflowController?.businessBrainVersion ?? 0;
   const currentEvidenceVersion = project.workflowController?.evidenceVersion ?? 0;
-  const businessBrainApproved = project.workflowEvents.some((event) => event.eventType === "business_brain.approved" && Number(event.sourceId) === currentBrainVersion);
-  const readinessComplete = businessBrainApproved && project.workflowEvents.some((event) => event.eventType === "readiness.completed" && Number(event.sourceId) === currentBrainVersion);
+  const businessBrainApproved = hasCurrentBusinessBrainGovernance(project.workflowEvents, "business_brain.approved");
+  const readinessComplete = businessBrainApproved && hasCurrentBusinessBrainGovernance(project.workflowEvents, "readiness.completed");
   const moduleDecisions: Record<string, "not_applicable" | "waived" | "deferred" | null> = {};
   for (const event of project.workflowEvents) {
     if (!event.sourceId || event.sourceId in moduleDecisions) continue;
@@ -1149,11 +1160,11 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       if (Number(payload.businessBrainVersion) !== brain.version) continue;
       versionedModuleDecisions[event.sourceId] = event.eventType === "module.not_applicable" ? "not_applicable" : event.eventType === "module.waived" ? "waived" : event.eventType === "module.deferred" ? "deferred" : null;
     }
-    const versionedBrainApproved = project.workflowEvents.some((event) => event.eventType === "business_brain.approved" && Number(event.sourceId) === brain.version);
+    const versionedBrainApproved = hasCurrentBusinessBrainGovernance(project.workflowEvents, "business_brain.approved");
     view = resolveProjectWorkflow({
       ...evidenceSnapshot,
       businessBrainApproved: versionedBrainApproved,
-      readinessComplete: versionedBrainApproved && project.workflowEvents.some((event) => event.eventType === "readiness.completed" && Number(event.sourceId) === brain.version),
+      readinessComplete: versionedBrainApproved && hasCurrentBusinessBrainGovernance(project.workflowEvents, "readiness.completed"),
       findingsReviewed: project.workflowEvents.some((event) => event.eventType === "findings.reviewed" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === brain.version && Number((event.payloadJson as Record<string, unknown>)?.evidenceVersion) === evidence.version),
       trackingLimitationRecorded: project.workflowEvents.some((event) => event.eventType === "tracking.limitation_recorded" && Number((event.payloadJson as Record<string, unknown>)?.businessBrainVersion) === brain.version && String((event.payloadJson as Record<string, unknown>)?.websiteId ?? "") === String(project.websiteId ?? "")),
       moduleDecisions: versionedModuleDecisions,
@@ -1229,10 +1240,6 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
 
 export async function publishProjectWorkflowEvent(input: { projectId: string; eventType: string; sourceModule: string; sourceId?: string | null; idempotencyKey: string; payload?: Record<string, unknown>; occurredAt?: Date }) {
   const userConfirmedFactUpdate = input.eventType === "business_brain.user_fact_updated";
-  const priorGovernance = userConfirmedFactUpdate ? await prisma.projectWorkflowEvent.findMany({
-    where: { projectId: input.projectId, eventType: { in: ["business_brain.approved", "readiness.completed"] } },
-    select: { eventType: true },
-  }) : [];
   await prisma.projectWorkflowEvent.upsert({
     where: { idempotencyKey: input.idempotencyKey },
     update: {},
@@ -1285,38 +1292,6 @@ export async function publishProjectWorkflowEvent(input: { projectId: string; ev
     });
   }
   let workflow = await getProjectWorkflowController(input.projectId);
-  if (userConfirmedFactUpdate && workflow && priorGovernance.some((event) => event.eventType === "business_brain.approved")) {
-    const now = new Date();
-    await prisma.projectWorkflowEvent.upsert({
-      where: { idempotencyKey: `business-brain.user-confirmed:${input.projectId}:${workflow.businessBrainVersion}` },
-      update: { processedAt: now },
-      create: {
-        projectId: input.projectId,
-        eventType: "business_brain.approved",
-        sourceModule: input.sourceModule,
-        sourceId: String(workflow.businessBrainVersion),
-        idempotencyKey: `business-brain.user-confirmed:${input.projectId}:${workflow.businessBrainVersion}`,
-        payloadJson: { businessBrainVersion: workflow.businessBrainVersion, confirmationMode: "user_entered_fact_save", sourceEvent: input.idempotencyKey },
-        occurredAt: now,
-        processedAt: now,
-      },
-    });
-    if (priorGovernance.some((event) => event.eventType === "readiness.completed")) await prisma.projectWorkflowEvent.upsert({
-      where: { idempotencyKey: `readiness.user-confirmed:${input.projectId}:${workflow.businessBrainVersion}` },
-      update: { processedAt: now },
-      create: {
-        projectId: input.projectId,
-        eventType: "readiness.completed",
-        sourceModule: input.sourceModule,
-        sourceId: String(workflow.businessBrainVersion),
-        idempotencyKey: `readiness.user-confirmed:${input.projectId}:${workflow.businessBrainVersion}`,
-        payloadJson: { businessBrainVersion: workflow.businessBrainVersion, confirmationMode: "user_entered_fact_save", sourceEvent: input.idempotencyKey },
-        occurredAt: now,
-        processedAt: now,
-      },
-    });
-    workflow = await getProjectWorkflowController(input.projectId);
-  }
   if (workflow?.strategyStale) {
     const invalidationKey = `strategy.invalidated:${input.projectId}:${workflow.businessBrainVersion}:${workflow.evidenceVersion}:${workflow.strategyVersion}`;
     await prisma.projectWorkflowEvent.upsert({ where: { idempotencyKey: invalidationKey }, update: { processedAt: new Date() }, create: { projectId: input.projectId, eventType: "strategy.evidence_available", sourceModule: "workflow_controller", sourceId: input.sourceId ?? null, idempotencyKey: invalidationKey, payloadJson: { reason: "A required source changed. Refresh and approve Strategy before downstream execution continues.", businessBrainVersion: workflow.businessBrainVersion, evidenceVersion: workflow.evidenceVersion, strategyVersion: workflow.strategyVersion, requiredRefreshAction: `/strategy?projectId=${input.projectId}` }, occurredAt: new Date(), processedAt: new Date() } });

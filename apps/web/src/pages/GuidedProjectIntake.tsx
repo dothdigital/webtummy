@@ -646,11 +646,14 @@ export default function GuidedProjectIntake() {
       if (exitAfter) navigate("/guided-projects/" + id);
       return;
     }
+    const approveBusinessBrain = window.confirm("These Intake changes may affect the Business Brain and downstream recommendations. Save and approve the updated Business Brain now?");
+    if (!approveBusinessBrain) return;
     setBusy(true);
     setError(null);
     setSavedMessage(null);
     try {
       await api.post(`/api/projects-v2/${id}/intake`, {
+        approveBusinessBrain,
         answers: [
           ...visibleQuestions.map((question) => ({
           questionKey: question.key,
