@@ -79,7 +79,7 @@ function asNumber(value: string, fallback = 0) {
 }
 
 export default function AdminUsageConfig() {
-  const [tab, setTab] = useState<Tab>("budgets");
+  const [tab, setTab] = useState<Tab>("audit");
   const [features, setFeatures] = useState<FeatureCost[]>([]);
   const [budgetCaps, setBudgetCaps] = useState<BudgetCap[]>([]);
   const [modelRoutes, setModelRoutes] = useState<ModelRoute[]>([]);
@@ -128,12 +128,12 @@ export default function AdminUsageConfig() {
     const reason = window.prompt(`Reason for reversing ${event.creditsCommitted} units for ${event.user?.email ?? "this user"}:`);
     if (!reason) return;
     if (reason.trim().length < 8) return setMessage("Please enter an audit reason of at least 8 characters.");
-    if (!window.confirm("Restore these units? The original usage record will remain visible as reversed.")) return;
+    if (!window.confirm(`Revert ${event.creditsCommitted} Capacity units to ${event.capacityWorkspace?.name || event.user?.email || "this workspace"}? The original charge will remain in the audit ledger as reversed.`)) return;
     setBusy(true);
     setMessage(null);
     try {
       const result = await api.post<{ restored: { totalUnits: number } }>(`/api/admin/usage/events/${event.id}/reverse`, { reason: reason.trim() });
-      setMessage(`${result.restored.totalUnits} capacity units restored. The reversal was added to the audit ledger.`);
+      setMessage(`${result.restored.totalUnits} Capacity units restored to ${event.capacityWorkspace?.name || event.user?.email || "the workspace"}. The reversal was added to the audit ledger.`);
       await loadUsageAudit();
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not reverse usage charge");
@@ -283,8 +283,8 @@ export default function AdminUsageConfig() {
         </div>
       </Card>
 
-      <div className="grid gap-5 xl:grid-cols-[320px_1fr]">
-        <Card className="overflow-hidden">
+      <div className={`grid gap-5 ${tab === "audit" ? "grid-cols-1" : "xl:grid-cols-[320px_1fr]"}`}>
+        {tab !== "audit" && <Card className="overflow-hidden">
           <div className="border-b border-slate-100 p-4">
             <div className="font-bold text-charcoal-950">Feature Catalog</div>
             <p className="mt-1 text-xs text-slate-500">Select a workflow to configure model routing. Unit prices live in Commercial Admin.</p>
@@ -302,13 +302,13 @@ export default function AdminUsageConfig() {
               </button>
             ))}
           </div>
-        </Card>
+        </Card>}
 
         {tab === "audit" && (
           <Card className="overflow-hidden">
             <div className="border-b border-slate-100 p-5">
-              <h2 className="font-bold text-charcoal-950">User credit consumption</h2>
-              <p className="mt-1 text-sm text-slate-500">Every reservation, charge, refund, free retry, and administrator reversal remains in this ledger.</p>
+              <h2 className="font-bold text-charcoal-950">User Credit Consumption & Reverts</h2>
+              <p className="mt-1 text-sm text-slate-500">Find a user by name or email, see the workspace, project, action and Capacity consumed, then revert an eligible charge with an audited reason.</p>
               <div className="mt-4 flex flex-col gap-2 md:flex-row">
                 <input
                   value={usageSearch}
@@ -335,7 +335,7 @@ export default function AdminUsageConfig() {
                       <td className="p-3 font-semibold">{titleCase(event.status)}</td>
                       <td className="p-3 text-right font-bold">{event.creditsCommitted || event.creditsReserved}</td>
                       <td className="p-3 text-xs text-slate-600">{new Date(event.createdAt).toLocaleString()}</td>
-                      <td className="p-3 text-right">{event.reversible && <Button variant="ghost" onClick={() => void reverseUsage(event)} disabled={busy}>Reverse</Button>}</td>
+                      <td className="p-3 text-right">{event.reversible ? <Button variant="ghost" onClick={() => void reverseUsage(event)} disabled={busy}>Revert Credits</Button> : event.status === "reversed" ? <span className="text-xs font-semibold text-emerald-700">Credits reverted</span> : null}</td>
                     </tr>
                   ))}
                   {!usageEvents.length && <tr><td colSpan={7} className="p-6 text-center text-slate-500">No usage records match this filter.</td></tr>}
