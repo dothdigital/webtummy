@@ -34,6 +34,20 @@ export type WebsiteRenderOptions = {
   environmentType?: WebsiteQualityEnvironment;
 };
 
+const APPROVED_GOOGLE_WEB_FONTS = new Set([
+  "Inter", "Lato", "Manrope", "Merriweather", "Montserrat", "Open Sans",
+  "Playfair Display", "Poppins", "Roboto", "Source Sans 3",
+]);
+
+export function websiteWebFontStylesheetHref(typography: WebsiteModel["designSystem"]["typography"]) {
+  const families = [...new Set([typography.headingFont, typography.bodyFont]
+    .map((font) => font.trim())
+    .filter((font) => APPROVED_GOOGLE_WEB_FONTS.has(font)))];
+  if (!families.length) return "";
+  const query = families.map((font) => `family=${encodeURIComponent(font).replace(/%20/g, "+")}:wght@400;500;600;700;800;900`).join("&");
+  return `https://fonts.googleapis.com/css2?${query}&display=swap`;
+}
+
 const escapeHtml = (value: unknown) =>
   String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -758,6 +772,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
     ? `<script async src="${escapeHtml(options.tracking.scriptUrl)}" data-senuke-site="${escapeHtml(options.tracking.siteId)}"${options.tracking.releaseId ? ` data-senuke-release="${escapeHtml(options.tracking.releaseId)}"` : ""}></script>`
     : "";
   const googleAnalyticsScript = production ? ga4HeadScript(options.tracking?.ga4MeasurementId) : "";
+  const webFontStylesheetHref = websiteWebFontStylesheetHref(model.designSystem.typography);
   const hasBlogFeed = model.pages.some(isWebsiteBlogSectionPage) && model.pages.some(isWebsiteBlogArticlePage);
   const rssHref = options.internalUrlMap?.["/rss.xml"] || "/rss.xml";
   return `<!doctype html>
@@ -772,6 +787,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
 ${faviconUrl && renderableImageUrl(faviconUrl) ? `<link rel="icon" href="${escapeHtml(faviconUrl)}">` : ""}
 ${hasBlogFeed ? `<link rel="alternate" type="application/rss+xml" title="${escapeHtml(brandName)} articles" href="${escapeHtml(rssHref)}">` : ""}
 ${heroImageUrl && !heroImageUrl.startsWith("data:") && renderableImageUrl(heroImageUrl) ? `<link rel="preload" as="image" href="${escapeHtml(heroImageUrl)}" fetchpriority="high">` : ""}
+${webFontStylesheetHref ? `<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>\n<link rel="stylesheet" href="${escapeHtml(webFontStylesheetHref)}">` : ""}
 <link rel="stylesheet" href="${escapeHtml(options.stylesheetHref || "/assets/senuke.css")}">
 <script type="application/ld+json">${safeJsonLd(page.seo.schemaJsonLd)}</script>
 ${trackingScript}

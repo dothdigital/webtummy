@@ -186,6 +186,8 @@ describe("Approved Release website renderer", () => {
     const html = renderWebsitePageDocument(model, model.pages[0], { approvedReleaseId: "release-1" });
     expect(html).toContain("<title>Super Visa Insurance Brampton | Example</title>");
     expect(html).toContain('type="application/ld+json"');
+    expect(html).toContain("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&amp;family=Inter:wght@400;500;600;700;800;900&amp;display=swap");
+    expect(html).toContain('<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>');
     expect(html).toContain("All rights reserved.");
     expect(html).not.toContain("approved SEnuke AI - AI Growth Operating System release");
   });

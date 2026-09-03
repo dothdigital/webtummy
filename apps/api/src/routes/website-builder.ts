@@ -28,6 +28,7 @@ import {
   curatedWebsiteFooterMenus,
   isWebsiteBlogSectionPage,
   renderWebsitePageWordPressBlocks,
+  websiteWebFontStylesheetHref,
   websiteLayoutCssVariables,
 } from "@webtummy/core/website-renderer";
 import {
@@ -1364,10 +1365,29 @@ export function wordpressConnectorSafeCss(css: string) {
   return css.replace(/(^|[;{])\s*overscroll-behavior(?:-[xy])?\s*:[^;}]+;?/gi, "$1");
 }
 
+async function approvedWordPressWebFontCss(typography: WebsiteModel["designSystem"]["typography"]) {
+  const stylesheetUrl = websiteWebFontStylesheetHref(typography);
+  if (!stylesheetUrl) return "";
+  try {
+    const response = await fetch(stylesheetUrl, {
+      headers: { "User-Agent": "Mozilla/5.0", Accept: "text/css" },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) return "";
+    const css = await response.text();
+    if (css.length > 75_000 || /@import|<\/?style|<script|javascript\s*:/i.test(css)) return "";
+    const urls = [...css.matchAll(/url\(([^)]+)\)/gi)].map((match) => match[1].replace(/["']/g, "").trim());
+    if (urls.some((url) => !/^https:\/\/fonts\.gstatic\.com\//i.test(url))) return "";
+    return css;
+  } catch {
+    return "";
+  }
+}
+
 // Bump whenever WordPress synchronization behavior changes so an already
 // successful draft is not returned before the connector can refresh its theme
 // files and managed navigation.
-const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.15.0";
+const WORDPRESS_RENDERER_VERSION = "senuke-wordpress-2.16.0";
 const STATIC_HTML_RENDERER_VERSION = "senuke-static-html-1.1.0";
 const STATIC_SFTP_RENDERER_VERSION = "senuke-static-sftp-1.1.0";
 
@@ -9004,6 +9024,7 @@ async function releaseDeploymentScopeFor(
       projectId,
       releaseId: release.id,
       target,
+      rendererVersion: target === "wordpress" ? WORDPRESS_RENDERER_VERSION : STATIC_HTML_RENDERER_VERSION,
       ...(target === "wordpress"
         ? { mode: "publish", status: { in: ["published", "published_validation_failed"] }, publishedAt: { not: null } }
         : { status: "completed" }),
@@ -9807,6 +9828,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       const approvedCss = renderedFiles.find((file) => file.path === "assets/senuke.css")?.content || "";
       const colors = releaseModel.designSystem.colors;
       const typography = releaseModel.designSystem.typography;
+      const webFontCss = await approvedWordPressWebFontCss(typography);
       const variables = `:root{--senuke-primary:${colors.primary};--senuke-secondary:${colors.secondary};--senuke-accent:${colors.accent};--senuke-background:${colors.background};--senuke-surface:${colors.surface};--senuke-text:${colors.text};--senuke-muted:${colors.mutedText};--senuke-heading:${typography.headingFont};--senuke-body:${typography.bodyFont};${websiteLayoutCssVariables(releaseModel.designSystem.layoutMode)}}`;
       logs.push({
         action: "design_package_started",
@@ -9818,7 +9840,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
         body: JSON.stringify({
           releaseId: release.id,
           snapshotHash: release.snapshotHash,
-          css: wordpressConnectorSafeCss(`${variables}\n${approvedCss}`),
+          css: wordpressConnectorSafeCss(`${webFontCss}\n${variables}\n${approvedCss}`),
           scope: "release_pages",
           // A new site needs the editable block theme during staging. An
           // existing live site keeps its current theme while drafts are being
