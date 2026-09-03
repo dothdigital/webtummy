@@ -675,22 +675,42 @@ async function createOrReuseActiveWebsiteJob(
 }
 
 async function enqueueMeteredWebsiteJob(jobId: string) {
-  await reserveWebsiteJobUsage(jobId);
   try {
+    await reserveWebsiteJobUsage(jobId);
     await websiteBuilderQueue.add("website:develop", { jobId }, { jobId, attempts: 2, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 100 });
     const queuedJob = await websiteBuilderQueue.getJob(jobId);
     if (!queuedJob) throw new Error("The website job was not accepted by the background queue.");
   } catch (error) {
+    const failureCode = String((error as { code?: unknown })?.code || (error as { name?: unknown })?.name || "");
+    const capacityFailure = failureCode === "usage_insufficient_capacity";
+    const failedJob = await prisma.websiteBuildJob.findUnique({ where: { id: jobId }, select: { projectId: true, requestedByUserId: true, usageEventId: true } }).catch(() => null);
+    const capacityMessage = "This workspace does not have enough AI Capacity for this action. No Capacity was charged. Add a Capacity Pack or ask an administrator to adjust the workspace balance.";
+    const queueMessage = failedJob?.usageEventId
+      ? "This work did not enter the background queue, so no generation is running. Your reserved Capacity was restored; retry safely."
+      : "This work did not enter the background queue, so no generation is running. No Capacity was charged; retry safely.";
+    const failureMessage = capacityFailure ? capacityMessage : queueMessage;
     await prisma.websiteBuildJob.updateMany({
       where: { id: jobId, status: "queued" },
       data: {
         status: "failed",
-        stage: "queue_submission_failed",
-        errorMessage: "This work did not enter the background queue, so no generation is running. Your Capacity was restored; retry safely.",
+        stage: capacityFailure ? "capacity_preflight_failed" : "queue_submission_failed",
+        errorMessage: failureMessage,
         completedAt: new Date(),
       },
     }).catch(() => undefined);
-    await refundWebsiteJobUsage(jobId, "Website background job did not enter the queue.").catch(() => undefined);
+    if (failedJob?.usageEventId) await refundWebsiteJobUsage(jobId, "Website background job did not enter the queue.").catch(() => undefined);
+    if (failedJob) {
+      const recipient = await prisma.user.findUnique({ where: { id: failedJob.requestedByUserId }, select: { email: true } }).catch(() => null);
+      if (recipient?.email) {
+        const retryUrl = `${config.webAppUrl.replace(/\/$/, "")}/site-architect?projectId=${encodeURIComponent(failedJob.projectId)}&step=media`;
+        await sendMail({
+          to: recipient.email,
+          subject: capacityFailure ? "Website generation needs more AI Capacity" : "Website generation did not start",
+          text: `${failureMessage}\n\nOpen the project: ${retryUrl}`,
+          html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#0f172a"><h1 style="font-size:22px">${capacityFailure ? "Website generation needs more AI Capacity" : "Website generation did not start"}</h1><p>${failureMessage}</p><p style="margin:24px 0"><a href="${retryUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:white;padding:12px 18px;text-decoration:none;font-weight:700">Return to the project</a></p></div>`,
+        }).catch((mailError) => console.error(`[website-builder] start failure email for ${jobId} failed:`, mailError));
+      }
+    }
     throw error;
   }
 }
@@ -5967,7 +5987,10 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/jobs/:jobId", asy
   if (job.status === "queued" && Date.now() - job.createdAt.getTime() >= WEBSITE_QUEUE_CONFIRMATION_GRACE_MS) {
     const queueJob = await websiteBuilderQueue.getJob(job.id);
     if (!queueJob) {
-      const missingMessage = "This work did not enter the background queue, so no generation is running. Your Capacity was restored; retry safely.";
+      const usage = await prisma.websiteBuildJob.findUnique({ where: { id: job.id }, select: { usageEventId: true } });
+      const missingMessage = usage?.usageEventId
+        ? "This work did not enter the background queue, so no generation is running. Your reserved Capacity was restored; retry safely."
+        : "This work did not enter the background queue, so no generation is running. No Capacity was charged; retry safely.";
       const reconciled = await prisma.websiteBuildJob.updateMany({
         where: { id: job.id, status: "queued" },
         data: { status: "failed", stage: "queue_entry_missing", errorMessage: missingMessage, completedAt: new Date() },
@@ -5981,8 +6004,8 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/jobs/:jobId", asy
           await sendMail({
             to: recipient.email,
             subject: "Website generation did not start",
-            text: `Your website generation request did not enter the background queue, so no generation ran and your Capacity was restored. Open the project and retry safely: ${retryUrl}`,
-            html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#0f172a"><h1 style="font-size:22px">Website generation did not start</h1><p>Your request did not enter the background queue, so no generation ran and your Capacity was restored.</p><p style="margin:24px 0"><a href="${retryUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:white;padding:12px 18px;text-decoration:none;font-weight:700">Return to the project and retry</a></p></div>`,
+            text: `${missingMessage} Open the project and retry safely: ${retryUrl}`,
+            html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#0f172a"><h1 style="font-size:22px">Website generation did not start</h1><p>${missingMessage}</p><p style="margin:24px 0"><a href="${retryUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:white;padding:12px 18px;text-decoration:none;font-weight:700">Return to the project and retry</a></p></div>`,
           }).catch((error) => console.error(`[website-builder] queue failure email for ${job.id} failed:`, error));
         }
       } else {
