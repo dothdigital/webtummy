@@ -26,11 +26,11 @@ describe("website quality governance", () => {
     }
   });
 
-  it("flags generic H2 copy as a high-priority website-quality issue", () => {
+  it("keeps generic H2 copy as a non-blocking website-quality recommendation", () => {
     const website = model("Compare coverage and choose the next step.");
     website.pages[0].sections[1].props.heading = "Our Services";
     const result = evaluateWebsiteQualityGovernance(website);
-    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_h2", severity: "high", evidence: "Our Services" })]));
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_h2", severity: "medium", evidence: "Our Services" })]));
     expect(result.status).toBe("needs_review");
     expect(result.openBlockingCount).toBe(0);
   });

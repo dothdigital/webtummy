@@ -227,7 +227,7 @@ export function evaluateWebsiteQualityGovernance(
       if (!sectionHeading || !isGenericWebsiteSectionHeading(sectionHeading)) continue;
       addIssue({
         code: "generic_h2",
-        severity: "high",
+        severity: "medium",
         category: "customer_language",
         pageId: page.pageId,
         pageName: page.name,
