@@ -678,11 +678,24 @@ async function enqueueMeteredWebsiteJob(jobId: string) {
   await reserveWebsiteJobUsage(jobId);
   try {
     await websiteBuilderQueue.add("website:develop", { jobId }, { jobId, attempts: 2, backoff: { type: "exponential", delay: 5000 }, removeOnComplete: 100, removeOnFail: 100 });
+    const queuedJob = await websiteBuilderQueue.getJob(jobId);
+    if (!queuedJob) throw new Error("The website job was not accepted by the background queue.");
   } catch (error) {
-    await refundWebsiteJobUsage(jobId, "Website background job could not be queued.").catch(() => undefined);
+    await prisma.websiteBuildJob.updateMany({
+      where: { id: jobId, status: "queued" },
+      data: {
+        status: "failed",
+        stage: "queue_submission_failed",
+        errorMessage: "This work did not enter the background queue, so no generation is running. Your Capacity was restored; retry safely.",
+        completedAt: new Date(),
+      },
+    }).catch(() => undefined);
+    await refundWebsiteJobUsage(jobId, "Website background job did not enter the queue.").catch(() => undefined);
     throw error;
   }
 }
+
+const WEBSITE_QUEUE_CONFIRMATION_GRACE_MS = 30_000;
 const publicIntegration = <T extends { credentialCiphertext?: string | null }>(integration: T | null) => {
   if (!integration) return null;
   const { credentialCiphertext: _secret, ...safe } = integration;
@@ -5946,11 +5959,40 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
 websiteBuilderRouter.get("/projects/:projectId/website-builder/jobs/:jobId", async (req, res) => {
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, req.params.projectId)) return res.status(404).json({ error: "Project not found." });
-  const job = await prisma.websiteBuildJob.findFirst({
+  let job = await prisma.websiteBuildJob.findFirst({
     where: { id: req.params.jobId, projectId: req.params.projectId },
     select: { id: true, status: true, stage: true, progress: true, errorMessage: true, createdAt: true, completedAt: true },
   });
   if (!job) return res.status(404).json({ error: "Website development job not found." });
+  if (job.status === "queued" && Date.now() - job.createdAt.getTime() >= WEBSITE_QUEUE_CONFIRMATION_GRACE_MS) {
+    const queueJob = await websiteBuilderQueue.getJob(job.id);
+    if (!queueJob) {
+      const missingMessage = "This work did not enter the background queue, so no generation is running. Your Capacity was restored; retry safely.";
+      const reconciled = await prisma.websiteBuildJob.updateMany({
+        where: { id: job.id, status: "queued" },
+        data: { status: "failed", stage: "queue_entry_missing", errorMessage: missingMessage, completedAt: new Date() },
+      });
+      if (reconciled.count) {
+        await refundWebsiteJobUsage(job.id, "Website background job was missing from the queue.").catch(() => undefined);
+        job = { ...job, status: "failed", stage: "queue_entry_missing", errorMessage: missingMessage, completedAt: new Date() };
+        const recipient = await prisma.user.findUnique({ where: { id: context.membership.userId }, select: { email: true } });
+        if (recipient?.email) {
+          const retryUrl = `${config.webAppUrl.replace(/\/$/, "")}/site-architect?projectId=${encodeURIComponent(req.params.projectId)}`;
+          await sendMail({
+            to: recipient.email,
+            subject: "Website generation did not start",
+            text: `Your website generation request did not enter the background queue, so no generation ran and your Capacity was restored. Open the project and retry safely: ${retryUrl}`,
+            html: `<div style="font-family:Arial,sans-serif;max-width:640px;margin:auto;color:#0f172a"><h1 style="font-size:22px">Website generation did not start</h1><p>Your request did not enter the background queue, so no generation ran and your Capacity was restored.</p><p style="margin:24px 0"><a href="${retryUrl}" style="display:inline-block;border-radius:8px;background:#4338ca;color:white;padding:12px 18px;text-decoration:none;font-weight:700">Return to the project and retry</a></p></div>`,
+          }).catch((error) => console.error(`[website-builder] queue failure email for ${job.id} failed:`, error));
+        }
+      } else {
+        job = await prisma.websiteBuildJob.findFirst({
+          where: { id: req.params.jobId, projectId: req.params.projectId },
+          select: { id: true, status: true, stage: true, progress: true, errorMessage: true, createdAt: true, completedAt: true },
+        }) ?? job;
+      }
+    }
+  }
   const payload = await prisma.$queryRaw<Array<{ inputJson: Prisma.JsonValue; resultJson: Prisma.JsonValue }>>(Prisma.sql`
     SELECT
       jsonb_strip_nulls(jsonb_build_object(
