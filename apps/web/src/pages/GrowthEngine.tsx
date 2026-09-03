@@ -515,6 +515,7 @@ export default function GrowthEngine() {
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [websiteUrlError, setWebsiteUrlError] = useState("");
   const [websiteUrlBusy, setWebsiteUrlBusy] = useState(false);
+  const [websiteUrlSuccess, setWebsiteUrlSuccess] = useState("");
   const projectId = resolveActiveProjectId(projects, params.get("projectId"), getActiveProjectId());
 
   useEffect(() => {
@@ -584,6 +585,7 @@ export default function GrowthEngine() {
       setWorkflowRefreshKey((current) => current + 1);
       setWebsiteUrlPromptOpen(false);
       setWebsiteUrl("");
+      setWebsiteUrlSuccess(`Website URL saved as ${fresh.project.websiteUrl || value}. Growth readiness has been refreshed.`);
     } catch (err) {
       setWebsiteUrlError(err instanceof Error ? err.message : "The website URL could not be saved.");
     } finally {
@@ -790,6 +792,7 @@ export default function GrowthEngine() {
       />
 
       {error && <Card className="border-red-200 bg-red-50 p-4 text-sm text-red-800">{error}</Card>}
+      {websiteUrlSuccess && <Card className="flex flex-wrap items-center justify-between gap-3 border-emerald-200 bg-emerald-50 p-4 text-sm font-semibold text-emerald-900"><span>✓ {websiteUrlSuccess}</span><button type="button" onClick={() => setWebsiteUrlSuccess("")} className="text-xs font-black text-emerald-800">Dismiss</button></Card>}
 
       {generationReview && <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-label={generationReview.title}>
         <Card className="w-full max-w-xl border-brand-200 p-6 shadow-2xl">

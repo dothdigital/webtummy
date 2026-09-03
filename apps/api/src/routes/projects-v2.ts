@@ -2891,7 +2891,14 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/intake-draft", async (req, r
       }
     }
   });
-  res.json({ saved: true, projectId: project.id, savedAt: new Date().toISOString() });
+  const websiteUrlChanged = data.websiteUrl !== undefined && (normalized?.rootUrl ?? null) !== project.websiteUrl;
+  if (websiteUrlChanged) {
+    await recordWorkspaceActivity(prisma, { context, action: "project.website_url_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus }, nextJson: { websiteUrl: normalized?.rootUrl ?? null, websiteStatus: data.websiteStatus ?? project.websiteStatus } });
+  }
+  const workflow = websiteUrlChanged
+    ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_website", sourceId: project.id, idempotencyKey: `project.website-url:${project.id}:${Date.now()}`, payload: { reason: "User added or changed the project website URL.", provenance: "user_entered", actorUserId: context.membership.userId, previousWebsiteUrl: project.websiteUrl, websiteUrl: normalized?.rootUrl ?? null, impactedModules: ["business_brain", "website_intelligence", "growth_plan", "seo_plan", "execution_plan", "next_best_action"] } })
+    : await getProjectWorkflowController(project.id);
+  res.json({ saved: true, projectId: project.id, savedAt: new Date().toISOString(), workflow });
 });
 
 guidedProjectsRouter.post("/projects-v2", async (req, res) => {

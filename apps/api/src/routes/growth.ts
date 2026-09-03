@@ -216,9 +216,10 @@ function growthReadiness(project: NonNullable<Awaited<ReturnType<typeof scopedPr
   const intakeComplete = Boolean(project.businessProfile || project.intakeAnswers.length > 0);
   const opportunityExists = project.opportunities.length > 0;
   const strategyApproved = project.strategyPlans.some((strategy) => strategy.status === "approved");
-  const hasWebsite = Boolean(project.website);
+  const preLaunchWebsite = project.websiteStatus === "website_planned" || project.projectType === "new_business";
+  const hasWebsite = Boolean(project.website || project.websiteUrl);
   const latestCrawl = project.website?.crawlJobs[0] ?? null;
-  const siteAnalysisComplete = Boolean(latestCrawl && latestCrawl.status === "completed");
+  const siteAnalysisComplete = preLaunchWebsite || Boolean(latestCrawl && latestCrawl.status === "completed");
   const siteAnalysisInProgress = Boolean(latestCrawl && ["queued", "running"].includes(latestCrawl.status));
 
   const items: GrowthReadinessItem[] = [
