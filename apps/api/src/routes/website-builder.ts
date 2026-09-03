@@ -218,6 +218,7 @@ async function addDirectoryToZip(zip: JSZip, sourceDirectory: string, archiveDir
 }
 
 const jsonRecord = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+const websiteSummary = (value: unknown, maximum = 150) => { const text = String(value || "").trim().replace(/\s+/g, " "); if (text.length <= maximum) return text; const clipped = text.slice(0, maximum + 1), boundary = clipped.lastIndexOf(" "); return clipped.slice(0, boundary >= Math.floor(maximum * .6) ? boundary : maximum).trimEnd(); };
 export function compactWebsiteBuilderMediaAsset<T extends Record<string, unknown>>(asset: T, sourceAvailable: boolean) {
   return { ...asset, sourceUrl: null, sourceAvailable };
 }
@@ -981,7 +982,7 @@ function qualityWebsiteModel(project: { id: string; businessLocationJson?: Prism
     identity: {
       businessName: String(brand.businessName || build.name.replace(/\s+website$/i, "") || "Website"),
       ...(String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer || "").trim()
-        ? { businessSummary: String(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer).trim().slice(0, 100) }
+        ? { businessSummary: websiteSummary(settings.footerAboutText || contactDetails.businessSummary || jsonRecord(settings.analysis).businessSummary || jsonRecord(settings.analysis).offer) }
         : {}),
       ...(logoAssetId ? { logoAssetId } : {}),
       ...(faviconAssetId ? { faviconAssetId } : {}),
