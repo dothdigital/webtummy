@@ -6,6 +6,18 @@ import type { AiContentStatus, BillingInvoice, BillingStatus } from "../types.js
 import { workspaceExperience } from "../workspace-experience.js";
 
 type CapacityHistory = { charged: number; refunded: number; transactions: Array<{ id:string;type:string;bucket:string;units:number;effect:"charged"|"restored";balanceAfter:number;reason:string;action:string;feature:string|null;projectId:string|null;projectName:string|null;status:string;createdAt:string }> };
+type CapacityPrice = { featureKey:string;moduleName:string;label:string;description:string;defaultCreditCost:number;pricingModel:string;pricingConfigJson:unknown;minimumUnitCost:number|null;maximumUnitCost:number|null };
+
+function capacityPriceLabel(feature: CapacityPrice) {
+  const config = feature.pricingConfigJson && typeof feature.pricingConfigJson === "object" && !Array.isArray(feature.pricingConfigJson) ? feature.pricingConfigJson as Record<string,unknown> : {};
+  const number = (key:string,fallback:number) => Number.isFinite(Number(config[key])) ? Number(config[key]) : fallback;
+  if(feature.pricingModel==="keyword_market")return `${number("baseUnits",50)} base + ${number("countryCheckUnits",5)}/country check + ${number("localCheckUnits",15)}/local check`;
+  if(feature.pricingModel==="website")return `${number("baseUnits",250)} complete-build base + ${number("perPageUnits",25)}/page + ${number("perImageUnits",25)}/image · content-only ${number("perPageUnits",25)}/page`;
+  if(feature.pricingModel==="per_image")return `${number("perImageUnits",25)} per image`;
+  if(feature.pricingModel==="per_domain")return `${number("perDomainUnits",25)} per domain`;
+  if(feature.pricingModel==="ai_or_zero")return `${feature.defaultCreditCost} with AI · ${number("deterministicUnits",0)} without AI`;
+  return `${feature.defaultCreditCost} per action`;
+}
 
 function monthLabel() {
   return new Intl.DateTimeFormat(undefined, { month: "long", year: "numeric" }).format(new Date());
@@ -31,18 +43,20 @@ export default function Billing() {
   const [savingReports, setSavingReports] = useState(false);
   const [governanceConfirmed, setGovernanceConfirmed] = useState(false);
   const [capacityHistory, setCapacityHistory] = useState<CapacityHistory | null>(null);
+  const [capacityPrices, setCapacityPrices] = useState<CapacityPrice[]>([]);
 
   const load = async () => {
     setLoading(true);
     setMessage(null);
     try {
-      const [billingResult, usageResult, invoiceResult, addonResult, workspaceResult, capacityHistoryResult] = await Promise.all([
+      const [billingResult, usageResult, invoiceResult, addonResult, workspaceResult, capacityHistoryResult, capacityPriceResult] = await Promise.all([
         api.get<BillingStatus>("/api/billing/status"),
         api.get<AiContentStatus>("/api/ai-content/status"),
         api.get<{ invoices: BillingInvoice[] }>("/api/billing/invoices"),
         api.get<{ addons: typeof addons }>("/api/billing/commercial-addons"),
         api.get<{ governanceConfirmed?: boolean }>("/api/agency/workspace"),
         api.get<CapacityHistory>("/api/usage/history"),
+        api.get<{features:CapacityPrice[]}>("/api/usage/feature-costs"),
       ]);
       setBilling(billingResult);
       setUsage(usageResult);
@@ -50,6 +64,7 @@ export default function Billing() {
       setAddons(addonResult.addons);
       setGovernanceConfirmed(workspaceResult.governanceConfirmed === true);
       setCapacityHistory(capacityHistoryResult);
+      setCapacityPrices(capacityPriceResult.features);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : "Could not load billing details");
     } finally {
@@ -225,6 +240,11 @@ export default function Billing() {
               <div className="flex gap-2 text-xs font-bold"><span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{capacityHistory?.charged.toLocaleString() ?? 0} charged</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{capacityHistory?.refunded.toLocaleString() ?? 0} restored</span></div>
             </div>
             {!capacityHistory?.transactions.length?<div className="p-5 text-sm text-charcoal-500">No Capacity transactions were recorded this month.</div>:<div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Action</th><th className="px-4 py-3">Project</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Balance after</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{capacityHistory.transactions.map(item=><tr key={item.id}><td className="px-4 py-4"><div className="font-semibold text-charcoal-900">{item.action}</div><div className="mt-0.5 text-xs text-charcoal-500">{item.feature||item.reason} · {item.bucket}</div></td><td className="px-4 py-4 text-charcoal-600">{item.projectId?<Link className="font-semibold text-brand-700 hover:underline" to={`/projects/${item.projectId}`}>{item.projectName}</Link>:"Workspace"}</td><td className="whitespace-nowrap px-4 py-4 text-charcoal-600">{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(new Date(item.createdAt))}</td><td className={`whitespace-nowrap px-4 py-4 font-bold ${item.effect==="restored"?"text-emerald-700":"text-rose-700"}`}>{item.effect==="restored"?"+":"−"}{item.units.toLocaleString()}</td><td className="whitespace-nowrap px-4 py-4 font-semibold text-charcoal-700">{item.balanceAfter.toLocaleString()}</td></tr>)}</tbody></table></div>}
+          </Card>
+
+          <Card className="overflow-hidden">
+            <div className="border-b border-slate-200 p-5"><div className="text-lg font-bold text-charcoal-900">AI Capacity Pricing Matrix</div><p className="mt-1 text-sm text-charcoal-500">Live system pricing for every AI workflow. Revisions and regenerations are new AI work and use the same applicable rate; failed work is restored.</p></div>
+            <div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Workflow</th><th className="px-4 py-3">Module</th><th className="px-4 py-3">Capacity calculation</th><th className="px-4 py-3">Limits</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{capacityPrices.map(feature=><tr key={feature.featureKey}><td className="px-4 py-4"><div className="font-semibold text-charcoal-900">{feature.label}</div><div className="mt-0.5 max-w-xl text-xs leading-5 text-charcoal-500">{feature.description}</div></td><td className="whitespace-nowrap px-4 py-4 capitalize text-charcoal-600">{feature.moduleName.replaceAll("_"," ")}</td><td className="px-4 py-4 font-semibold text-brand-800">{capacityPriceLabel(feature)}</td><td className="whitespace-nowrap px-4 py-4 text-xs text-charcoal-600">Minimum {feature.minimumUnitCost??feature.defaultCreditCost}{feature.maximumUnitCost==null?" · no configured maximum":` · maximum ${feature.maximumUnitCost}`}</td></tr>)}</tbody></table></div>
           </Card>
 
           <Card className={`p-5 ${governanceConfirmed ? "border-emerald-200 bg-emerald-50/40" : "border-amber-200 bg-amber-50/40"}`}>
