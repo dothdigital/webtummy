@@ -122,6 +122,19 @@ describe("DEV-046 project workflow controller", () => {
     const opportunity = resolveProjectWorkflow(snapshot({ businessBrainApproved: true, readinessComplete: true, selectedOpportunity: false }));
     expect(opportunity.nextBestAction.title).toBe("Create and select the project opportunity");
   });
+
+  it("never sends a published website back to Business Brain approval", () => {
+    const published = resolveProjectWorkflow(snapshot({
+      businessBrainApproved: false,
+      readinessComplete: false,
+      publishingStarted: true,
+      publishingComplete: true,
+      measurementStarted: false,
+    }));
+    expect(published.nextBestAction.title).not.toBe("Review and approve the Business Brain");
+    expect(published.stages.find((stage) => stage.key === "business_brain_approval")?.status).toBe("approved");
+    expect(published.stages.find((stage) => stage.key === "readiness_check")?.status).toBe("complete");
+  });
   it("requires Ecommerce Intelligence for both planned and live ecommerce stores", () => {
     const existingStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "existing_website", hasWebsite: true, contextText: "online store" });
     const plannedStore = resolveProjectApplicability({ projectType: "ecommerce", websiteStatus: "new_website_required", hasWebsite: false, contextText: "online store" });
