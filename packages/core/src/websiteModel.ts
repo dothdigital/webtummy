@@ -1521,9 +1521,12 @@ export function validateWebsiteModel(
     });
     if (contentWords > composition.maximumWords) findings.push({
       code: "excessive_page_content",
-      severity: model.status === "validated" ? "blocking" : "warning",
+      // Content length is an optimization target, not a publication safety
+      // condition. SEnuke-generated copy that already passed review and
+      // approval must not become unpublishable when editorial targets change.
+      severity: "warning",
       path: `${path}.sections`,
-      message: `${page.name} contains approximately ${contentWords} words across its registered sections; revise it to remain within the approved ${composition.minimumWords}–${composition.maximumWords} word range.`,
+      message: `${page.name} contains approximately ${contentWords} words across its registered sections; optionally refine it toward the ${composition.minimumWords}–${composition.maximumWords} word target without removing useful content.`,
     });
     if (!page.seo.title.trim()) findings.push({ code: "missing_title", severity: "blocking", path: `${path}.seo.title`, message: `${page.name} requires a unique SEO title.` });
     if (!page.seo.metaDescription.trim()) findings.push({ code: "missing_meta_description", severity: "blocking", path: `${path}.seo.metaDescription`, message: `${page.name} requires a unique meta description.` });

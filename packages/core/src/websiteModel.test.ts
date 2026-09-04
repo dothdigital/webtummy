@@ -342,6 +342,18 @@ describe("SENuke canonical Website Model", () => {
     expect(depthFinding?.severity).toBe("warning");
   });
 
+  it("keeps overlong generated content advisory after a page is validated", () => {
+    const blog = page({ name: "Blog", pageType: "blog", sections: [
+      { ...page().sections[0], props: { ...page().sections[0].props, summary: Array.from({ length: 140 }, () => "insight").join(" ") } },
+    ] });
+    const releaseModel = model([blog]);
+    releaseModel.status = "validated";
+    const result = validateWebsiteModel(releaseModel);
+    const lengthFinding = result.findings.find((finding) => finding.code === "excessive_page_content");
+    expect(lengthFinding?.severity).toBe("warning");
+    expect(result.findings.some((finding) => finding.code === "excessive_page_content" && finding.severity === "blocking")).toBe(false);
+  });
+
   it("accepts the registered contact enquiry form", () => {
     const findings = validateComponentInstance({
       instanceId: "contact-form-1",
