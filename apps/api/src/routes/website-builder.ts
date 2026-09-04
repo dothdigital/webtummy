@@ -9409,7 +9409,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-performance", async (req,
     trackingHealth: { state: plan?.trackingState ?? "CONNECTION_REQUIRED", planVersion: plan?.version ?? null, lastVerifiedAt: website?.trackingSite?.lastVerifiedAt ?? null, lastEventAt: website?.trackingSite?.lastEventAt ?? null, installation: website?.trackingSite?.installation ?? "pending", sources: sources.map((source) => ({ key: String(source.key || "source"), status: String(source.status || "not_connected"), required: source.required === true })) },
     nextBestAction: lifecycle?.nextBestAction ?? project.nextBestActions[0] ?? null,
     postLaunch: {
-      workflow: ["Website launched", "Verify tracking", "Establish baseline", "Activate Growth Blueprint", "Select Next Best Action", "Execute", "Measure", "Learn", "Repeat"],
+      workflow: ["Website launched", "Verify tracking", "Start 28-day baseline", "Begin launch actions", "Measure", "Learn", "Update Next Best Action", "Repeat"],
       websiteLive: Boolean(latestLivePublication),
       releaseId: latestLivePublication?.releaseId ?? null,
       tracking: { verified: trackingVerified, state: plan?.trackingState ?? "CONNECTION_REQUIRED" },
