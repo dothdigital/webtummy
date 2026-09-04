@@ -371,6 +371,31 @@ describe("DEV-046 project workflow controller", () => {
     expect(result.stages.find((item) => item.key === "growth_strategy_approval")?.status).toBe("approved");
   });
 
+  it("never regresses an approved Strategy and Website project to missing legacy intelligence rows", () => {
+    const approvedAt = new Date("2026-08-01T12:00:00.000Z");
+    const result = resolveProjectWorkflow(snapshot({
+      latestStrategy: { id: "strategy-1", status: "approved", createdAt: approvedAt, approvedAt },
+      latestStrategyVersion: 1,
+      gapAnalysisComplete: false,
+      citationEvidenceComplete: false,
+      authorityEvidenceComplete: false,
+      preExecutionGrowthComplete: true,
+      growthBlueprintStatus: "approved",
+      websitePlanRequired: true,
+      websitePlanGenerated: true,
+      websitePlanApproved: true,
+      websiteDevelopmentStarted: true,
+      executionPlanExists: true,
+      executionTasksExist: true,
+      executionPlanApproved: true,
+      openExecutionTasks: 1,
+    }));
+    expect(result.nextBestAction.title).toBe("Continue Website Development");
+    expect(result.nextBestAction.action.url).toContain("/site-architect?");
+    expect(result.blockers).toEqual([]);
+    expect(result.stages.find((item) => item.key === "required_intelligence")?.status).toBe("complete");
+  });
+
   it("does not invalidate a fresh Strategy while its evidence cycle is settling", () => {
     const strategyAt = new Date("2026-08-25T19:29:32.624Z");
     const evidenceAt = new Date(strategyAt.getTime() + 28_000);
