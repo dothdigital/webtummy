@@ -5,6 +5,8 @@ import { Card } from "../components/ui.js";
 import { useAuth } from "../auth.js";
 import type { GuidedExecutionTask, GuidedProject } from "../types.js";
 import { projectDiscoveryInProgress } from "../project-discovery-status.js";
+import { projectStageLabel } from "../project-flow.js";
+import MasterWorkflowStatus from "../components/MasterWorkflowStatus.js";
 
 type ProjectFilter = "all" | "draft" | "in_progress" | "needs_review" | "completed" | "archived";
 
@@ -176,13 +178,6 @@ function projectTypeLabel(project: GuidedProject) {
   if (project.projectType === "existing_website" && !hasWebsite) return "Pre-website project";
   if (project.projectType === "new_business") return hasWebsite ? "New website launch" : "Pre-website project";
   return project.projectType.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
-}
-
-function stageLabel(project: GuidedProject) {
-  const next = nextWorkflowStep(project);
-  if (next) return next.title;
-  if (project.status === "completed") return "Completed";
-  return project.currentStep.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function relativeUpdated(value: string) {
@@ -404,7 +399,7 @@ export default function GuidedProjects() {
                     </div>
                   </div>
                 </div>
-                <span className={`shrink-0 self-start rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : needsReview ? "bg-amber-100 text-amber-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : project.status === "completed" ? "Completed" : needsReview ? (personalWorkspace ? "Your review needed" : "Needs Review") : stageLabel(project)}</span>
+                <span className={`shrink-0 self-start rounded-full px-4 py-1.5 text-xs font-bold ${project.status === "archived" ? "bg-slate-200 text-slate-700" : project.status === "intake_draft" ? "bg-violet-100 text-violet-800" : project.status === "completed" ? "bg-emerald-100 text-emerald-800" : needsReview ? "bg-amber-100 text-amber-800" : "bg-teal-100 text-teal-800"}`}>{project.status === "archived" ? "Archived · View only" : project.status === "intake_draft" ? "Intake draft" : project.status === "completed" ? "Completed" : needsReview ? (personalWorkspace ? "Your review needed" : "Needs Review") : projectStageLabel(project)}</span>
               </div>
 
 
@@ -425,10 +420,10 @@ export default function GuidedProjects() {
                 </div>
               </div>
 
-              <WorkflowMilestones project={project} />
+              {project.workflowController?<MasterWorkflowStatus workflow={project.workflowController} compact actionHref={nextHref} className="mt-5"/>:<WorkflowMilestones project={project} />}
 
               <div className="mt-5 flex flex-col gap-3 border-t border-violet-50 pt-4 md:flex-row md:items-center md:justify-between">
-                <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7"><Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link><div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
+                <div className="flex min-w-0 flex-col gap-2 text-sm text-slate-500 sm:flex-row sm:items-center sm:gap-7">{!project.workflowController&&<Link to={nextHref} className="group inline-flex min-w-0 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-3 py-2 text-teal-800 transition hover:border-teal-400 hover:bg-teal-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-300"><span className="shrink-0 text-[10px] font-black uppercase tracking-wide text-teal-600">Next task</span><span className="truncate font-black">{nextTitle}</span><span aria-hidden="true" className="shrink-0 font-black transition-transform group-hover:translate-x-1">→</span></Link>}<div className="shrink-0">Updated <span className="font-bold text-slate-800">{relativeUpdated(project.updatedAt)}</span></div></div>
                 <div className="flex shrink-0 items-center gap-4">{canEditProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <Link to={`/projects/new?edit=${project.id}`} className="text-xs font-bold text-teal-700 hover:text-teal-900">Edit</Link>}{canManageProjects && !["archived", "intake_draft", "completed"].includes(project.status) && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "complete")} className="text-xs font-bold text-emerald-700 hover:text-emerald-900 disabled:opacity-50">Mark complete with evidence</button>}{canManageProjects && project.status === "completed" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeLifecycleStatus(project, "reopen")} className="text-xs font-bold text-teal-700 hover:text-teal-900 disabled:opacity-50">Reopen</button>}{canManageProjects && project.status !== "archived" && <button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "archive")} className="text-xs font-bold text-slate-500 hover:text-amber-700 disabled:opacity-50">Archive</button>}{canManageProjects && project.status === "archived" && <><button disabled={statusBusy === project.id} type="button" onClick={() => void changeArchiveStatus(project, "restore")} className="text-xs font-bold text-teal-700 disabled:opacity-50">Restore</button><button type="button" onClick={() => setDeleteTarget(project)} className="text-xs font-bold text-rose-600 hover:text-rose-800">Permanently delete</button></>}<Link to={project.status === "intake_draft" ? `/projects/new?resumeConversation=${project.id}` : projectHref} className="text-sm font-bold text-teal-700 hover:text-teal-900">{project.status === "archived" ? "View project →" : project.status === "intake_draft" ? "Continue intake →" : "Open project →"}</Link></div>
               </div>
             </article>;

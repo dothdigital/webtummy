@@ -22,6 +22,15 @@ export function workflowStepComplete(project: GuidedProject, key: string) {
   return ["completed", "skipped"].includes(workflowStatus(project, key) ?? "");
 }
 
+export function projectStageLabel(project: GuidedProject) {
+  const masterStage = project.workflowController?.nextBestAction?.title?.trim();
+  if (masterStage) return masterStage;
+  const next = project.workflowSteps?.find((step) => !["completed", "skipped", "published"].includes(step.status));
+  if (next) return next.title;
+  if (project.status === "completed") return "Completed";
+  return project.currentStep.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
 export function nextProjectFlowStep(project: GuidedProject) {
   const latestStrategy = project.strategyPlans?.[0] as { status?: string } | undefined;
   const hasStrategy = Boolean(latestStrategy || project._count?.strategyPlans);

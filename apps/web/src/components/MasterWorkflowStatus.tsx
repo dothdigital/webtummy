@@ -1,7 +1,7 @@
 import { Link } from "react-router-dom";
 import type { ProjectWorkflowController } from "../types.js";
 
-type Props = { workflow: ProjectWorkflowController; compact?: boolean; onAction?: () => void; actionBusy?: boolean; className?: string };
+type Props = { workflow: ProjectWorkflowController; compact?: boolean; onAction?: () => void; actionHref?: string; actionBusy?: boolean; className?: string };
 
 function statusLabel(workflow: ProjectWorkflowController) {
   if (workflow.blockers.length) return `${workflow.blockers.length} blocker${workflow.blockers.length === 1 ? "" : "s"}`;
@@ -10,7 +10,7 @@ function statusLabel(workflow: ProjectWorkflowController) {
   return workflow.stateLabel;
 }
 
-export default function MasterWorkflowStatus({ workflow, compact = false, onAction, actionBusy = false, className = "" }: Props) {
+export default function MasterWorkflowStatus({ workflow, compact = false, onAction, actionHref, actionBusy = false, className = "" }: Props) {
   const next = workflow.nextBestAction;
   const tone = workflow.blockers.length ? "amber" : next.action.type === "approve" ? "violet" : "cyan";
   const shell = tone === "amber" ? "border-amber-200 bg-gradient-to-r from-amber-50 via-white to-orange-50" : tone === "violet" ? "border-violet-200 bg-gradient-to-r from-violet-50 via-white to-brand-50" : "border-cyan-200 bg-gradient-to-r from-cyan-50 via-white to-emerald-50";
@@ -23,7 +23,7 @@ export default function MasterWorkflowStatus({ workflow, compact = false, onActi
         <p className={`mt-1 text-xs leading-5 text-slate-600 ${compact ? "line-clamp-2" : ""}`}>{next.reason}</p>
         {!compact && <p className="mt-1 text-xs font-semibold text-slate-700"><b>Expected result:</b> {next.expectedResult}</p>}
       </div>
-      {onAction ? <button type="button" onClick={onAction} disabled={actionBusy} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-400 ${button}`}>{actionBusy ? "Working…" : `${next.action.label} →`}</button> : <Link to={next.action.url} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-4 py-2.5 text-sm font-black text-white ${button}`}>{next.action.label} →</Link>}
+      {onAction ? <button type="button" onClick={onAction} disabled={actionBusy} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-400 ${button}`}>{actionBusy ? "Working…" : `${next.action.label} →`}</button> : <Link to={actionHref??next.action.url} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-4 py-2.5 text-sm font-black text-white ${button}`}>{next.action.label} →</Link>}
     </div>
     {!compact && workflow.blockers.length > 0 && <div className="mt-3 border-t border-amber-200 pt-3 text-xs text-amber-900"><b>Also needs attention:</b> {workflow.blockers.map((item) => item.title).join(" · ")}</div>}
   </section>;
