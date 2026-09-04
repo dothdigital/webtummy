@@ -668,7 +668,14 @@ async function generateDiscoveryDraft(req: Request, res: Response, next: NextFun
     const billingClientId = context.workspace.legacyClientId;
     if (!billingClientId) return res.status(409).json({ error: "Workspace billing context is required before AI ideas can be generated." });
     const plan = await prisma.client.findUnique({ where: { id: billingClientId }, select: { plan: true } });
-    const idempotencyKey = `discovery:${draft.id}:${draft.updatedAt.getTime()}`;
+    // A refinement is new work even when it starts from the same saved draft.
+    // Keep repeat clicks idempotent, but do not collapse a fine-tune request
+    // into the already committed initial idea-generation reservation.
+    const generationVariant = createHash("sha256").update(JSON.stringify({
+      feedback: input.feedback ?? null,
+      baseIdeaId: input.baseIdeaId ?? null,
+    })).digest("hex").slice(0, 16);
+    const idempotencyKey = `discovery:${draft.id}:${draft.updatedAt.getTime()}:${generationVariant}`;
     if (input.generationJobId) {
       const job = await prisma.aiRun.findFirst({ where: { id: input.generationJobId, moduleName: "discovery_generation_job" } });
       if (!job || jsonRecord(job.inputSnapshotJson).draftId !== draft.id) return res.status(404).json({ error: "Discovery generation job not found." });
@@ -693,8 +700,31 @@ async function generateDiscoveryDraft(req: Request, res: Response, next: NextFun
     // metering. The research model policy may still select a stronger model,
     // but model policy keys are not necessarily billable feature-catalog keys.
     if (!input.generationJobId) {
-      const usage = await preflightUsage({ clientId: billingClientId, userId: context.membership.userId, featureKey: "ai_assisted_intake", actionKey: "Generate Discovery Ideas", idempotencyKey });
-      usageEventId = usage.usageEventId;
+      const fineTuneIncluded = Boolean(baseIdea && input.feedback);
+      if (fineTuneIncluded) {
+        const usage = await prisma.usageEvent.upsert({
+          where: { clientId_idempotencyKey: { clientId: billingClientId, idempotencyKey } },
+          update: {},
+          create: {
+            clientId: billingClientId,
+            workspaceId: context.workspace.id,
+            userId: context.membership.userId,
+            featureKey: "ai_assisted_intake",
+            actionKey: "Fine-tune Discovery Idea",
+            idempotencyKey,
+            status: "reserved",
+            creditsReserved: 0,
+            includedUnitsReserved: 0,
+            purchasedUnitsReserved: 0,
+            inputUnits: 1,
+            metadataJson: { billingReason: "included_discovery_fine_tune", capacityCharged: 0 },
+          },
+        });
+        usageEventId = usage.id;
+      } else {
+        const usage = await preflightUsage({ clientId: billingClientId, userId: context.membership.userId, featureKey: "ai_assisted_intake", actionKey: "Generate Discovery Ideas", idempotencyKey });
+        usageEventId = usage.usageEventId;
+      }
       const jobId = `discovery_job_${createHash("sha256").update(idempotencyKey).digest("hex").slice(0, 32)}`;
       await prisma.aiRun.upsert({ where: { id: jobId }, update: {}, create: {
         id: jobId, clientId: billingClientId, moduleName: "discovery_generation_job", promptVersion: "discovery-background-v1", status: "queued",

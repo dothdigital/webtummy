@@ -949,17 +949,13 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
       resolvedLocations.set(canonicalGeographicLocationLabel(requested).toLocaleLowerCase(), location);
     } catch (error) {
       const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "The location could not be validated.", "location");
-      invalidLocations.push({ location: requested, reason: publicError.message });
+      const requestedKey = normalizeText(requested);
+      const reason = ["gta", "greater toronto area", "toronto gta"].includes(requestedKey)
+        ? "GTA is a regional abbreviation, not an exact location supported by the research provider. Choose Toronto, Mississauga, Brampton, another specific city, Ontario, or Canada."
+        : publicError.message;
+      invalidLocations.push({ location: requested, reason });
     }
   }));
-  if (invalidLocations.length) {
-    return res.status(422).json({
-      error: `Review the research locations before starting this batch. ${invalidLocations.map((item) => `${item.location}: ${item.reason}`).join(" ")}`,
-      invalid: invalidLocations,
-      accepted: [],
-    });
-  }
-
   const validatedChecks = new Map<string, { input: KeywordCreateInput; location: SearchLocation }>();
   const invalidChecks: Array<{ keyword: string; location: string; reason: string }> = [];
   for (const input of rawChecks) {
@@ -977,14 +973,6 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
       });
     }
   }
-  if (invalidChecks.length) {
-    return res.status(422).json({
-      error: `Review the keyword and location mapping before starting this batch. ${invalidChecks.map((item) => `${item.keyword} · ${item.location}: ${item.reason}`).join(" ")}`,
-      invalid: invalidChecks,
-      accepted: [],
-    });
-  }
-
   const checks = [...validatedChecks.values()];
   const requestKeys = checks.map(({ input, location }) => {
     const { targetDomain } = keywordResearchTargets(input, scope);
@@ -1054,7 +1042,17 @@ keywordResearchRouter.post("/keyword-research/batch", async (req, res) => {
   }
 
   const accepted: Array<{ run: Awaited<ReturnType<typeof createOrReuseKeywordResearchRun>>["run"]; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }> = [];
-  const failed: Array<{ keyword: string; location: string; reason: string }> = [];
+  const invalidLocationReasons = new Map(invalidLocations.map((item) => [
+    canonicalGeographicLocationLabel(item.location).toLocaleLowerCase(),
+    item.reason,
+  ]));
+  const failed: Array<{ keyword: string; location: string; reason: string }> = [
+    ...rawChecks.flatMap((input) => {
+      const reason = invalidLocationReasons.get(canonicalGeographicLocationLabel(input.locationName).toLocaleLowerCase());
+      return reason ? [{ keyword: input.seedKeyword, location: input.locationName, reason }] : [];
+    }),
+    ...invalidChecks,
+  ];
   for (const { input, location } of checks) {
     try {
       const { targetDomain } = keywordResearchTargets(input, scope);

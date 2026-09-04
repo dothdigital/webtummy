@@ -329,6 +329,7 @@ export type WebsiteModel = {
     contactEmail?: string;
     contactPhone?: string;
     businessAddress?: string;
+    disclaimerText?: string;
     copyrightText?: string;
     socialProfiles?: Array<{
       network: "facebook" | "instagram" | "linkedin" | "youtube" | "x" | "tiktok";
@@ -400,6 +401,7 @@ export type WebsitePageCompositionPolicy = {
   archetype: WebsitePageArchetype;
   requiredComponentIds: readonly string[];
   recommendedComponentIds: readonly string[];
+  minimumFaqs: number;
   minimumComponentCount: number;
   minimumWords: number;
   maximumWords: number;
@@ -432,12 +434,15 @@ export function websitePageCompositionPolicy(page: {
     || /\b(?:lead magnet|download|free guide|free checklist) landing\b/.test(title);
   const local = pageType === "location" || pageType === "local_service" || intent.includes("local");
   const supporting = ["supporting", "blog", "blog_section", "blog_article", "article", "resource"].includes(pageType) || intent.includes("informational");
+  const blogIndex = ["blog", "blog_section"].includes(pageType);
   const base = ["hero.local_service", "content.rich_text", "content.faq"] as const;
+  const noFaqBase = ["hero.local_service", "content.rich_text"] as const;
 
   if (utility) return {
     archetype: "utility",
-    requiredComponentIds: base,
+    requiredComponentIds: noFaqBase,
     recommendedComponentIds: ["content.rich_text"],
+    minimumFaqs: 0,
     minimumComponentCount: 2,
     minimumWords: 250,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -445,8 +450,9 @@ export function websitePageCompositionPolicy(page: {
   };
   if (contact) return {
     archetype: "contact",
-    requiredComponentIds: [...base, "conversion.contact_form"],
-    recommendedComponentIds: ["content.faq"],
+    requiredComponentIds: [...noFaqBase, "conversion.contact_form"],
+    recommendedComponentIds: [],
+    minimumFaqs: 0,
     minimumComponentCount: 3,
     minimumWords: 280,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -456,6 +462,7 @@ export function websitePageCompositionPolicy(page: {
     archetype: "faq",
     requiredComponentIds: ["hero.local_service", "content.faq", "conversion.cta"],
     recommendedComponentIds: ["content.rich_text", "trust.proof"],
+    minimumFaqs: 8,
     minimumComponentCount: 3,
     minimumWords: 400,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -465,6 +472,7 @@ export function websitePageCompositionPolicy(page: {
     archetype: "home",
     requiredComponentIds: [...base, "conversion.cta"],
     recommendedComponentIds: ["service.grid", "service.benefits", "trust.proof", "content.faq"],
+    minimumFaqs: 4,
     minimumComponentCount: 6,
     minimumWords: 650,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -474,6 +482,7 @@ export function websitePageCompositionPolicy(page: {
     archetype: "landing",
     requiredComponentIds: ["hero.local_service", "content.rich_text", "service.benefits", "conversion.contact_form", "conversion.cta"],
     recommendedComponentIds: ["trust.proof", "content.faq"],
+    minimumFaqs: 4,
     minimumComponentCount: 5,
     minimumWords: 250,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -481,44 +490,53 @@ export function websitePageCompositionPolicy(page: {
   };
   if (caseStudy) return {
     archetype: "case_study",
-    requiredComponentIds: [...base, "trust.proof", "conversion.cta"],
+    requiredComponentIds: [...noFaqBase, "trust.proof", "conversion.cta"],
     recommendedComponentIds: ["content.process", "service.benefits"],
-    minimumComponentCount: 5,
+    minimumFaqs: 0,
+    minimumComponentCount: 4,
     minimumWords: 550,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
     guidance: "Tell an evidence-led problem, approach, implementation, and outcome story using only approved facts and clearly marked proof.",
   };
   if (about) return {
     archetype: "about",
-    requiredComponentIds: [...base, "trust.proof", "conversion.cta"],
+    requiredComponentIds: [...noFaqBase, "trust.proof", "conversion.cta"],
     recommendedComponentIds: ["content.rich_text", "service.benefits"],
-    minimumComponentCount: 5,
+    minimumFaqs: 0,
+    minimumComponentCount: 4,
     minimumWords: 500,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
     guidance: "Build the organization story from approved Project Intake evidence: purpose, history, experience, team, values, approach, strengths, and verified proof. Omit or flag missing facts; never invent people, credentials, dates, awards, or outcomes. Do not turn the page into a generic service template.",
   };
-  if (local) return {
+  if (local && !blogIndex) return {
     archetype: "local_service",
     requiredComponentIds: [...base, "trust.proof", "conversion.cta"],
     recommendedComponentIds: ["service.grid", "content.process", "content.faq", "service.benefits"],
+    minimumFaqs: 4,
     minimumComponentCount: 7,
     minimumWords: 700,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
     guidance: "Use meaningful location-specific service details, proof, buyer questions, internal links, and conversion context. Never produce city-name-swap content.",
   };
-  if (supporting) return {
+  if (supporting) {
+    return {
     archetype: "supporting",
-    requiredComponentIds: [...base, "conversion.cta"],
-    recommendedComponentIds: ["content.rich_text", "content.faq", "trust.proof"],
-    minimumComponentCount: 5,
-    minimumWords: 700,
-    maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
-    guidance: "Answer the dominant question thoroughly, structure the explanation for scanning and AI answers, and route readers to the relevant commercial page.",
-  };
+    requiredComponentIds: blogIndex ? ["hero.local_service"] : [...base, "conversion.cta"],
+    recommendedComponentIds: blogIndex ? [] : ["content.rich_text", "content.faq", "trust.proof"],
+    minimumFaqs: blogIndex ? 0 : 4,
+    minimumComponentCount: blogIndex ? 1 : 5,
+    minimumWords: blogIndex ? 20 : 700,
+    maximumWords: blogIndex ? 100 : WEBSITE_PAGE_MAXIMUM_WORDS,
+    guidance: blogIndex
+      ? "Create exactly one H1 and one short introductory paragraph, followed by the governed blog article listing. Do not add FAQs, FAQPage schema, supporting content sections, or a CTA block."
+      : "Answer the dominant question thoroughly, structure the explanation for scanning and AI answers, and route readers to the relevant commercial page.",
+    };
+  }
   return {
     archetype: "service",
     requiredComponentIds: [...base, "conversion.cta"],
     recommendedComponentIds: ["service.grid", "service.benefits", "content.process", "trust.proof", "content.faq"],
+    minimumFaqs: 4,
     minimumComponentCount: 7,
     minimumWords: 650,
     maximumWords: WEBSITE_PAGE_MAXIMUM_WORDS,
@@ -1472,8 +1490,8 @@ export function validateWebsiteModel(
       .filter((item) => item && typeof item === "object" && !Array.isArray(item))
       .map((item) => item as Record<string, JsonValue>)
       .filter((item) => typeof item.question === "string" && item.question.trim() && typeof item.answer === "string" && item.answer.trim());
-    const minimumFaqs = composition.archetype === "faq" ? 8 : 4;
-    if (visibleFaqs.length < minimumFaqs) findings.push({
+    const minimumFaqs = composition.minimumFaqs;
+    if (minimumFaqs > 0 && visibleFaqs.length < minimumFaqs) findings.push({
       code: "insufficient_page_faqs",
       severity: "blocking",
       path: `${path}.sections`,
@@ -1700,8 +1718,11 @@ export function scoreSeoPage(
   const duplicate = pageFindings.some((finding) => finding.code.includes("duplicate"));
   const unsupportedClaims = pageFindings.some((finding) => finding.code === "unsupported_claim");
   const heroCount = page.sections.filter((section) => section.componentId.startsWith("hero.") && typeof section.props.headline === "string").length;
+  const composition = websitePageCompositionPolicy({ pageType: page.pageType, title: page.name, searchIntent: page.seo.dominantIntent });
+  const faqOptional = composition.minimumFaqs === 0;
+  const blogIndex = ["blog", "blog_section"].includes(String(page.pageType || "").toLowerCase());
   const hasLocalEvidence = !page.seo.location?.city || page.sections.some((section) => ["trust.proof", "content.faq", "service.grid"].includes(section.componentId));
-  const internalLinksOptional = /^(?:contact|conversion|utility|legal|privacy|terms|thank[_ -]?you)$/i.test(String(page.pageType || ""));
+  const internalLinksOptional = blogIndex || /^(?:contact|conversion|utility|legal|privacy|terms|thank[_ -]?you)$/i.test(String(page.pageType || ""));
   const checks = [
     qualityCheck("title", "Title", page.seo.title.length >= 20 && page.seo.title.length <= 65, 10, "Use a unique, readable title aligned with the primary intent."),
     qualityCheck("meta_description", "Meta description", page.seo.metaDescription.length >= 70 && page.seo.metaDescription.length <= 170, 10, "Use a unique description that explains the page value."),
@@ -1710,10 +1731,10 @@ export function scoreSeoPage(
     qualityCheck("local_relevance", "Local relevance", hasLocalEvidence, 10, "Local pages require meaningful local proof, FAQs, services, or examples."),
     qualityCheck("internal_links", "Internal links", page.seo.internalLinks.length > 0 || model.pages.length === 1 || internalLinksOptional, 10, internalLinksOptional ? "Body-level internal links are optional for this page type." : "Add valid contextual links to related project pages."),
     qualityCheck("schema", "Schema", Object.keys(page.seo.schemaJsonLd).length > 0, 10, "Add verified page-appropriate JSON-LD."),
-    qualityCheck("faq", "FAQ usefulness", page.seo.faqs.length >= 4, 5, "Include at least four useful, page-specific buyer FAQs.", page.seo.faqs.length > 0 && page.seo.faqs.length < 4),
+    qualityCheck("faq", "FAQ usefulness", faqOptional || page.seo.faqs.length >= composition.minimumFaqs, 5, faqOptional ? "FAQs are intentionally not required for this page type." : `Include at least ${composition.minimumFaqs} useful, page-specific buyer FAQs.`, !faqOptional && page.seo.faqs.length > 0 && page.seo.faqs.length < composition.minimumFaqs),
     qualityCheck("duplicate", "Duplicate content risk", !duplicate, 10, "Avoid repeated or city-swap content."),
     qualityCheck("claims", "Unsupported claims", !unsupportedClaims, 10, "Use only verified or safely qualified claims."),
-    qualityCheck("cta", "CTA clarity", Boolean(page.primaryCta.label && urlIsSafe(page.primaryCta.url)), 5, "Provide one clear next step."),
+    qualityCheck("cta", "CTA clarity", blogIndex || Boolean(page.primaryCta.label && urlIsSafe(page.primaryCta.url)), 5, blogIndex ? "The blog index routes visitors through its article listing rather than a separate CTA block." : "Provide one clear next step."),
   ];
   const score = checks.reduce((total, check) => total + check.score, 0);
   const blockingFindings = pageFindings.filter((finding) => finding.severity === "blocking");

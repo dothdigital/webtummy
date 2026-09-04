@@ -645,6 +645,18 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/aud
       ...(contextData.offerSummary ? [{ type: "offer", statement: contextData.offerSummary, classification: "user_provided", sourceType: contextData.offerSource.sourceType, sourceLabel: contextData.offerSource.sourceLabel, sourceRecordId: contextData.offerSource.sourceRecordId, confidence: 85 }] : []),
       ...(contextData.targetAudience ? [{ type: "audience", statement: contextData.targetAudience, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Audience profile", sourceRecordId: project.businessProfile?.id, confidence: 85 }] : []),
       ...contextData.targetLocations.map((location) => ({ type: "service_location", statement: location, classification: "user_provided", sourceType: "project_intake", sourceLabel: "Target market", sourceRecordId: project.id, confidence: 80 })),
+      ...(Array.isArray(jsonRecord(jsonRecord(project.websiteBuilds[0]?.settingsJson).trustEvidence).credentials)
+        ? jsonRecord(jsonRecord(project.websiteBuilds[0]?.settingsJson).trustEvidence).credentials as unknown[]
+        : []).map(jsonRecord).filter((credential) => credential.confirmed === true && String(credential.details || "").trim()).map((credential) => ({
+          type: "credential",
+          statement: String(credential.details).trim(),
+          classification: "user_provided",
+          sourceType: "website_foundation",
+          sourceLabel: "Confirmed private licence or credential evidence",
+          sourceRecordId: project.websiteBuilds[0]?.id,
+          sourceUrl: String(credential.sourceUrl || "").trim() || null,
+          confidence: 90,
+        })),
     ];
     for (const claimDraft of claimDrafts) {
       const fingerprint = claimFingerprint(claimDraft.type, claimDraft.statement);
@@ -655,8 +667,8 @@ aiCitationVisibilityRouter.post("/projects/:projectId/ai-citation-visibility/aud
       });
       await tx.claimSource.upsert({
         where: { claimId_sourceType_sourceLabel: { claimId: claim.id, sourceType: claimDraft.sourceType, sourceLabel: claimDraft.sourceLabel } },
-        update: { sourceRecordId: claimDraft.sourceRecordId ?? null, evidenceText: claimDraft.statement, observedAt: new Date() },
-        create: { claimId: claim.id, sourceType: claimDraft.sourceType, sourceLabel: claimDraft.sourceLabel, sourceRecordId: claimDraft.sourceRecordId ?? null, evidenceText: claimDraft.statement, isPrimary: true },
+        update: { sourceRecordId: claimDraft.sourceRecordId ?? null, sourceUrl: "sourceUrl" in claimDraft ? claimDraft.sourceUrl : null, evidenceText: claimDraft.statement, observedAt: new Date() },
+        create: { claimId: claim.id, sourceType: claimDraft.sourceType, sourceLabel: claimDraft.sourceLabel, sourceRecordId: claimDraft.sourceRecordId ?? null, sourceUrl: "sourceUrl" in claimDraft ? claimDraft.sourceUrl : null, evidenceText: claimDraft.statement, isPrimary: true },
       });
     }
     await tx.citationReadinessFinding.updateMany({ where: { projectId: project.id, status: "open" }, data: { status: "superseded" } });

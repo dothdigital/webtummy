@@ -627,8 +627,8 @@ export function websitePageMissingContentKinds(input: {
     .filter((item) => typeof item.question === "string" && item.question.trim().length >= 8
       && typeof item.answer === "string" && item.answer.trim().length >= 20);
   const composition = websitePageCompositionPolicy(input);
-  const minimumFaqs = composition.archetype === "faq" ? 8 : 4;
-  if (faqItems.length < minimumFaqs) missing.push("faq");
+  const minimumFaqs = composition.minimumFaqs;
+  if (minimumFaqs > 0 && faqItems.length < minimumFaqs) missing.push("faq");
 
   const seo = input.seo && typeof input.seo === "object" && !Array.isArray(input.seo)
     ? input.seo as Record<string, unknown>

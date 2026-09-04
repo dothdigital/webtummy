@@ -562,6 +562,9 @@ describe("Approved Release website renderer", () => {
       name: "Blog",
       slug: "/blog/",
       pageType: "blog_section",
+      sections: model.pages[0].sections.map((section) => section.componentId === "hero.local_service"
+        ? { ...section, props: { ...section.props, headline: "Blog Insights", summary: "Read practical articles created to help you make informed decisions." } }
+        : section),
       seo: { ...model.pages[0].seo, title: "Blog", metaDescription: "Read the latest practical guidance.", canonicalUrl: "/blog/" },
     };
     const article = {
@@ -590,6 +593,10 @@ describe("Approved Release website renderer", () => {
     expect(paths).not.toContain("how-to-compare-coverage/index.html");
     const archive = files.find((file) => file.path === "blog/index.html")?.content || "";
     expect(archive).toContain("senuke-blog-grid");
+    expect(archive).toContain("<h1>Blog Insights</h1>");
+    expect(archive).toContain("<p>Read practical articles created to help you make informed decisions.</p>");
+    expect((archive.match(/<h1>/g) || []).length).toBe(1);
+    expect(archive).not.toContain("senuke-faq");
     expect(archive).toContain("How to compare coverage");
     expect(archive).toContain('href="../blog/how-to-compare-coverage/index.html"');
     const articleHtml = files.find((file) => file.path === "blog/how-to-compare-coverage/index.html")?.content || "";

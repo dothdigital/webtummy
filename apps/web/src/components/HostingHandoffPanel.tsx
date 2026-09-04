@@ -128,8 +128,23 @@ export default function HostingHandoffPanel({
     </div>
 
     {draft.destination === "wordpress" && <div className="mt-5 rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-      <b className="text-sm text-emerald-950">Next: connect WordPress</b>
-      <p className="mt-1 text-xs leading-5 text-emerald-800">After saving, enter only the WordPress site URL, username, and Application Password. SENuke verifies the connector, creates review drafts, captures its rollback point, and then publishes the same release live.</p>
+      <b className="text-sm text-emerald-950">Next: prepare, connect, review, and publish WordPress</b>
+      <p className="mt-1 text-xs leading-5 text-emerald-800">Complete these steps in order. SEnuke does not need hosting-provider, DNS, email, SFTP, or server-path credentials for this deployment method.</p>
+      <ol className="mt-3 grid gap-2 text-xs leading-5 text-emerald-950 md:grid-cols-2">
+        {[
+          ["1", "Prepare WordPress", "Install WordPress on the destination domain and confirm the public HTTPS site URL opens correctly. The site must not be hidden behind maintenance mode, a login wall, or a hosting/CDN security challenge."],
+          ["2", "Allow the REST API", "Confirm /wp-json/ is publicly reachable. WordPress, the host, CDN, firewall, and security plugins must allow authenticated REST API requests."],
+          ["3", "Install the SEnuke connector", "Download the connector from the WordPress connection section, install it in WordPress, and activate it before testing the connection."],
+          ["4", "Create publishing access", "Use a WordPress account permitted to create, edit, upload media, and publish the required content. In Users → Profile → Application Passwords, create a new password named SEnuke AI. Do not use the normal wp-admin password."],
+          ["5", "Save and verify", "Save this WordPress destination, then enter the exact WordPress URL, username, and generated Application Password. SEnuke verifies the user, REST API, connector, and required publishing capabilities."],
+          ["6", "Create review drafts", "SEnuke sends the Approved Release to WordPress as non-public review drafts so the pages, media, navigation, metadata, schema, forms, and design can be checked safely."],
+          ["7", "Capture the rollback point", "Before live promotion, SEnuke records the remote page state and connector backup information needed to recover from a failed or unwanted deployment."],
+          ["8", "Publish and verify live", "After final approval, publish the same immutable release. SEnuke checks the live URLs, content, navigation, canonicals, search visibility, forms, and deployment result before marking the website published and verified."],
+        ].map(([number, title, detail]) => <li key={number} className="flex gap-3 rounded-lg border border-emerald-200 bg-white/80 p-3">
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-emerald-700 text-[10px] font-black text-white">{number}</span>
+          <span><strong className="block text-emerald-950">{title}</strong><span className="mt-0.5 block text-emerald-800">{detail}</span></span>
+        </li>)}
+      </ol>
     </div>}
 
     {(draft.destination === "existing_host" || draft.destination === "new_host") && <div className="mt-5 space-y-4 rounded-xl border border-cyan-200 bg-cyan-50/50 p-4">

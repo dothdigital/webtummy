@@ -142,7 +142,7 @@ const commercialWorkflowPricing: Record<string, { units: number; model?: string;
   ai_citation_scan: { units: 250, model: "fixed", minimum: 150, maximum: 400 },
   site_architect_generate: { units: 150, model: "fixed", minimum: 75, maximum: 250 },
   lead_magnet_research: { units: 75, model: "fixed", minimum: 50, maximum: 150 },
-  lead_magnet_generate: { units: 125, model: "fixed", minimum: 75, maximum: 175 },
+  lead_magnet_generate: { units: 150, model: "fixed", minimum: 150, maximum: 150 },
   ai_assisted_intake: { units: 125, model: "fixed", minimum: 75, maximum: 150 },
   growth_diagnosis: { units: 125, model: "ai_or_zero", minimum: 0, maximum: 200, config: { deterministicUnits: 0 } },
   growth_report: { units: 100, model: "fixed", minimum: 50, maximum: 150 },

@@ -6,7 +6,15 @@ export async function requestMicrophoneAccess() {
     stream.getTracks().forEach((track) => track.stop());
   } catch (error) {
     const name = error instanceof DOMException ? error.name : "";
-    if (["NotAllowedError", "SecurityError"].includes(name)) throw new Error("Microphone access was blocked by the browser or operating system. Allow it for this site, then reload the page.");
+    if (["NotAllowedError", "SecurityError"].includes(name)) {
+      try {
+        const permission = await navigator.permissions?.query({ name: "microphone" as PermissionName });
+        if (permission?.state === "granted") throw new Error("Microphone permission is enabled, but this page could not start it. Reload the page to apply the site policy, then try again.");
+      } catch (permissionError) {
+        if (permissionError instanceof Error && /permission is enabled/i.test(permissionError.message)) throw permissionError;
+      }
+      throw new Error("Microphone access was blocked by the browser or operating system. Allow it for this site, then reload the page.");
+    }
     if (["NotFoundError", "DevicesNotFoundError"].includes(name)) throw new Error("No microphone was found. Connect or enable a microphone, then try again.");
     if (["NotReadableError", "TrackStartError", "AbortError"].includes(name)) throw new Error("The microphone is busy or unavailable. Close other apps using it, then try again.");
     throw new Error("The microphone could not be started. Check the browser and operating-system microphone settings.");

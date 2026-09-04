@@ -4,6 +4,7 @@ import { api } from "../api.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import ProjectModuleHeader from "../components/ProjectModuleHeader.js";
 import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
+import MasterWorkflowStatus from "../components/MasterWorkflowStatus.js";
 import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GrowthCandidateAction, GrowthContentOpportunity, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
@@ -511,6 +512,7 @@ export default function GrowthEngine() {
   const [selectedContentIds, setSelectedContentIds] = useState<string[]>([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const [generationReview, setGenerationReview] = useState<null | { title: string; description: string; path: string; nextTab?: Tab; body?: Record<string, unknown> }>(null);
+  const [blueprintActionReview, setBlueprintActionReview] = useState<GrowthCandidateAction | null>(null);
   const [websiteUrlPromptOpen, setWebsiteUrlPromptOpen] = useState(false);
   const [websiteUrl, setWebsiteUrl] = useState("");
   const [websiteUrlError, setWebsiteUrlError] = useState("");
@@ -566,6 +568,13 @@ export default function GrowthEngine() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function approveGrowthBlueprint() {
+    if (!projectId || !data?.growth.blueprint) return;
+    const version = data.growth.blueprint.currentVersion;
+    if (!window.confirm(`Approve Growth Blueprint v${version}? This approves the saved version and continues the Master Workflow. It does not generate a new version or use AI Capacity.`)) return;
+    void runAction(`/api/projects-v2/${projectId}/growth/blueprint/approve`, "recommendations");
   }
 
   async function saveWebsiteUrl() {
@@ -754,10 +763,17 @@ export default function GrowthEngine() {
   const selectableContentOpportunities = visibleContentOpportunities.filter((item) => ["proposed", "deferred"].includes(item.lifecycleStatus) && !item.executionTaskId);
   const recommendedContentOpportunity = selectableContentOpportunities[0] ?? null;
   const findings = findingItems(data.growth.diagnosis?.findingsJson);
-  const growthStrategySynced = Boolean(data.strategyContext?.strategyId
-    && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId
-    && ["active", "approved"].includes(data.growth.blueprint?.status ?? ""));
+  const blueprintMatchesStrategy = Boolean(data.strategyContext?.strategyId
+    && data.growth.blueprint?.approvedStrategyId === data.strategyContext.strategyId);
+  const blueprintApproved = Boolean(data.growth.blueprint
+    && ["active", "approved"].includes(data.growth.blueprint.status));
+  const growthStrategySynced = blueprintMatchesStrategy && blueprintApproved;
   const officialNextAction = data.workflowController?.nextBestAction ?? null;
+  const blueprintApprovalRequired = Boolean(data.growth.blueprint
+    && blueprintMatchesStrategy
+    && !blueprintApproved
+    && officialNextAction?.action.type === "approve"
+    && /growth blueprint/i.test(officialNextAction.title));
   const contentQueueHelp = contentQueue === "now"
     ? "Now contains the content worth executing first. Create one task and open it, or select several to create a small working batch."
     : contentQueue === "next"
@@ -778,12 +794,17 @@ export default function GrowthEngine() {
         projects={projects}
         tasks={data.project.executionTasks ?? []}
         onProjectChange={(nextProjectId) => { setActiveProjectId(nextProjectId); setParams({ projectId: nextProjectId, tab }); }}
-        actions={[{
-          key: "refresh-growth",
-          label: busy ? "Refreshing…" : data.growth.blueprint ? "Refresh Growth Engine" : "Run Growth Engine",
+        actions={!data.growth.blueprint ? [{
+          key: "run-growth",
+          label: busy ? "Generating…" : "Run Growth Engine",
           disabled: busy || !canRunGrowth,
-          onClick: () => reviewGeneration(data.growth.blueprint ? "Review Growth refresh" : "Review first Growth Blueprint", "Review the current approved Strategy and evidence. Your existing plan remains unchanged unless you continue.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations"),
-        }]}
+          onClick: () => reviewGeneration("Review first Growth Blueprint", "Review the current approved Strategy and evidence before creating the first Blueprint.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations"),
+        }] : blueprintApprovalRequired ? [{
+          key: "approve-growth-blueprint",
+          label: busy ? "Approving…" : "Approve Growth Blueprint",
+          disabled: busy,
+          onClick: approveGrowthBlueprint,
+        }] : []}
         showExecution
       />
 
@@ -813,6 +834,39 @@ export default function GrowthEngine() {
         </Card>
       </div>}
 
+      {blueprintActionReview && (() => {
+        const workspace = growthActionWorkspace(blueprintActionReview, projectId);
+        const dependencies = stringItems(blueprintActionReview.dependencyIdsJson);
+        return <div className="fixed inset-0 z-[105] flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="blueprint-action-review-title">
+          <Card className="w-full max-w-2xl border-violet-200 p-6 shadow-2xl">
+            <div className="text-xs font-black uppercase tracking-wide text-violet-700">Review Blueprint action</div>
+            <h2 id="blueprint-action-review-title" className="mt-2 text-xl font-bold text-charcoal-950">{blueprintActionReview.title}</h2>
+            <p className="mt-3 text-sm leading-6 text-slate-600">{blueprintActionReview.recommendation}</p>
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-brand-200 bg-brand-50 p-4">
+                <div className="text-xs font-black uppercase tracking-wide text-brand-700">What this click will do</div>
+                <p className="mt-2 text-sm leading-6 text-brand-950">Approve this recommendation, create its governed Execution task, and continue to <b>{workspace.label.replace(/\s*→\s*$/, "")}</b>. It will not publish or change a live website.</p>
+              </div>
+              <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                <div className="text-xs font-black uppercase tracking-wide text-emerald-700">AI Capacity for this activity</div>
+                <div className="mt-1 text-2xl font-black text-emerald-950">0 AI Capacity</div>
+                <p className="mt-1 text-xs leading-5 text-emerald-800">AI generation is a separate downstream action. Its exact charge will be shown for approval before that generation begins.</p>
+              </div>
+            </div>
+            <div className="mt-3 rounded-xl border border-slate-200 bg-slate-50 p-4">
+              <div className="text-xs font-black uppercase tracking-wide text-slate-500">Expected impact</div>
+              <p className="mt-2 text-sm leading-6 text-slate-700">{blueprintActionReview.expectedImpact || "Move this approved Blueprint priority into controlled execution and measurement."}</p>
+              <div className="mt-2 text-xs font-semibold text-slate-500">{blueprintActionReview.confidence}% confidence · {titleCase(blueprintActionReview.estimatedEffort)} effort · {titleCase(blueprintActionReview.riskLevel)} risk</div>
+            </div>
+            {dependencies.length > 0 && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><b>Dependencies:</b> {dependencies.join(" · ")}</div>}
+            <div className="mt-5 flex flex-wrap justify-end gap-2">
+              <Button variant="ghost" onClick={() => setBlueprintActionReview(null)} disabled={busy}>Cancel</Button>
+              <Button onClick={() => { const action = blueprintActionReview; setBlueprintActionReview(null); void decideRecommendation(action, "accepted"); }} disabled={busy}>Approve &amp; Create Execution Task</Button>
+            </div>
+          </Card>
+        </div>;
+      })()}
+
       {websiteUrlPromptOpen && <div className="fixed inset-0 z-[110] flex items-center justify-center bg-slate-950/55 p-4" role="dialog" aria-modal="true" aria-labelledby="growth-website-url-title">
         <Card className="w-full max-w-lg border-brand-200 p-6 shadow-2xl">
           <div className="text-xs font-black uppercase tracking-wide text-brand-700">Continue Growth setup</div>
@@ -835,7 +889,7 @@ export default function GrowthEngine() {
       {!canRunGrowth ? null : (
       <>
 
-      {!growthStrategySynced && <Card className="border-amber-200 bg-amber-50 p-4">
+      {data.growth.blueprint && !blueprintMatchesStrategy && <Card className="border-amber-200 bg-amber-50 p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="max-w-4xl">
             <div className="flex flex-wrap items-center gap-2">
@@ -946,10 +1000,6 @@ export default function GrowthEngine() {
           <Card className="p-5">
             <h2 className="font-bold text-charcoal-950">Decision loop</h2>
             <div className="mt-4 space-y-3">
-              <button type="button" onClick={() => reviewGeneration("Review evidence and recommendation refresh", "Review the current evidence first. Continuing recalculates the Blueprint recommendation; cancelling preserves the current version.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                <div className="font-bold text-charcoal-950">Refresh evidence and recommendation</div>
-                <div className="mt-1 text-sm text-slate-500">Normalize current signals, diagnose constraints, score candidates, and select one action. No task is created yet.</div>
-              </button>
               {data.growth.selectedAction?.followupTask ? (() => { const workspace = growthActionWorkspace(data.growth.selectedAction!, projectId); return <Link to={workspace.url} className="block w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50"><div className="font-bold text-charcoal-950">{data.growth.selectedAction!.title}</div><div className="mt-1 text-sm text-slate-500">{workspace.preparation}</div><div className="mt-3 text-xs font-bold text-brand-700">{workspace.label} →</div></Link>; })() : data.growth.selectedAction ? (
                 <button type="button" disabled={busy} onClick={() => void decideRecommendation(data.growth.selectedAction!, "accepted")} className="w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50 disabled:opacity-50">
                   <div className="font-bold text-charcoal-950">{data.growth.selectedAction.title}</div>
@@ -1001,7 +1051,7 @@ export default function GrowthEngine() {
                         <div className="mt-1 text-xs font-bold text-brand-600">{titleCase(item.route || "growth")} · score {item.score ?? "—"}</div>
                         {item.rationale && <p className="mt-2 text-xs leading-5 text-slate-500">{item.rationale}</p>}
                         {item.conditions && item.conditions.length > 0 && <div className="mt-2 text-xs text-amber-700">Needs: {item.conditions.join(", ")}</div>}
-                        {matchingAction && <div className="mt-3 border-t border-slate-100 pt-3">{matchingAction.followupTask && workspace ? <Link to={workspace.url} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">{workspace.label} →</Link> : matchingAction.status === "completed" ? <button type="button" onClick={() => { setTab("history"); setParams({ projectId, tab: "history" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">View outcome →</button> : <button type="button" disabled={busy || Boolean(item.conditions?.length)} onClick={() => void decideRecommendation(matchingAction, "accepted")} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:bg-slate-300">Start with AI →</button>}</div>}
+                        {matchingAction && <div className="mt-3 border-t border-slate-100 pt-3">{matchingAction.followupTask && workspace ? <Link to={workspace.url} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">{workspace.label} →</Link> : matchingAction.status === "completed" ? <button type="button" onClick={() => { setTab("history"); setParams({ projectId, tab: "history" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">View outcome →</button> : <button type="button" disabled={busy || Boolean(item.conditions?.length)} onClick={() => setBlueprintActionReview(matchingAction)} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:bg-slate-300">Start with AI →</button>}</div>}
                       </div>;
                     })}
                   </div>
@@ -1163,6 +1213,13 @@ export default function GrowthEngine() {
 
       {tab === "recommendations" && (
         <div className="space-y-4">
+          {blueprintApprovalRequired && data.workflowController && (
+            <MasterWorkflowStatus
+              workflow={data.workflowController}
+              onAction={approveGrowthBlueprint}
+              actionBusy={busy}
+            />
+          )}
           {data.growth.selectedAction ? (
             <RecommendationCard action={data.growth.selectedAction} projectId={projectId} primary busy={busy} onDecision={decideRecommendation} />
           ) : (

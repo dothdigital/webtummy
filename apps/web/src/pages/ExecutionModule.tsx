@@ -5,6 +5,7 @@ import { Bar, BarChart, CartesianGrid, Cell, Legend, Pie, PieChart, ResponsiveCo
 import { api } from "../api.js";
 import { ActionIconButton, ActionIconLink, AiPlanningScreen, Button, Card, EmptyState, StatusPill } from "../components/ui.js";
 import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
+import MasterWorkflowStatus from "../components/MasterWorkflowStatus.js";
 import ProjectModuleHeader, { type ProjectHeaderAction } from "../components/ProjectModuleHeader.js";
 import { ExecutionTaskDrawer } from "./CrawlDetail.js";
 import { isExistingWebsiteFlow, nextProjectFlowStep } from "../project-flow.js";
@@ -663,6 +664,14 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const siteScanCooldown = useMemo(() => siteScanCooldownState(latestSiteCrawl, nowMs), [latestSiteCrawl, nowMs]);
   const readiness = moduleReadiness(kind, scopedData, activeProject, activeWebsite);
   const canRunModule = readiness.canRun;
+  const preLaunchSiteAnalysis = Boolean(kind === "site-analysis" && activeProject && !isExistingWebsiteFlow(activeProject, activeWebsite));
+  const preLaunchAiCitation = Boolean(kind === "ai-citations" && activeProject && !isExistingWebsiteFlow(activeProject, activeWebsite));
+  const plannedDomain = (() => {
+    const value = activeProject?.websiteUrl?.trim();
+    if (!value) return "No domain has been provided yet";
+    try { return new URL(/^https?:\/\//i.test(value) ? value : `https://${value}`).hostname; }
+    catch { return value.replace(/^https?:\/\//i, "").replace(/\/$/, ""); }
+  })();
 
   const refreshBacklinks = async () => {
     if (!activeWebsite || refreshingBacklinks || backlinkCooldown.blocked) return;
@@ -1131,7 +1140,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const headerActions: ProjectHeaderAction[] = [];
   if (kind === "keywords" && scopedKeywordRuns.length > 0) headerActions.push({ key: "manage-keywords", label: "Manage keyword groups", variant: "secondary", onClick: () => { const next = new URLSearchParams(searchParams); next.set("manageKeywords", "1"); setSearchParams(next, { replace: true }); } });
   if (kind === "ai-citations") headerActions.push({ key: "evidence-workspace", label: "Evidence-led workspace", variant: "status" });
-  else if (kind !== "site-architect" && kind !== "keywords" && kind !== "lead-magnets" && !(kind === "site-analysis" && !latestSiteCrawl)) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
+  else if (kind !== "site-architect" && kind !== "keywords" && kind !== "lead-magnets" && !(kind === "site-analysis" && !latestSiteCrawl) && !(kind === "opportunities" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/opportunities")) && !(kind === "strategy" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/strategy"))) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
     <div className={kind === "keywords"
@@ -1158,7 +1167,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         </div>
       ) : hasActiveProject && kind === "strategy" ? (
         <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
-          <span>{strategyMessage || (activeProject ? "Approve the generated strategy before creating the execution plan." : "Create a guided project before approving a strategy.")}</span>
+          <span>{strategyMessage || (activeProject?.strategyPlans?.[0]?.status === "approved" ? `Strategy v${activeProject.strategyPlans[0].version ?? 1} is approved. The Master Workflow controls the next required action.` : activeProject ? "Review and approve the generated Strategy before continuing." : "Create a guided project before approving a strategy.")}</span>
           {strategyJob?.delayed && <button type="button" onClick={() => void releaseDelayedStrategyJob()} className="rounded-lg bg-brand-700 px-3 py-2 text-xs font-black text-white">Release and retry safely</button>}
         </div>
       ) : null}
@@ -1209,11 +1218,23 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       )}
       {!loading && !workspaceLoadError && !hasActiveProject && data.projects.length > 0 && searchParams.get("projectId") && <Card className="border-amber-200 bg-amber-50 p-5"><h2 className="font-bold text-amber-900">Project unavailable</h2><p className="mt-2 text-sm text-amber-800">This project was not found or is not assigned to your workspace account.</p><Link to="/projects" className="mt-4 inline-flex rounded-lg border border-amber-200 bg-white px-4 py-2 text-sm font-bold text-amber-900">Back to projects</Link></Card>}
       {!loading && hasActiveProject && !hasWorkspaceRecords && <EmptyModuleState title="No data available" detail="Project data will appear here after intake, crawls, tasks, or generation runs exist." />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && !canRunModule && kind !== "site-architect" && !preLaunchSiteAnalysis && !preLaunchAiCitation && <ModuleReadinessChecklist moduleTitle={copy.title} items={readiness.items} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && preLaunchSiteAnalysis && workflowController && <div className="space-y-3"><Card className="p-5"><div className="text-xs font-black uppercase tracking-wide text-brand-700">Website Analysis · Pre-launch</div><h2 className="mt-2 text-xl font-black text-charcoal-950">Live Website Analysis starts after deployment</h2><p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">This is a new-website project, so there is no public website to crawl yet. The Master Workflow uses approved pre-launch evidence now and schedules the first live Website Analysis after deployment.</p></Card><MasterWorkflowStatus workflow={workflowController} /></div>}
+      {!loading && hasActiveProject && hasWorkspaceRecords && preLaunchAiCitation && <div className="space-y-3">
+        <Card className="overflow-hidden border-violet-200">
+          <div className="bg-gradient-to-r from-violet-50 via-white to-cyan-50 p-5">
+            <div className="text-xs font-black uppercase tracking-wide text-violet-700">AI Citation · Pre-launch</div>
+            <h2 className="mt-2 text-xl font-black text-charcoal-950">The domain you provided is not live for this project yet</h2>
+            <div className="mt-3 inline-flex rounded-lg border border-violet-200 bg-white px-3 py-2 font-mono text-sm font-bold text-violet-900">{plannedDomain}</div>
+            <p className="mt-3 max-w-3xl text-sm leading-6 text-charcoal-600">Live crawl-based AI Citation analysis will become available after Website Development and Deployment. Until then, entity, schema, answer-content, trust, sitemap, robots.txt, and llms.txt needs remain planned requirements—not verified live-site findings.</p>
+          </div>
+        </Card>
+        {workflowController ? <MasterWorkflowStatus workflow={workflowController} /> : <Card className="p-5 text-sm text-slate-600">Loading the current Master Workflow action…</Card>}
+      </div>}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} capacityEstimate={opportunityCapacityEstimate} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onDeleteData={deleteOpportunityData} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} workflowController={workflowController} onAction={runStrategyAction} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} workflowController={workflowController} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !preLaunchSiteAnalysis && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
         <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-slate-200 bg-white px-6 py-12 shadow-sm">
           <div className="max-w-xl text-center">
             <div className="text-xs font-bold uppercase tracking-[0.16em] text-brand-600">Ready for site analysis</div>
@@ -1234,7 +1255,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && latestSiteCrawl && <SiteAnalysisScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} autoStart={searchParams.get("start") === "discover"} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} workflowController={workflowController} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "lead-magnets" && <LeadFunnelWorkspace projectId={activeProject.id} suggestedIdeas={leadMagnetIdeas(scopedData)} startRequestKey={leadMagnetStartRequest} />}
       {strategyGenerateConfirm && <StrategyGenerateConfirmModal estimate={strategyGenerateConfirm.estimate} onCancel={() => closeStrategyGenerateConfirm(false)} onConfirm={() => closeStrategyGenerateConfirm(true)} />}
       <ModuleHelpDrawer kind={kind} project={activeProject} open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -1939,6 +1960,8 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
   const [regenerateConfirmOpen, setRegenerateConfirmOpen] = useState(false);
   const [reportBusy, setReportBusy] = useState(false);
   const project = data.projects[0];
+  const masterAction = workflowController?.nextBestAction;
+  const strategyIsCurrentMasterAction = Boolean(masterAction?.action.url.startsWith("/strategy"));
   const strategyCount = project?._count?.strategyPlans ?? 0;
   const latestStrategy = project?.strategyPlans?.[0] as {
     id?: string;
@@ -2102,12 +2125,13 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
       </Card>}
 
       {!latestStrategy ? (
-        <Card className="overflow-hidden border-brand-100 bg-brand-50/60">
+        masterAction && workflowController
+          ? <MasterWorkflowStatus workflow={workflowController} onAction={strategyIsCurrentMasterAction ? () => { void runInlineAction("generate"); } : undefined} actionBusy={Boolean(busy)} />
+          : <Card className="overflow-hidden border-brand-100 bg-brand-50/60">
           <EmptyState
             eyebrow="Unified Strategy"
-            title="AI strategy has not been generated yet"
-            description="Generate the strategy from the guided project intake, opportunity, audience, offer, and publishing destination."
-            action={<button type="button" onClick={() => { void runInlineAction("generate"); }} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:bg-slate-300">{busy === "generate" ? "Generating..." : "Generate AI Strategy"}</button>}
+            title="Strategy is waiting for the Master Workflow"
+            description="Complete the preceding workflow requirements before generating Strategy."
           />
           {inlineNotice && (
             <div className={`mx-auto mb-6 max-w-2xl rounded-lg border px-4 py-3 text-center text-sm font-semibold ${
@@ -2123,10 +2147,11 @@ function StrategyScreen({ data, busy, workflowController, onAction }: { data: Mo
         </Card>
       ) : (
         <div className="space-y-5">
+          {strategyApproved && workflowController && <MasterWorkflowStatus workflow={workflowController} compact />}
           <StrategyTabs activeTab={activeTab} onChange={setActiveTab} />
 
           <Card className="px-4 py-3">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">{latestStrategy.status === "approved" ? "Current approved Strategy" : "Current Strategy draft"}, version {latestStrategy.version ?? strategyVersions.length} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2">{activeTab !== "overview" && strategyRevisionAvailable && <button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-bold text-violet-700 hover:bg-violet-100 disabled:opacity-50">{busy === "generate" ? "Creating version…" : latestStrategy.status === "approved" ? "Review changed evidence" : "Create new Strategy version"}</button>}<button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-charcoal-400">Strategy versions</div><div className="mt-1 text-sm font-semibold text-charcoal-700">{latestStrategy.status === "approved" ? "Current approved Strategy" : "Current Strategy draft"}, version {latestStrategy.version ?? strategyVersions.length} {latestStrategy.createdAt ? `· ${formatDateTime(latestStrategy.createdAt)}` : ""}</div></div><div className="flex flex-wrap items-center gap-2"><button type="button" onClick={() => setRegenerateConfirmOpen(true)} disabled={Boolean(busy)} className="rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-xs font-black text-violet-700 hover:bg-violet-100 disabled:opacity-50">Create new Strategy version</button><button type="button" onClick={() => void generateStrategyReport()} disabled={reportBusy} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white shadow-sm disabled:bg-slate-300">{reportBusy ? "Generating PDF…" : "Generate Strategy Report ↓"}</button>{strategyVersions.map((version, index) => <button type="button" key={version?.id ?? index} onClick={() => setCompareVersionId(index === 0 || compareVersionId === version?.id ? null : version?.id ?? null)} className={`rounded-full border px-3 py-1 text-xs font-bold ${index === 0 ? "border-brand-300 bg-brand-50 text-brand-700" : compareVersionId === version?.id ? "border-violet-300 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-charcoal-500"}`}>v{version?.version ?? strategyVersions.length - index} · {index === 0 ? label(version?.status ?? "draft") : compareVersionId === version?.id ? "Comparing" : "Compare"}</button>)}</div></div>
             {compareVersionId && (() => {
               const compared = strategyVersions.find((version) => version?.id === compareVersionId);
               if (!compared) return null;
@@ -3222,7 +3247,7 @@ function OpportunitySummaryStrip({ project, niche }: { project: GuidedProject; n
   );
 }
 
-function KeywordScreen({ data }: { data: ModuleData }) {
+function KeywordScreen({ data, workflowController }: { data: ModuleData; workflowController: ProjectWorkflowControllerState | null }) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const project = data.projects[0];
@@ -3522,21 +3547,6 @@ function KeywordScreen({ data }: { data: ModuleData }) {
   const failedKeywordAnalysisTo = `${keywordAnalysisTo}&failed=1`;
   const keywordReportsReady = !keywordMarketSetupRequired && expectedKeywordChecks.length > 0 && runs.length > 0 && !keywordAnalysisProcessing && missingApprovedKeywords.length === 0 && failedKeywordLocationChecks === 0;
   const existingWebsiteFlow = isExistingWebsiteFlow(project, website);
-  const preLaunchWebsiteFlow = Boolean(project && ["new_website_required", "website_planned"].includes(project.websiteStatus ?? "") && !existingWebsiteFlow);
-  const siteAnalysisComplete = hasCompletedSiteAnalysis(data, project, website);
-  const completedKeywordNextRoute = existingWebsiteFlow
-    ? siteAnalysisComplete
-      ? `/gap-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`
-      : `/site-analysis?projectId=${encodeURIComponent(project?.id ?? "")}`
-    : `/site-architect?projectId=${encodeURIComponent(project?.id ?? "")}&step=foundation`;
-  const completedKeywordNextLabel = existingWebsiteFlow
-    ? siteAnalysisComplete ? "Continue to SEO & Gap Analysis" : "Continue to Site Analysis"
-    : "Review Website Plan";
-  const completedKeywordNextDescription = existingWebsiteFlow
-    ? siteAnalysisComplete
-      ? "Site Analysis is already complete. Continue to SEO & Gap Analysis to map every approved keyword to the most relevant existing page."
-      : "Continue to Site Analysis so every approved keyword can be compared with the live website and mapped to the right page."
-    : "Keyword analysis is complete. Review how every approved Primary and Secondary keyword is assigned to the governed Website Plan before approving the next Strategy version.";
   const audience = project?.businessProfile?.targetAudience || "the project audience";
   const offer = project?.businessProfile?.offerSummary || project?.niche || project?.businessName || project?.name || "the project offer";
   const markets = projectGeographies;
@@ -3611,13 +3621,14 @@ function KeywordScreen({ data }: { data: ModuleData }) {
             <p className="mt-1 text-sm leading-6 text-charcoal-600">{keywordAnalysisProcessing ? "SEnuke AI - AI Growth Operating System is collecting demand, competition, CPC, intent and SERP competitor signals. You can leave this page and return to review completed reports." : keywordReportsReady ? "Every approved Primary and Secondary keyword has been analyzed. Open the reports to review market demand, competition, CPC, intent and SERP opportunities." : keywordMarketSetupRequired ? `Select at least one exact city, region, or country for the ${totalApprovedKeywords} approved keyword${totalApprovedKeywords === 1 ? "" : "s"}. SEnuke AI will then calculate the required keyword-market checks before analysis starts.` : retryingFailedKeywords ? `The provider could not complete ${failedKeywordLocationChecks} exact keyword-location check${failedKeywordLocationChecks === 1 ? "" : "s"}. The completed checks are preserved; retry only the failed pairs.` : approvedCount > 0 ? `${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} across ${missingApprovedKeywords.length} approved keyword${missingApprovedKeywords.length === 1 ? " is" : "s are"} still waiting for analysis. Website and Strategy will use the complete approved set for page mapping.` : "Review, approve, edit, or add keywords before continuing."}</p>
             <p className="mt-1 text-xs font-semibold text-charcoal-500">{groups.length} groups · {approvedCount} approved · {totalApprovedKeywords} approved keywords · {keywordMarketSetupRequired ? "target areas not selected · required checks calculate after selection" : <>{completedRequiredKeywordChecks}/{expectedKeywordChecks.length} required checks complete · {retryingFailedKeywords ? `${failedKeywordLocationChecks} failed checks · ${missingApprovedKeywords.length} keywords still awaiting complete evidence` : `${incompleteKeywordChecks.length} remaining checks across ${missingApprovedKeywords.length} keywords`}</>} · {keywordAnalysisProcessing ? `${processingRuns.length} analysis run${processingRuns.length === 1 ? "" : "s"} processing` : keywordReportsReady ? `${runs.length} completed analysis run${runs.length === 1 ? "" : "s"}` : existingWebsiteFlow ? "existing website context" : "pre-launch market research"}</p>
           </div>
-          {keywordAnalysisProcessing ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-white px-5 py-2.5 text-sm font-bold text-amber-800 shadow-sm hover:bg-amber-50"><span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-200 border-t-amber-600" />View analysis status →</Link> : keywordReportsReady ? <Link to={completedKeywordNextRoute} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-emerald-700">{completedKeywordNextLabel} →</Link> : approvedCount > 0 ? <Link to={keywordMarketSetupRequired ? keywordAnalysisTo : retryingFailedKeywords ? failedKeywordAnalysisTo : keywordAnalysisTo} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-5 py-2.5 text-sm font-bold text-white shadow-sm ${retryingFailedKeywords && !keywordMarketSetupRequired ? "bg-rose-700 hover:bg-rose-800" : "bg-brand-600 hover:bg-brand-700"}`}>{keywordMarketSetupRequired ? "Choose target areas" : retryingFailedKeywords ? `Review & Retry ${failedKeywordLocationChecks || missingApprovedKeywords.length} Failed Check${(failedKeywordLocationChecks || missingApprovedKeywords.length) === 1 ? "" : "s"}` : `Review & Start ${incompleteKeywordChecks.length} Remaining Check${incompleteKeywordChecks.length === 1 ? "" : "s"}`} →</Link> : null}
+          {keywordAnalysisProcessing ? <Link to={keywordReportsTo} className="inline-flex shrink-0 items-center justify-center gap-2 rounded-lg border border-amber-200 bg-white px-5 py-2.5 text-sm font-bold text-amber-800 shadow-sm hover:bg-amber-50"><span className="h-4 w-4 animate-spin rounded-full border-2 border-amber-200 border-t-amber-600" />View analysis status →</Link> : keywordReportsReady ? null : approvedCount > 0 ? <Link to={keywordMarketSetupRequired ? keywordAnalysisTo : retryingFailedKeywords ? failedKeywordAnalysisTo : keywordAnalysisTo} className={`inline-flex shrink-0 items-center justify-center rounded-lg px-5 py-2.5 text-sm font-bold text-white shadow-sm ${retryingFailedKeywords && !keywordMarketSetupRequired ? "bg-rose-700 hover:bg-rose-800" : "bg-brand-600 hover:bg-brand-700"}`}>{keywordMarketSetupRequired ? "Choose target areas" : retryingFailedKeywords ? `Review & Retry ${failedKeywordLocationChecks || missingApprovedKeywords.length} Failed Check${(failedKeywordLocationChecks || missingApprovedKeywords.length) === 1 ? "" : "s"}` : `Review & Start ${incompleteKeywordChecks.length} Remaining Check${incompleteKeywordChecks.length === 1 ? "" : "s"}`} →</Link> : null}
         </div>
-        <div className="mt-4 flex items-start gap-3 rounded-xl bg-slate-950 px-4 py-3 text-white">
+        {!keywordReportsReady && <div className="mt-4 flex items-start gap-3 rounded-xl bg-slate-950 px-4 py-3 text-white">
           <span className="mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-brand-500 text-xs font-black" aria-hidden="true">→</span>
-          <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-200">Next action</div><p className="mt-1 text-sm font-semibold leading-5 text-white">{keywordAnalysisProcessing ? "Let the current analysis finish, then review the completed keyword reports. You do not need to start another run." : keywordReportsReady ? completedKeywordNextDescription : keywordMarketSetupRequired ? "Choose the target areas this project should compete in. After you save them, review the calculated checks and start the analysis." : retryingFailedKeywords ? `Review and retry the ${failedKeywordLocationChecks} failed checks. Successful results will not be rerun.` : approvedCount > 0 ? `Analyze ${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} for the ${missingApprovedKeywords.length} remaining approved keyword${missingApprovedKeywords.length === 1 ? "" : "s"}.` : "Review and approve the Primary and Secondary keyword groups before analysis begins."}</p></div>
-        </div>
+          <div><div className="text-[10px] font-black uppercase tracking-[0.14em] text-brand-200">Next action</div><p className="mt-1 text-sm font-semibold leading-5 text-white">{keywordAnalysisProcessing ? "Let the current analysis finish, then review the completed keyword reports. You do not need to start another run." : keywordMarketSetupRequired ? "Choose the target areas this project should compete in. After you save them, review the calculated checks and start the analysis." : retryingFailedKeywords ? `Review and retry the ${failedKeywordLocationChecks} failed checks. Successful results will not be rerun.` : approvedCount > 0 ? `Analyze ${incompleteKeywordChecks.length} exact market check${incompleteKeywordChecks.length === 1 ? "" : "s"} for the ${missingApprovedKeywords.length} remaining approved keyword${missingApprovedKeywords.length === 1 ? "" : "s"}.` : "Review and approve the Primary and Secondary keyword groups before analysis begins."}</p></div>
+        </div>}
       </Card>
+      {keywordReportsReady && workflowController && <MasterWorkflowStatus workflow={workflowController} />}
       {failedKeywordAttentionRows.length > 0 && !keywordAnalysisProcessing && <Card className="overflow-hidden border-rose-200">
         <div className={`flex flex-col gap-3 bg-rose-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between ${showKeywordAttentionDetails ? "border-b border-rose-100" : ""}`}>
           <div>
@@ -4084,7 +4095,7 @@ type SavedArchitecturePage = { id: string; pageKey: string; parentPageKey?: stri
 type SavedArchitectureLink = { id: string; sourcePageKey: string; targetPageKey: string; anchorText: string; linkType: string; rationale: string; executionTaskId?: string | null };
 type SavedArchitecture = { id: string; version: number; status: string; title: string; executiveSummary: string; rationale: string; createdAt: string; approvedAt?: string | null; rejectionReason?: string | null; pages: SavedArchitecturePage[]; links: SavedArchitectureLink[]; decisions: { id: string; decision: string; comments?: string | null; createdAt: string }[] };
 
-function ArchitectScreen({ data }: { data: ModuleData }) {
+function ArchitectScreen({ data, workflowController }: { data: ModuleData; workflowController: ProjectWorkflowControllerState | null }) {
   const project = data.projects[0];
   const website = data.websites[0];
   const latestCrawl = website?.crawlJobs?.find((crawl) => crawl.status === "completed");
@@ -4120,7 +4131,7 @@ function ArchitectScreen({ data }: { data: ModuleData }) {
   const approvedKeywords = project.keywordGroups?.filter((group) => group.status === "approved").length ?? 0;
   return <div className="space-y-5">
     {message && <div className={`rounded-lg border px-4 py-3 text-sm font-semibold ${/failed|could not|complete|approve/i.test(message) && !/approved|completed/i.test(message) ? "border-rose-200 bg-rose-50 text-rose-800" : "border-brand-100 bg-brand-50 text-brand-700"}`}>{message}</div>}
-    <SiteBuilderWorkflow projectId={project.id} architectureId={current?.id} architectureStatus={current?.status} onArchitectureChanged={load} />
+    <SiteBuilderWorkflow projectId={project.id} architectureId={current?.id} architectureStatus={current?.status} workflowController={workflowController} onArchitectureChanged={load} />
     {!current ? null : <>
       <Card className="overflow-hidden p-0"><div className="flex flex-col gap-4 border-b border-brand-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="flex flex-wrap items-center gap-2"><span className="text-xs font-black uppercase tracking-wide text-brand-700">Architecture v{current.version}</span><span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${current.status === "approved" ? "bg-emerald-100 text-emerald-700" : current.status === "rejected" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{current.status}</span></div><h2 className="mt-2 text-xl font-black text-charcoal-950">{current.title}</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-charcoal-600">{current.executiveSummary}</p></div><div className="flex flex-wrap gap-2">{capabilities.canGenerate && <button type="button" onClick={() => void generate()} disabled={busy === "generate"} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-xs font-black text-brand-700">{busy === "generate" ? "Generating…" : "Generate New Version"}</button>}{current.status === "draft" && capabilities.canApprove && <><button type="button" onClick={reject} disabled={Boolean(busy)} className="rounded-lg border border-rose-200 bg-white px-4 py-2 text-xs font-black text-rose-700">Reject</button><button type="button" onClick={() => void approve()} disabled={Boolean(busy)} className="rounded-lg bg-brand-600 px-4 py-2 text-xs font-black text-white">{busy === "approve" ? "Approving…" : "Approve Structure"}</button></>}</div></div><div className="grid grid-cols-2 divide-x divide-slate-100 sm:grid-cols-4"><ArchitectureMetric label="Pages" value={current.pages.length} /><ArchitectureMetric label="Internal links" value={current.links.length} /><ArchitectureMetric label="Main navigation" value={current.pages.filter((page) => page.navigationGroup === "main").length} /><ArchitectureMetric label="Pillar pages" value={current.pages.filter((page) => page.pageType === "pillar").length} /></div></Card>
       <div className="flex gap-2 overflow-x-auto rounded-xl border border-slate-200 bg-white p-2">{([['pages','Pages & URLs'],['navigation','Navigation'],['links','Internal Linking'],['versions','Version History']] as const).map(([key, labelText]) => <button key={key} type="button" onClick={() => setView(key)} className={`shrink-0 rounded-lg px-4 py-2 text-sm font-black ${view === key ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}>{labelText}</button>)}</div>
@@ -5064,7 +5075,7 @@ function OpportunityInsights({ project, niche, opportunity, opportunityCount, ta
       </div>
       <div className="grid gap-5 p-5 xl:grid-cols-[minmax(0,1.5fr)_220px_minmax(0,1fr)]">
         <div className="grid gap-x-5 gap-y-3 sm:grid-cols-2">
-          {scoreEvidenceComplete ? scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />) : <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900 sm:col-span-2"><b>Numeric scores need Keyword Analysis evidence.</b><p className="mt-1">Your Business Profile and opportunity options are complete. Select the best direction using its audience, offer, and business-fit explanation. Numeric scores will become available after Keyword Analysis returns valid search volume and SEO difficulty.</p>{marketEvidenceAvailable ? <button type="button" disabled={reassessing} onClick={onReassess} className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white disabled:opacity-50">{reassessing ? "Reassessing…" : "Reassess opportunities with completed evidence →"}</button> : opportunity && ["selected", "confirmed"].includes(opportunity.status) ? <Link to={"/keywords?projectId=" + encodeURIComponent(project.id)} className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Continue to Keyword Analysis →</Link> : <a href="#opportunity-options" className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Review and select an opportunity →</a>}</div>}
+          {scoreEvidenceComplete ? scoreRows.map((row) => <OpportunityScoreBar key={row.label} label={row.label} value={row.value} tone={row.tone} />) : <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-4 text-sm leading-6 text-amber-900 sm:col-span-2"><b>The selected opportunity remains valid.</b><p className="mt-1">Its original recommendation did not include the later keyword-based numeric scores. Updating those scores is optional and is not required to continue the Master Workflow.</p>{marketEvidenceAvailable ? <div className="mt-3 rounded-lg border border-amber-200 bg-white p-3"><div className="text-xs font-bold text-amber-950">Optional AI regeneration · uses AI Capacity</div><button type="button" disabled={reassessing} onClick={onReassess} className="mt-2 inline-flex rounded-lg border border-amber-300 bg-white px-3 py-2 text-xs font-black text-amber-900 disabled:opacity-50">{reassessing ? "Updating opportunity scores…" : "Optionally update opportunity scores"}</button></div> : opportunity && ["selected", "confirmed"].includes(opportunity.status) ? <Link to={"/keywords?projectId=" + encodeURIComponent(project.id)} className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Continue to Keyword Analysis →</Link> : <a href="#opportunity-options" className="mt-3 inline-flex rounded-lg bg-amber-700 px-4 py-2 text-xs font-black text-white">Review and select an opportunity →</a>}</div>}
           {scoreEvidenceComplete && <div className="rounded-lg bg-slate-50 px-3 py-2 text-xs leading-5 text-charcoal-600 sm:col-span-2">Complexity is inverted from speed to launch. Lower complexity means easier to execute.</div>}
         </div>
         <div className="grid grid-cols-3 gap-2 xl:grid-cols-1">

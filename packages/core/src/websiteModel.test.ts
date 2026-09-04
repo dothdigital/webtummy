@@ -289,9 +289,16 @@ describe("SENuke canonical Website Model", () => {
     expect(faq.requiredComponentIds).toContain("content.faq");
     expect(faq.guidance).toContain("8–12");
     expect(blogSection.archetype).toBe("supporting");
+    expect(blogSection.requiredComponentIds).toEqual(["hero.local_service"]);
+    expect(blogSection.minimumFaqs).toBe(0);
     expect(blogArticle.archetype).toBe("supporting");
     expect(blogArticle.requiredComponentIds).toContain("content.rich_text");
-    expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text", "content.faq"]);
+    expect(blogArticle.minimumFaqs).toBe(4);
+    expect(contact.minimumFaqs).toBe(0);
+    expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text"]);
+    expect(legal.minimumFaqs).toBe(0);
+    expect(websitePageCompositionPolicy({ pageType: "team", title: "Our Team" }).minimumFaqs).toBe(0);
+    expect(websitePageCompositionPolicy({ pageType: "portfolio", title: "Portfolio" }).minimumFaqs).toBe(0);
   });
 
   it("does not require Service schema for a transactional Contact page", () => {
@@ -543,6 +550,23 @@ describe("SENuke canonical Website Model", () => {
     const website = model([page(), contact]);
     const score = scoreSeoPage(contact, website);
     expect(score.checks.find((check) => check.key === "internal_links")).toEqual(expect.objectContaining({ status: "pass", score: 10 }));
+  });
+
+  it("does not force FAQs through validation or quality scoring on excluded page types", () => {
+    for (const [pageType, name] of [["privacy", "Privacy Policy"], ["terms", "Terms and Conditions"], ["contact", "Contact Us"], ["team", "Our Team"], ["portfolio", "Portfolio"], ["blog_section", "Blog"]] as const) {
+      const candidate = page({
+        pageId: `no-faq-${pageType}`,
+        name,
+        pageType,
+        sections: page().sections.filter((section) => section.componentId !== "content.faq"),
+        seo: { ...page().seo, faqs: [], canonicalUrl: `/${pageType}/`, dominantIntent: pageType === "blog_section" ? "informational" : page().seo.dominantIntent },
+      });
+      const website = model([candidate]);
+      const validation = validateWebsiteModel(website);
+      expect(validation.findings.some((finding) => finding.code === "insufficient_page_faqs"), pageType).toBe(false);
+      expect(scoreSeoPage(candidate, website, validation).checks.find((check) => check.key === "faq"), pageType)
+        .toEqual(expect.objectContaining({ status: "pass", score: 5 }));
+    }
   });
 
   it("blocks release quality when the canonical is missing", () => {

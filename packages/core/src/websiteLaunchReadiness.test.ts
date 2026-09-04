@@ -104,6 +104,29 @@ describe("website launch readiness", () => {
     expect(result.checks.find((check) => check.key === "technical_files")?.status).toBe("passed");
   });
 
+  it("does not block an exempt page because FAQs and FAQPage schema are absent", () => {
+    const privacyPage = {
+      ...validModel.pages[0],
+      name: "Privacy Policy",
+      slug: "/privacy/",
+      pageType: "privacy",
+      sections: validModel.pages[0].sections.filter((section) => section.componentId !== "content.faq"),
+      seo: {
+        ...validModel.pages[0].seo,
+        title: "Privacy Policy | Example Insurance",
+        metaDescription: "Read how Example Insurance handles personal information, protects submitted details, and explains the choices available to website visitors.",
+        canonicalUrl: "/privacy/",
+        dominantIntent: "navigational",
+        faqs: [],
+        schemaJsonLd: { "@context": "https://schema.org", "@type": "WebPage" },
+      },
+    };
+    const privacyModel: WebsiteModel = { ...validModel, pages: [privacyPage], navigation: [{ pageId: privacyPage.pageId, label: "Privacy" }] };
+    const result = evaluateWebsiteLaunchReadiness(privacyModel, { approvedReleaseId: "release-privacy", snapshotHash: "privacy-snapshot" });
+    expect(result.checks.find((check) => check.key === "registry_validation")?.status).toBe("passed");
+    expect(result.pageResults.flatMap((page) => page.findings).join(" ")).not.toMatch(/FAQ/i);
+  });
+
   it("blocks duplicate URLs and metadata before publication", () => {
     const duplicate: WebsiteModel = {
       ...validModel,
@@ -122,7 +145,7 @@ describe("website launch readiness", () => {
     expect(result.checks.find((check) => check.key === "unique_metadata")?.status).toBe("blocking");
   });
 
-  it("keeps high-priority copy recommendations visible without locking publication", () => {
+  it("keeps non-blocking copy recommendations without forcing a high-priority finding", () => {
     const recommendationOnly: WebsiteModel = {
       ...validModel,
       pages: [{
@@ -137,7 +160,7 @@ describe("website launch readiness", () => {
       snapshotHash: "recommendations-snapshot",
     });
 
-    expect(result.qualityGate.counts.high).toBeGreaterThan(0);
+    expect(result.qualityGate.counts.high).toBe(0);
     expect(result.qualityGate.status).toBe("needs_review");
     expect(result.checks.find((check) => check.key === "quality_governance")?.status).toBe("warning");
     expect(result.blockingCount).toBe(0);

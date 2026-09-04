@@ -539,7 +539,10 @@ describe("website generation workflow contracts", () => {
         ? { ...component, props: { ...component.props, items: component.props.items.slice(0, 2) } }
         : component),
     };
-    expect(websitePageMissingContentKinds({ content: twoFaqContent, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["faq"]);
+    expect(websitePageMissingContentKinds({ content: twoFaqContent, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual([]);
+    for (const [pageType, title] of [["contact", "Contact Us"], ["blog_section", "Blog"], ["team", "Our Team"], ["portfolio", "Portfolio"]] as const) {
+      expect(websitePageMissingContentKinds({ content: twoFaqContent, seo: completeSeo, status: "review", pageType, title })).not.toContain("faq");
+    }
     expect(websitePageMissingContentKinds({ content, seo: {}, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual(["meta_title", "meta_description"]);
   });
 

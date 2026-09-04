@@ -300,6 +300,7 @@ export function renderWebsiteComponentHtml(
     case "content.process":
       return `<section class="senuke-component senuke-process senuke-process-${escapeHtml(component.variant)} ${alignmentClass}"><h2>${heading}</h2><ol class="senuke-steps">${propObjects(component, "steps").map((item) => `<li><h3>${escapeHtml(itemText(item, "title", "name"))}</h3><p>${escapeHtml(itemText(item, "description", "body", "text"))}</p></li>`).join("")}</ol></section>`;
     case "trust.proof":
+      if (component.variant === "review_summary") return `<section class="senuke-component senuke-proof senuke-testimonials ${alignmentClass}" aria-label="Testimonials"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-testimonial-slider">${propObjects(component, "items").map((item) => `<blockquote class="senuke-testimonial-card"><p>“${escapeHtml(itemText(item, "description", "body", "text"))}”</p><footer>${escapeHtml(itemText(item, "title", "name", "label"))}</footer></blockquote>`).join("")}</div></section>`;
       return `<section class="senuke-component senuke-proof ${alignmentClass}"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
     case "content.faq":
       return `<section class="senuke-component senuke-faq ${alignmentClass}"><h2>${heading}</h2>${propObjects(component, "items").map((item) => `<details><summary>${escapeHtml(itemText(item, "question", "title"))}</summary><p>${escapeHtml(itemText(item, "answer", "description", "body"))}</p></details>`).join("")}</section>`;
@@ -401,6 +402,9 @@ export function renderWebsitePageBodyHtml(
   const blogIndexHtml = isWebsiteBlogSectionPage(page)
     ? renderWebsiteBlogIndexHtml(model, page, componentOptions)
     : "";
+  if (blogIndexHtml) {
+    return blogIndexHtml;
+  }
   return `${breadcrumbHtml(model, page, componentOptions)}${sections}${blogIndexHtml}${relatedLinks}${conversionLinks}${formHtml}`;
 }
 
@@ -409,13 +413,16 @@ const renderWebsiteBlogIndexHtml = (
   blogSection: WebsitePageModel,
   options: WebsiteRenderOptions,
 ) => {
+  const hero = flattenWebsiteComponents(blogSection.sections).find((section) => section.componentId === "hero.local_service");
+  const heading = String(hero?.props.headline || blogSection.name || "Blog").trim();
+  const introduction = String(hero?.props.summary || "Read the latest articles, insights, and practical guidance.").replace(/\s+/g, " ").trim().slice(0, 240);
   const sections = model.pages.filter(isWebsiteBlogSectionPage);
   const articles = model.pages.filter((candidate) => isWebsiteBlogArticlePage(candidate)
     && (candidate.parentPageId === blogSection.pageId || (!candidate.parentPageId && sections.length === 1)));
   if (!articles.length) {
-    return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Latest articles</p><h2>New articles are being prepared</h2><p>Published articles will appear here automatically.</p></div></section>`;
+    return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Blog</p><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(introduction)}</p></div><p>New articles are being prepared.</p></section>`;
   }
-  return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Latest articles</p><h2>Explore the latest insights</h2><p>Practical guidance from ${escapeHtml(model.identity?.businessName || "our team")}.</p></div><div class="senuke-blog-grid">${articles.map((article) => {
+  return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Blog</p><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(introduction)}</p></div><div class="senuke-blog-grid">${articles.map((article) => {
     const publicationPath = websitePagePublicationPath(model, article);
     const href = options.internalUrlMap?.[publicationPath] || publicationPath;
     const heroAssetId = String(article.sections.find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
@@ -733,6 +740,7 @@ export function renderWebsitePageDocument(
     model.identity?.contactEmail ? `<a href="mailto:${escapeHtml(model.identity.contactEmail)}">${escapeHtml(model.identity.contactEmail)}</a>` : "",
   ].filter(Boolean);
   const businessSummary = model.identity?.businessSummary?.trim() || "";
+  const disclaimerText = model.identity?.disclaimerText?.trim() || "";
   const copyrightText = model.identity?.copyrightText || `© ${new Date().getFullYear()} ${brandName}. All rights reserved.`;
   const homeHref = options.internalUrlMap?.["/"] || "/";
   const hasComponentFormAction = model.pages.some((page) => flattenWebsiteComponents(page.sections).some((section) =>
@@ -797,7 +805,7 @@ ${googleAnalyticsScript}
 <div class="senuke-site-topbar"><div class="senuke-site-topbar-inner">${socialNavigationHtml(model, "header")}${headerContactHtml(model)}</div></div>
 <header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div></details></header>
 <main>${renderWebsitePageBodyHtml(model, page, { ...options, mediaAssets: options.mediaAssets || model.mediaAssets })}</main>
-<footer class="senuke-site-footer"><div class="senuke-footer-main"><section class="senuke-footer-brand"><a class="senuke-footer-logo" href="${escapeHtml(homeHref)}">${brandMarkup}</a>${businessSummary ? `<p>${escapeHtml(businessSummary)}</p>` : ""}${socialNavigationHtml(model)}</section><div class="senuke-footer-navigation-column">${footerNavigationHtml(model, options)}</div><section class="senuke-footer-contact-column"><h2>Get in touch</h2>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("")}</div>` : ""}</section></div><div class="senuke-footer-bottom"><p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p>${footerLegalNavigationHtml(model, options)}</div></footer>
+<footer class="senuke-site-footer"><div class="senuke-footer-main"><section class="senuke-footer-brand"><a class="senuke-footer-logo" href="${escapeHtml(homeHref)}">${brandMarkup}</a>${businessSummary ? `<p>${escapeHtml(businessSummary)}</p>` : ""}${socialNavigationHtml(model)}</section><div class="senuke-footer-navigation-column">${footerNavigationHtml(model, options)}</div><section class="senuke-footer-contact-column"><h2>Get in touch</h2>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("")}</div>` : ""}</section></div>${disclaimerText ? `<div class="senuke-footer-disclaimer">${escapeHtml(disclaimerText)}</div>` : ""}<div class="senuke-footer-bottom"><p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p>${footerLegalNavigationHtml(model, options)}</div></footer>
 ${formDeliveryScript}
 </body>
 </html>`;
@@ -946,6 +954,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-footer-navigation>ul.senuke-menu .sub-menu{display:grid;gap:1rem;list-style:none;margin:0;padding:0}
 .senuke-footer-navigation>ul.senuke-menu .sub-menu li{margin:0}
 .senuke-footer-bottom{position:relative;z-index:1;display:flex!important;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)))!important;margin:0 auto 1.5rem!important;padding:1.35rem 1.75rem;align-items:center;justify-content:space-between;gap:1rem 2rem;border-radius:.5rem;background:rgba(255,255,255,.08)}
+.senuke-footer-disclaimer{position:relative;z-index:1;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:0 auto 1rem;padding:1rem 1.25rem;border-top:1px solid rgba(255,255,255,.12);color:rgba(255,255,255,.7);font-size:.78rem;line-height:1.7}
 .senuke-footer-bottom>*,.senuke-footer-copyright{width:auto;margin:0;padding:0;color:rgba(255,255,255,.78);font-size:.86rem}
 .senuke-footer-legal{display:flex;flex-wrap:wrap;justify-content:flex-end;gap:.5rem 1.4rem}
 .senuke-footer-legal a{color:rgba(255,255,255,.85);text-decoration:none}
@@ -1014,6 +1023,9 @@ body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-sur
 .senuke-benefits{width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:var(--senuke-secondary);color:#fff}.senuke-benefits .senuke-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.1)}.senuke-benefits .senuke-card p{color:rgba(255,255,255,.75)}
 .senuke-process .senuke-steps{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:0;list-style:none}.senuke-process .senuke-steps li{padding:1.5rem;border-radius:1rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}
 .senuke-proof{padding-inline:clamp(1.5rem,5vw,4rem);background:linear-gradient(135deg,color-mix(in srgb,var(--senuke-accent) 13%,white),var(--senuke-surface))}
+.senuke-testimonial-slider{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(min(82vw,360px),1fr);gap:1.25rem;overflow-x:auto;padding:.5rem .25rem 1.25rem;scroll-snap-type:x mandatory;scrollbar-width:thin}
+.senuke-testimonial-card{display:flex;min-height:220px;margin:0;padding:2rem;flex-direction:column;justify-content:space-between;scroll-snap-align:start;border:1px solid color-mix(in srgb,var(--senuke-primary) 18%,transparent);border-radius:1.25rem;background:var(--senuke-surface);box-shadow:0 16px 40px rgba(15,23,42,.09)}
+.senuke-testimonial-card p{margin:0;font-size:1.08rem;line-height:1.8}.senuke-testimonial-card footer{margin-top:1.5rem;color:var(--senuke-primary);font-weight:850}
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
 .senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card>div{padding:1.35rem}.senuke-blog-card h3{margin:.35rem 0 .65rem;font-size:1.35rem}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}

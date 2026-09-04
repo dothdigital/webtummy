@@ -110,16 +110,18 @@ export function findWebsitePublicContentLeakage(components: WebsitePageModel["se
   );
 }
 
-/** Returns public claims that require evidence or removal before generated content is persisted. */
+/** Returns only hard public claims that require removal before generated content is persisted. */
 export function findWebsiteUnsupportedClaims(
   components: WebsitePageModel["sections"],
   options: { regulatedIndustry?: boolean; evidenceAvailable?: boolean } = {},
 ) {
   const text = components.flatMap((section, index) => publicStrings(section.props, `sections[${index}].props`)).map((entry) => entry.value).join("\n");
   return sentenceParts(text).flatMap((statement) => {
-    if (regulatedClaimPattern.test(statement) && inherentlyUnsafeClaimPattern.test(statement)) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
-    if (regulatedClaimPattern.test(statement) && !options.evidenceAvailable) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
-    if (businessClaimPattern.test(statement) && !options.evidenceAvailable) return [{ statement, classification: "unverified_business_claim" as const }];
+    // “Best fit for your needs” describes a comparison decision; it is not a
+    // ranking or promised outcome. Subjective expert/trusted wording remains a
+    // visible governance advisory below, but must not discard a generated page.
+    const advisoryBestFit = /\bbest fits? (?:your|the|their)\b/i.test(statement);
+    if (regulatedClaimPattern.test(statement) && inherentlyUnsafeClaimPattern.test(statement) && !advisoryBestFit) return [{ statement, classification: "regulated_performance_or_guarantee" as const }];
     return [];
   });
 }

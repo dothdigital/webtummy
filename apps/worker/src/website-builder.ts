@@ -984,10 +984,10 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
       variant: "three_column",
       props: {
         heading: `Understanding ${page.primaryKeyword}`,
-        introduction: "Explain the relevant options, scope, eligibility or fit, and how a visitor can compare them.",
+        introduction: "Review the relevant options, scope, eligibility or fit, and the factors that can help with comparison.",
         items: [
-          { title: "Option or service one", description: "Provide useful, page-specific detail grounded in the approved project evidence." },
-          { title: "Option or service two", description: "Explain how this option differs and when it may be relevant." },
+          { title: "Available options", description: "Compare the available scope and how it relates to the outcome you need." },
+          { title: "Choosing an approach", description: "Consider how each option differs and when it may be relevant." },
           { title: "What to compare", description: "Help the visitor evaluate fit, cost factors, process, and support without unsupported claims." },
         ],
       },
@@ -1027,7 +1027,7 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
       variant: "standard",
       props: {
         heading: `What to consider before choosing ${page.primaryKeyword}`,
-        body: "Explain costs or cost factors, eligibility or fit, alternatives, documentation, timing, common mistakes, and the questions a buyer should ask.",
+        body: "Consider relevant cost factors, eligibility or fit, alternatives, documentation, timing, common mistakes, and useful questions before deciding.",
       },
     },
     {
@@ -1036,9 +1036,9 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
       componentVersion: "1.0.0",
       variant: "credentials",
       props: {
-        heading: "Evidence and trust",
-        introduction: "Use only approved credentials, proof, reviews, and outcomes supplied by the business.",
-        items: [{ title: "Verified business evidence", description: "Add approved project-specific proof before publication." }],
+        heading: "What you can review",
+        introduction: "Review the business information available on this website and ask questions about anything that affects your decision.",
+        items: [{ title: "Clear next steps", description: "Use the available contact options to discuss your requirements and confirm the information relevant to your decision." }],
       },
     },
     {
@@ -1160,7 +1160,8 @@ const compactGeneratedText = (value: unknown, maximum: number) => {
   if (text.length <= maximum) return text;
   const clipped = text.slice(0, maximum + 1);
   const boundary = clipped.lastIndexOf(" ");
-  return `${clipped.slice(0, boundary > maximum * 0.7 ? boundary : maximum).replace(/[\s,;:.-]+$/g, "")}.`;
+  const shortened = clipped.slice(0, boundary > maximum * 0.7 ? boundary : maximum).replace(/[\s,;:.-]+$/g, "");
+  return shortened.length < maximum ? `${shortened}.` : shortened.slice(0, maximum);
 };
 
 async function aiRepairMissingPageContent(
@@ -1191,7 +1192,7 @@ async function aiRepairMissingPageContent(
   const faqIndex = components.findIndex((component) => component.componentId === "content.faq");
   const currentFaqs = faqsFromComponents(components);
   const policy = websitePageCompositionPolicy(page);
-  const minimumFaqs = policy.archetype === "faq" ? 8 : 4;
+  const minimumFaqs = policy.minimumFaqs;
   const currentSeo = record(page.seoJson);
   const shape = {
     metaTitle: "Unique SEO title",
@@ -1238,8 +1239,8 @@ Existing visible FAQs to preserve or improve: ${promptJson(currentFaqs, 8_000)}
 Metadata already used by sibling pages: ${promptJson(reservedMetadata, 10_000)}
 Rules:
 - Return ${minimumFaqs}${policy.archetype === "faq" ? "–12" : "–6"} complete, distinct, page-specific FAQs. Each answer must be useful and at least 25 characters.
-- Return a natural unique SEO title of 15–60 characters.
-- Return a unique meta description of 120–160 characters explaining this page's value and next step.
+- SEO title target: 50–60 characters. Include the primary keyword naturally, near the beginning where practical; match the search intent; keep it clear and persuasive; and avoid keyword stuffing. If it exceeds 60 characters, shorten it naturally without reducing quality. The range is a quality target, not an absolute technical restriction, and a strong 61-character title is acceptable.
+- Meta description target: 140–160 characters. Include the primary keyword naturally, explain this page's value, match search intent, encourage the appropriate click, and avoid keyword stuffing. If it exceeds 160 characters, shorten it naturally without reducing quality. The range is a quality target, not an absolute technical restriction.
 - Do not repeat a sibling page's title or description.
 - Do not rewrite or return the rest of the page.${attempt ? " The prior result was invalid; verify the item count, uniqueness, and all length limits before responding." : ""}`,
             },
@@ -1255,11 +1256,13 @@ Rules:
         .filter((item) => item.question.length >= 8 && item.answer.length >= 25)
         .filter((item, index, rows) => rows.findIndex((candidate) => candidate.question.toLowerCase() === item.question.toLowerCase()) === index)
         .slice(0, policy.archetype === "faq" ? 12 : 6);
-      const metaTitle = compactGeneratedText(parsed.metaTitle, 60);
-      const metaDescription = compactGeneratedText(parsed.metaDescription, 160);
+      const metaTitle = compactGeneratedText(parsed.metaTitle, 70);
+      const metaDescription = compactGeneratedText(parsed.metaDescription, 180);
       if (requirements.includes("faq") && faqs.length < minimumFaqs) throw new Error(`AI returned ${faqs.length} usable FAQs; ${minimumFaqs} are required.`);
-      if (requirements.includes("meta_title") && (metaTitle.length < 15 || metaTitle.length > 60)) throw new Error("AI returned an invalid SEO title length.");
-      if (requirements.includes("meta_description") && (metaDescription.length < 90 || metaDescription.length > 170)) throw new Error("AI returned an invalid meta description length.");
+      if (requirements.includes("meta_title") && (metaTitle.length < 15 || metaTitle.length > 70)) throw new Error("AI returned an unusable SEO title length.");
+      if (requirements.includes("meta_description") && (metaDescription.length < 90 || metaDescription.length > 180)) throw new Error("AI returned an unusable meta description length.");
+      if (attempt === 0 && requirements.includes("meta_title") && metaTitle.length > 60) throw new Error("AI must try once more to shorten the SEO title naturally toward 50–60 characters without reducing quality.");
+      if (attempt === 0 && requirements.includes("meta_description") && metaDescription.length > 160) throw new Error("AI must try once more to shorten the meta description naturally toward 140–160 characters without reducing quality.");
 
       let nextComponents = components;
       const nextSeo = { ...currentSeo };
@@ -1735,7 +1738,7 @@ ${serviceSafetyContext ? `${serviceSafetyContext}\n` : ""}SEO and navigation gov
   const savedFinalIds = new Set(savedFinalComponents.map((component) => component.componentId));
   const savedFinalValid = savedFinalComponents.length >= composition.policy.minimumComponentCount
     && composition.policy.requiredComponentIds.every((componentId) => savedFinalIds.has(componentId))
-    && faqsFromComponents(savedFinalComponents).length >= (composition.policy.archetype === "faq" ? 8 : 4)
+    && faqsFromComponents(savedFinalComponents).length >= (composition.policy.minimumFaqs)
     && savedFinalComponents.every((component, index) =>
       validateComponentInstance(component, SENUKE_COMPONENT_REGISTRY_V1, `checkpoint.final.${index}`).length === 0);
   if (savedFinalValid) {
@@ -1763,8 +1766,14 @@ ${serviceSafetyContext ? `${serviceSafetyContext}\n` : ""}SEO and navigation gov
     composition.policy.minimumComponentCount,
     composition.policy.maximumWords,
   );
-  const minimumFaqs = composition.policy.archetype === "faq" ? 8 : 4;
-  if (faqsFromComponents(generatedComponents).length < minimumFaqs) {
+  if (composition.policy.minimumFaqs === 0) {
+    generatedComponents = generatedComponents.filter((component) => component.componentId !== "content.faq");
+  }
+  if (["blog", "blog_section"].includes(String(page.pageType || "").toLowerCase())) {
+    generatedComponents = generatedComponents.filter((component) => component.componentId === "hero.local_service").slice(0, 1);
+  }
+  const minimumFaqs = composition.policy.minimumFaqs;
+  if (minimumFaqs > 0 && faqsFromComponents(generatedComponents).length < minimumFaqs) {
     throw new Error(`${page.title} requires at least ${minimumFaqs} complete, visible, page-specific FAQ answers grounded in approved evidence.`);
   }
   if (checkpoint && !savedFinalValid) {
@@ -1878,7 +1887,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   let previousFailure = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI - AI Growth Operating System website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- When the blueprint contains an FAQ block, return 4–6 complete, distinct, page-specific FAQs; return 8–12 for a dedicated FAQ page. Use every relevant approved faqTopics item from the SEO Plan, Growth Plan, Gap requirements, or mapped page brief first. When no approved topics exist, derive useful buyer questions from the assigned intent and verified evidence only. Never invent prices, guarantees, credentials, insurance coverage, medical outcomes, service availability, policies, or other unsupported facts. Keep the visible FAQ set synchronized with FAQPage schema.\n- Return a unique SEO title, H1, and 120–160 character meta description. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
+      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI - AI Growth Operating System website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- When the blueprint contains an FAQ block, return 4–6 complete, distinct, page-specific FAQs; return 8–12 for a dedicated FAQ page. Use every relevant approved faqTopics item from the SEO Plan, Growth Plan, Gap requirements, or mapped page brief first. When no approved topics exist, derive useful buyer questions from the assigned intent and verified evidence only. Never invent prices, guarantees, credentials, insurance coverage, medical outcomes, service availability, policies, or other unsupported facts. Keep the visible FAQ set synchronized with FAQPage schema.\n- Return a unique SEO title, H1, and meta description. SEO title target: 50–60 characters; include the primary keyword naturally near the beginning where practical, match intent, stay clear and persuasive, and avoid keyword stuffing. If it exceeds 60 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction, and a strong 61-character title is acceptable. Meta description target: 140–160 characters; include the primary keyword naturally, clearly explain page value, match intent, encourage the appropriate click, and avoid keyword stuffing. If it exceeds 160 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
       const body = record(await response.json());
       if (!response.ok) throw new Error(String(record(body.error).message || `OpenAI returned HTTP ${response.status}.`));
       const choice = record(Array.isArray(body.choices) ? body.choices[0] : null);
@@ -1932,8 +1941,8 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
       proposedContent.components = ensureConciseFirstSupportingOverview(proposedContent.components as WebsiteComponentInstance[]);
       proposedContent.componentRegistryVersion = SENUKE_COMPONENT_REGISTRY_V1.version;
       const faqs = faqsFromComponents(proposedContent.components as WebsiteComponentInstance[]);
-      const minimumFaqs = policy.archetype === "faq" ? 8 : 4;
-      if (faqs.length < minimumFaqs) throw new Error(`${page.title} requires at least ${minimumFaqs} complete, visible, page-specific FAQ answers grounded in approved evidence.`);
+      const minimumFaqs = policy.minimumFaqs;
+      if (minimumFaqs > 0 && faqs.length < minimumFaqs) throw new Error(`${page.title} requires at least ${minimumFaqs} complete, visible, page-specific FAQ answers grounded in approved evidence.`);
       const seo = { ...basic.seo, ...parsedSeo, metaDescription, ...(faqs.length ? { faqs } : {}) };
       const collisions = websitePageUniquenessCollisions({ seoTitle: seo.metaTitle, metaDescription: seo.metaDescription, h1: generatedWorkerH1(proposedContent.components as WebsiteComponentInstance[]) }, uniquenessSignals);
       if (collisions.length) throw new Error(`Generated page identity duplicates existing pages: ${collisions.map((collision) => `${collision.field.replaceAll("_", " ")} matches ${collision.pageTitle}`).join("; ")}. Return distinct page-specific values.`);
@@ -2920,8 +2929,30 @@ export async function executeWebsiteBuildJob(jobId: string) {
         internalLinkTargets: strings(approvedBrief.internalLinkTargets),
         internalLinkPlan: approvedLinkPlan,
       };
+      const generatedSeo = record(generated.seo);
+      const savedSeo = record(page.seoJson);
+      const approvedSeoPlan = record(approvedBrief.seoPlan);
+      const rawMetaTitle = String(generatedSeo.metaTitle || generatedSeo.title || savedSeo.metaTitle || approvedSeoPlan.seoTitle || page.title).replace(/\s+/g, " ").trim();
+      // A complete generated page must not be discarded merely because the
+      // model omitted metaTitle or returned a title above the supported
+      // length. Keep a small quality-preserving margin after generation has
+      // already tried to meet the preferred 50–60 character range.
+      const normalizedMetaTitle = compactGeneratedText(rawMetaTitle, 70);
+      const generatedMetaDescription = String(generatedSeo.metaDescription || "").replace(/\s+/g, " ").trim();
+      const approvedMetaDescription = String(savedSeo.metaDescription || approvedSeoPlan.metaDescription || "").replace(/\s+/g, " ").trim();
+      const rawMetaDescription = generatedMetaDescription.length >= 70
+        ? generatedMetaDescription
+        : approvedMetaDescription.length >= 70
+          ? approvedMetaDescription
+          : `Learn about ${page.primaryKeyword || page.title}, understand the available options, and contact ${businessIdentity(project) || "the business"} for clear next steps.`;
+      const normalizedMetaDescription = compactGeneratedText(rawMetaDescription, 180);
       generated.seo = {
-        ...record(generated.seo),
+        ...savedSeo,
+        ...generatedSeo,
+        metaTitle: normalizedMetaTitle.length >= 10 ? normalizedMetaTitle : compactGeneratedText(`${page.title} | ${businessIdentity(project) || "Website"}`, 70),
+        metaDescription: normalizedMetaDescription.length >= 70
+          ? normalizedMetaDescription
+          : compactGeneratedText(`${normalizedMetaDescription} Review the relevant information, available options, and next steps for this page.`, 180),
         internalLinks: approvedLinkPlan,
       };
       let visualPlan: VisualPlan | null = null;
@@ -3060,7 +3091,11 @@ export async function executeWebsiteBuildJob(jobId: string) {
         }
         generated.content = contentWithComponents(generated.content, placedComponents);
       }
-      const nextVersion = page.version + (Object.keys(record(page.contentJson)).length ? 1 : 0);
+      // Every successful save must advance the page version, including the
+      // first complete generation. The web client keys its detail cache by
+      // this value; keeping version 1 made newly generated bodies look empty
+      // until a full browser reload.
+      const nextVersion = page.version + 1;
       const briefJson = generated.brief as Prisma.InputJsonValue;
       const contentJson = generated.content as Prisma.InputJsonValue;
       const seoJson = generated.seo as Prisma.InputJsonValue;

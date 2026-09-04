@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SENUKE_COMPONENT_REGISTRY_V1 } from "@webtummy/core/website-model";
-import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasConfirmedWebsiteBuildContract, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, logoPaletteAiPrompt, logoPalettePromptBrand, measurementReadinessFor, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, publishingAssetSyncScope, publishingTaskCanSync, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressPostTypeForPage, wordpressProductionCanonicalUrl, wordpressPublicationOrder, wordpressReadingSettingsFor, wordpressRemotePageIds } from "./website-builder.js";
+import { canonicalComponents, combinedPageSchema, compactWebsiteBuilderMediaAsset, compactWebsiteBuilderOverviewPage, effectiveExistingPageRequirements, generatedPageSchema, hasConfirmedWebsiteBuildContract, hasReleaseScopedDraftUrl, importedWebsiteRouteAssignment, isWebsiteQaRequestTarget, livePageHasEditableSenukeLayout, livePageHasValidPrimaryHeading, logoPaletteAiPrompt, logoPalettePromptBrand, measurementReadinessFor, pageIsImportedExistingWebsite, parseWordPressJsonResponse, productionWebsiteUrl, publishingAssetMatchesWebsitePage, publishingAssetSyncScope, publishingTaskCanSync, replaceWebsitePublicStatements, shouldDeployWordPressDesignPackage, websitePublicationPageMappings, websiteReleaseComparisonModel, websiteReleaseDeploymentScope, websiteSettingsWithVerifiedLocalEvidence, wordPressConnectorVersionAtLeast, wordpressConnectorSafeCss, wordpressMenuDestination, wordpressPageWritePayload, wordpressPostTypeForPage, wordpressProductionCanonicalUrl, wordpressPublicationOrder, wordpressReadingSettingsFor, wordpressRemotePageIds } from "./website-builder.js";
 
 const project = {
   businessName: "Example Financial",
@@ -73,6 +73,13 @@ describe("launch measurement readiness", () => {
 });
 
 describe("ongoing WordPress publishing schema", () => {
+  it("recognizes editable SENuke page, article, and listing layouts", () => {
+    expect(livePageHasEditableSenukeLayout('<main class="senuke-theme-main">')).toBe(true);
+    expect(livePageHasEditableSenukeLayout('<main class="wp-block-group senuke-article-shell">')).toBe(true);
+    expect(livePageHasEditableSenukeLayout('<main class="senuke-listing-shell">')).toBe(true);
+    expect(livePageHasValidPrimaryHeading('<main class="senuke-article-shell"><h1 class="wp-block-post-title">Title</h1><h1>Approved article heading</h1></main>')).toBe(true);
+    expect(livePageHasValidPrimaryHeading('<main><h1>One</h1><h1>Two</h1></main>')).toBe(false);
+  });
   const releaseModel = (overrides: Record<string, unknown> = {}) => ({
     modelId: "model-1", websiteId: "website-1", projectId: "project-1", version: 1, status: "validated",
     componentRegistryVersion: "1.0.0", identity: { businessName: "Example" }, designSystem: { colors: { primary: "#000" } },
@@ -372,7 +379,7 @@ describe("ongoing WordPress publishing schema", () => {
     expect(payload).not.toHaveProperty("excerpt");
   });
 
-  it("publishes Site Architect blog articles as WordPress posts and assigns the Blog archive", () => {
+  it("publishes Site Architect blog articles without hiding the generated Blog page", () => {
     expect(wordpressPostTypeForPage({ pageType: "blog_article" })).toBe("post");
     expect(wordpressPostTypeForPage({ pageType: "landing" })).toBe("page");
     expect(wordpressPostTypeForPage({ pageType: "service" })).toBe("page");
@@ -385,10 +392,10 @@ describe("ongoing WordPress publishing schema", () => {
     expect(wordpressReadingSettingsFor({ homePageId: 101, blogPageId: 202 })).toEqual({
       show_on_front: "page",
       page_on_front: 101,
-      page_for_posts: 202,
+      page_for_posts: 0,
     });
     expect(wordpressReadingSettingsFor({ homePageId: 101, blogPageId: 202, incrementalDeployment: true })).toEqual({
-      page_for_posts: 202,
+      page_for_posts: 0,
     });
   });
 

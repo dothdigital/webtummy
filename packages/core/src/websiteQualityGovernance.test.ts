@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluateWebsiteQualityGovernance } from "./websiteQualityGovernance.js";
+import { evaluateWebsiteQualityGovernance, findWebsiteUnsupportedClaims } from "./websiteQualityGovernance.js";
 import { createStaticWebsiteFiles, renderWebsitePageDocument } from "./websiteRenderer.js";
 import { SENUKE_COMPONENT_REGISTRY_V1, type WebsiteModel } from "./websiteModel.js";
 
@@ -19,6 +19,18 @@ const model = (body: string, headline = "Super Visa Insurance in Brampton"): Web
 });
 
 describe("website quality governance", () => {
+  it("does not block advisory CTAs or best-fit comparison language during generation", () => {
+    const components = model("Select a policy that best fits your needs and budget.").pages[0].sections;
+    components[0].props.primaryCtaLabel = "Consult with an Expert";
+    expect(findWebsiteUnsupportedClaims(components, { regulatedIndustry: true, evidenceAvailable: false })).toEqual([]);
+  });
+
+  it("still blocks actual guarantees and rankings during generation", () => {
+    const components = model("We guarantee the highest returns for every client.").pages[0].sections;
+    expect(findWebsiteUnsupportedClaims(components, { regulatedIndustry: true, evidenceAvailable: false })).toEqual([
+      expect.objectContaining({ classification: "regulated_performance_or_guarantee" }),
+    ]);
+  });
   it("blocks welcome and company-name-only hero headings", () => {
     for (const headline of ["Welcome to Example Insurance", "Example Insurance"]) {
       const result = evaluateWebsiteQualityGovernance(model("Compare coverage and choose the next step.", headline));
