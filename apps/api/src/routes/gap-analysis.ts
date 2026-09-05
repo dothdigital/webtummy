@@ -1739,7 +1739,7 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
   const strategyWorkflow = resolveStrategyEvidenceWorkflow({
     latestStrategy,
     latestCrawlAt: latestCompletedCrawl?.completedAt ?? latestCompletedCrawl?.createdAt,
-    latestGapAnalysisAt: latestGapRun?.completedAt ?? latestGapRun?.createdAt,
+    latestGapAnalysisAt: latestGapRun?.status === "completed" ? latestGapRun.completedAt ?? latestGapRun.createdAt : null,
     latestApprovedGapAt,
     hasExecutionPlan: project.executionPlans.length > 0,
   });

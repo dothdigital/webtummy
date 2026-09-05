@@ -26,6 +26,11 @@ describe("post-launch website growth lifecycle", () => {
     expect(selectPostLaunchNextBestAction({ ...ready, primaryKeyword: "Super Visa insurance" }).key).toBe("publish-first-supporting-article");
   });
 
+  it("keeps Google optional while approved growth work or conversion repairs can proceed", () => {
+    expect(selectPostLaunchNextBestAction({ ...ready, searchConsoleConnected: false, sitemapVerified: false, contentTaskTitle: "Review the keyword-to-page map" })).toMatchObject({ key: "publish-priority-content", title: "Review the keyword-to-page map" });
+    expect(selectPostLaunchNextBestAction({ ...ready, searchConsoleConnected: false, formErrors: 2 }).key).toBe("fix-live-form-conversion");
+  });
+
   it("requires 28 complete verified days before allowing performance claims", () => {
     const now = new Date("2026-08-29T12:00:00.000Z");
     const collecting = postLaunchBaselineStatus({ publishedAt: "2026-08-01T12:00:00.000Z", trackingVerifiedAt: "2026-08-02T12:00:00.000Z", now });

@@ -87,14 +87,37 @@ const formatSeoHeadingTopic = (value: unknown) => {
   return subject ? `${subject.charAt(0).toUpperCase()}${subject.slice(1)}` : "";
 };
 
-export function websiteSeoHeroHeading(input: {
+export const WEBSITE_HOME_HERO_COPY_DIRECTION = "HOMEPAGE HERO: For a home/homepage page, write a concise, memorable, benefit-led punch line grounded in the approved audience, offer, and core customer value. Express why the offer matters to the visitor, using the service topic naturally. A bare keyword, keyword plus city/country, page title, or business name is not a headline. Do not append a location mechanically. Put approved geographic relevance in the eyebrow, supporting summary, and SEO metadata. Keep the visible H1 distinct from the SEO title. Avoid generic slogans, invented benefits, guarantees, rankings, or unsupported claims. Preserve a strong existing benefit-led headline when revising other fields. HOMEPAGE SUMMARY: Address the visitor directly, connect their need to the approved offer, and state a useful next step. Do not open with the business/project name or describe what the website provides. Never use filler such as provides essential information, navigate your options, or informed steps towards securing your future. Use concrete, plain language without invented results.";
+
+export type WebsiteHeroHeadingInput = {
   pageTitle: string;
   pageType?: string;
   primaryKeyword?: string;
   businessName?: string;
   locations?: unknown[];
   serviceTopics?: unknown[];
-}) {
+};
+
+const isHomepageHero = (input: WebsiteHeroHeadingInput) => /^(?:home|homepage)$/i.test(input.pageType?.trim() || "")
+  || (!input.pageType && /^(?:home|homepage)$/i.test(input.pageTitle.trim()));
+
+function withoutHeroLocations(value: string, input: WebsiteHeroHeadingInput) {
+  let words = normalizeWebsiteUniquenessSignal(value);
+  for (const location of [...(input.locations ?? [])].sort((a, b) => String(b).length - String(a).length)) {
+    const target = normalizeWebsiteUniquenessSignal(location);
+    if (target) words = ` ${words} `.split(` ${target} `).join(" ").trim();
+  }
+  return words.replace(/\b(?:in|near|across|throughout)\b/g, " ").replace(/\s+/g, " ").trim();
+}
+
+export function isKeywordOnlyHomepageHeroHeading(value: unknown, input: WebsiteHeroHeadingInput) {
+  if (!isHomepageHero(input)) return false;
+  const heading = withoutHeroLocations(String(value ?? ""), input);
+  return Boolean(heading && [input.primaryKeyword, input.pageTitle, ...(input.serviceTopics ?? [])]
+    .some((topic) => topic && withoutHeroLocations(String(topic), input) === heading));
+}
+
+export function websiteSeoHeroHeading(input: WebsiteHeroHeadingInput) {
   const pageTitle = formatSeoHeadingTopic(input.pageTitle) || "Website";
   const business = cleanHeadingSubject(input.businessName);
   const identity = `${input.pageType ?? ""} ${pageTitle}`.toLowerCase();
@@ -111,6 +134,11 @@ export function websiteSeoHeroHeading(input: {
       ? `${services[0]} and ${services[1]} Services`
       : services[0] || "Professional Services";
   }
+  if (isHomepageHero(input)) {
+    const subject = withoutHeroLocations(topic, input) || "your options";
+    const conciseSubject = subject.length <= 75 ? subject : "your options";
+    return `Choose ${conciseSubject} with confidence`;
+  }
   const location = (input.locations ?? []).map(cleanHeadingSubject).find(Boolean) || "";
   const includesLocation = location && normalizeWebsiteUniquenessSignal(topic).includes(normalizeWebsiteUniquenessSignal(location));
   return `${topic}${location && !includesLocation ? ` in ${location}` : ""}`.slice(0, 120).trim();
@@ -118,7 +146,8 @@ export function websiteSeoHeroHeading(input: {
 
 /**
  * Preserve a strong AI-written H1, but replace generic, unsupported, or
- * company-first headings with a deterministic keyword-and-market heading.
+ * company-first headings with a page-appropriate heading. Homepages express
+ * customer value; service and location pages retain their topic and market.
  */
 export function ensureSeoFocusedHeroHeading(
   components: WebsiteComponentInstance[],
@@ -130,7 +159,8 @@ export function ensureSeoFocusedHeroHeading(
   }));
   const hero = next.find((component) => component.componentId === "hero.local_service");
   if (!hero) return next;
-  if (isGenericWebsiteHeroHeading(hero.props.headline, input.businessName)) {
+  if (isGenericWebsiteHeroHeading(hero.props.headline, input.businessName)
+    || isKeywordOnlyHomepageHeroHeading(hero.props.headline, input)) {
     hero.props.headline = websiteSeoHeroHeading(input);
   }
   return next;

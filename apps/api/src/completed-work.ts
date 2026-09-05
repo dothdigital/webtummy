@@ -25,6 +25,7 @@ export function isCompletedWebsiteLaunchFoundationAction(
     action.reasoningSummary,
     ...(action.actions ?? []),
   ].filter(Boolean).join(" ").toLowerCase();
+  if (/\b(?:build|create|approve|launch|publish)\b/.test(action.title?.toLowerCase() ?? "") && /canonical intent architecture/.test(text)) return true;
   if (/canonical (?:website )?foundation|website (?:launch )?foundation|launch (?:site ?map|sitemap)|site architecture/.test(text)) return true;
   return /\b(?:build|create|approve|launch|publish)\b/.test(text)
     && /\b(?:sitemap|canonical owner|canonical url|page map)\b/.test(text);

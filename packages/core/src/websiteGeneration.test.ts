@@ -68,6 +68,27 @@ describe("website generation workflow contracts", () => {
     expect(websiteSeoHeroHeading({ pageTitle: "Privacy Policy", pageType: "legal", primaryKeyword: "privacy policy", locations: ["Edmonton"] }))
       .toBe("Privacy Policy");
   });
+  it.each(["Life insurance in Toronto", "Life insurance in Canada", "Life insurance Toronto", "Life insurance", "Home", "Welcome to Example Insurance"])("repairs a homepage label into a customer decision headline: %s", (headline) => {
+    const components: WebsiteComponentInstance[] = [{ instanceId: "home-hero", componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { headline, eyebrow: "Life insurance in Toronto", summary: "Compare coverage options for your family." } }];
+    const result = ensureSeoFocusedHeroHeading(components, { pageTitle: "Home", pageType: "home", primaryKeyword: "life insurance", locations: ["Toronto", "Canada"], businessName: "Example Insurance" });
+    expect(result[0].props.headline).toBe("Choose life insurance with confidence");
+    expect(result[0].props.eyebrow).toBe("Life insurance in Toronto");
+    expect(result[0].props.summary).toBe(components[0].props.summary);
+    expect(components[0].props.headline).toBe(headline);
+  });
+
+  it("preserves a meaningful homepage punch line and location page heading", () => {
+    for (const [pageType, headline] of [["home", "Life insurance for the people who count on you"], ["home", "Protect the future you are building together"], ["location", "Life insurance in Toronto"]]) {
+      const components: WebsiteComponentInstance[] = [{ instanceId: "hero", componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { headline } }];
+      expect(ensureSeoFocusedHeroHeading(components, { pageTitle: "Life insurance", pageType, primaryKeyword: "life insurance", locations: ["Toronto"] })[0].props.headline).toBe(headline);
+    }
+  });
+
+  it("does not repeat the homepage keyword market as a fallback headline", () => {
+    expect(websiteSeoHeroHeading({ pageTitle: "Home", pageType: "home", primaryKeyword: "life insurance in Toronto", locations: ["Toronto"] })).toBe("Choose life insurance with confidence");
+    expect(websiteSeoHeroHeading({ pageTitle: "Home", pageType: "homepage", primaryKeyword: "kitchen renovation", locations: ["Toronto"] })).toBe("Choose kitchen renovation with confidence");
+  });
+
   it("compacts the exact oversized Website Builder failure class before the AI request", () => {
     const request = {
       model: "website-model",

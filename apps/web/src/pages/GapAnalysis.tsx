@@ -764,11 +764,11 @@ export default function GapAnalysis() {
       <ProjectModuleHeader
         eyebrow="SEO Campaign"
         title={selectedProject?.businessName || selectedProject?.name || "Select a project"}
-        subtitle="Analyze market and website evidence, review prioritized gaps, synchronize Strategy, then continue to execution."
+        subtitle="Review crawl evidence → Run Gap Analysis → Review gaps → Approve Strategy → Review page map → Execute approved improvements."
         project={selectedProject}
         tasks={selectedProject?.executionTasks ?? []}
         actions={selectedProjectId && overview?.latestGapRun && overview?.capabilities?.canExportReports ? [{ key: "seo-report", label: busyAction === "seo-report" ? "Preparing PDF…" : "Print SEO Report", variant: "secondary", disabled: busyAction === "seo-report", onClick: () => void printSeoReport() }] : []}
-        showExecution
+        showExecution={false}
       />
 
       {selectedProjectId && <ProjectWorkflowController
@@ -780,7 +780,7 @@ export default function GapAnalysis() {
         onNextAction={() => void runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))}
       />}
 
-      {selectedProjectId && strategyWorkflow && ["strategy_required", "strategy_update_required", "strategy_review_required"].includes(strategyWorkflow.state) && (
+      {selectedProjectId && overview?.latestGapRun?.status === "completed" && !gapAnalysisStale && strategyWorkflow && ["strategy_required", "strategy_update_required", "strategy_review_required"].includes(strategyWorkflow.state) && (
         <Card className="border-amber-300 bg-amber-50 p-5">
           <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <div>
@@ -834,7 +834,7 @@ export default function GapAnalysis() {
               <div><div className="text-xs font-black uppercase tracking-[0.12em] text-brand-700">Competitive Gap Intelligence</div><h2 className="mt-1 text-xl font-black text-slate-950">Prioritized, explainable opportunities</h2><p className="mt-1 text-sm text-slate-600">Compares saved project, keyword, competitor, crawl, authority, local, entity, and AI visibility evidence. Only applicable gaps are recommended.</p></div>
               <div className="grid grid-cols-3 gap-2 text-center"><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-slate-950">{gapRecommendations.length}</div><div className="text-[10px] font-bold uppercase text-slate-400">gaps</div></div><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-rose-600">{highImpactGapCount}</div><div className="text-[10px] font-bold uppercase text-slate-400">high impact</div></div><div className="rounded-lg bg-white px-3 py-2 shadow-sm"><div className="text-xl font-black text-emerald-600">{approvedGapCount}</div><div className="text-[10px] font-bold uppercase text-slate-400">approved</div></div></div>
             </div>
-            {!overview?.latestGapRun ? <><EmptyState eyebrow="Competitive Gap Intelligence" icon="◇" title="Find the most important gaps first" description="Compare keywords, markets, competitors, content, authority, AI citations, Local SEO, and site structure in one analysis." action={<button type="button" title={canRunGapAnalysis ? "Run the complete Gap Analysis." : "Your workspace role does not have permission to run analysis."} disabled={!canRunGapAnalysis || busyAction === "gap-run"} onClick={() => void runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">{busyAction === "gap-run" ? "Analyzing evidence…" : "Run Gap Analysis"}</button>} />{!canRunGapAnalysis && <p className="-mt-6 pb-6 text-center text-xs font-semibold text-amber-700">Ask a workspace Admin, Manager, or Editor with analysis permission to run this step.</p>}</> : <div className="p-5">
+            {!overview?.latestGapRun ? <><EmptyState eyebrow="Competitive Gap Intelligence" icon="◇" title="Next step: Run Gap Analysis" description="Compare your existing pages with the approved keywords and saved project evidence. Review the results next, then generate or update and approve Strategy before reviewing the page map. Running this analysis does not recreate or publish your website." action={<button type="button" title={canRunGapAnalysis ? "Run the complete Gap Analysis." : "Your workspace role does not have permission to run analysis."} disabled={!canRunGapAnalysis || busyAction === "gap-run"} onClick={() => void runAction("gap-run", () => api.post(gapApi(selectedProjectId, "/run"), {}))} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-black text-white shadow-sm hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300 disabled:text-slate-600">{busyAction === "gap-run" ? "Analyzing evidence…" : "Run Gap Analysis"}</button>} />{!canRunGapAnalysis && <p className="-mt-6 pb-6 text-center text-xs font-semibold text-amber-700">Ask a workspace Admin, Manager, or Editor with analysis permission to run this step.</p>}</> : <div className="p-5">
               <div className="flex gap-2 overflow-x-auto pb-3"><button type="button" onClick={() => setGapFilter("all")} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${gapFilter === "all" ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}>All ({gapRecommendations.length})</button>{gapCategories.map((category) => <button key={category} type="button" onClick={() => setGapFilter(category)} className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-bold ${gapFilter === category ? "border-brand-600 bg-brand-600 text-white" : "border-slate-200 bg-white text-slate-600"}`}>{gapCategoryLabel(category)}</button>)}</div>
               <div className="grid gap-4 xl:grid-cols-2">
                 {filteredGapRecommendations.map((gap) => {

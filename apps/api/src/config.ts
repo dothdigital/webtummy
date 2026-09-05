@@ -32,6 +32,12 @@ loadEnv();
 
 const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT, 10) : 4000;
 
+const searchConsoleCredentials = process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID || process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET
+  ? { id: process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID, secret: process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_SECRET }
+  : process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_SECRET
+    ? { id: process.env.GOOGLE_CLIENT_ID, secret: process.env.GOOGLE_CLIENT_SECRET }
+    : { id: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_ID, secret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET };
+
 export const config = {
   environment: process.env.APP_ENV ?? process.env.NODE_ENV ?? "development",
   port: apiPort,
@@ -73,6 +79,8 @@ export const config = {
   socialConnectApiKey: process.env.SOCIAL_CONNECT_API_KEY ?? "",
   socialConnectAppKey: process.env.SOCIAL_CONNECT_APP_KEY ?? "",
   socialConnectMasterApiKey: process.env.SOCIAL_CONNECT_MASTER_API_KEY ?? "",
+  googleSearchConsoleClientId: searchConsoleCredentials.id ?? "",
+  googleSearchConsoleClientSecret: searchConsoleCredentials.secret ?? "",
   googleBusinessProfileClientId: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_ID ?? "",
   googleBusinessProfileClientSecret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET ?? "",
   googleBusinessProfileWritesEnabled: process.env.GOOGLE_BUSINESS_PROFILE_WRITES_ENABLED?.toLowerCase() === "true",

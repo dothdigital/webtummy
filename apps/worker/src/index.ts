@@ -1,3 +1,4 @@
+import { startSearchConsoleWorker } from "./google-search-console.js";
 // Worker entrypoint. Consumes crawl:start jobs and runs the crawl.
 import { Worker } from "bullmq";
 import { prisma } from "@webtummy/db";
@@ -104,6 +105,7 @@ const socialImageWorker = startSocialImageWorker();
 const discoveryGenerationWorker = startDiscoveryGenerationQueueWorker();
 const strategyGenerationWorker = startStrategyGenerationQueueWorker();
 const contentPlanGenerationWorker = startContentPlanGenerationQueueWorker();
+const searchConsoleWorker = startSearchConsoleWorker();
 const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
 const changeIntelligenceScheduler = startChangeIntelligenceScheduler(config.changeIntelligenceInitialDelayMs, config.changeIntelligenceIntervalMs);
 
@@ -125,6 +127,7 @@ const shutdown = async () => {
   await discoveryGenerationWorker.close();
   await strategyGenerationWorker.close();
   await contentPlanGenerationWorker.close();
+  await searchConsoleWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 };

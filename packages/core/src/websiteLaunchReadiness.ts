@@ -193,11 +193,11 @@ export function evaluateWebsiteLaunchReadiness(
     "lead_form",
     "operations",
     "Lead form destination",
-    model.forms.length && model.forms.every((form) => form.destination.trim()) ? "passed" : "warning",
+    model.forms.length ? model.forms.every((form) => form.destination.trim()) ? "passed" : "blocking" : "warning",
     model.forms.length
       ? model.forms.every((form) => form.destination.trim())
         ? "Every form has a saved delivery destination."
-        : "At least one form has no delivery destination."
+        : `Add a recipient email in Navigation & Forms for: ${model.forms.filter((form) => !form.destination.trim()).map((form) => form.formId).join(", ")}.`
       : "No lead form is included. Confirm the website does not require one.",
   );
 

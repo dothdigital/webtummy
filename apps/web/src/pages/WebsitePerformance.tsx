@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import GoogleSearchConsolePanel from "../components/GoogleSearchConsolePanel.js";
+import WebsiteGrowthJourney, { type WebsiteGrowthJourneyData } from "../components/WebsiteGrowthJourney.js";
 
 type Metric = { key: string; label: string; value: number | null };
 type PerformanceResponse = {
   project: { id: string; name: string; businessName: string | null };
   website: { id: string; domain: string; rootUrl: string; status: string } | null;
+  growthJourney?: WebsiteGrowthJourneyData;
   periodDays: number;
   growthStatus: { key: string; label: string; detail: string };
   importantResults: Metric[];
@@ -22,7 +25,7 @@ type PerformanceResponse = {
 };
 
 const human = (value: string) => value.replaceAll("_", " ").replace(/\b\w/g, (letter) => letter.toUpperCase());
-const statusClass = (value: string) => /connected|collecting|verified|ready|published|completed/i.test(value) ? "bg-emerald-100 text-emerald-800" : /error|attention|blocked|problem/i.test(value) ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800";
+const statusClass = (value: string) => /not_connected|unverified|awaiting|pending|reauth|required/i.test(value) ? "bg-amber-100 text-amber-800" : /error|attention|blocked|problem|failed/i.test(value) ? "bg-rose-100 text-rose-800" : /connected|collecting|verified|ready|published|completed/i.test(value) ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800";
 const date = (value: string | null) => value ? new Date(value).toLocaleString() : "Not yet";
 
 export default function WebsitePerformance() {
@@ -33,16 +36,33 @@ export default function WebsitePerformance() {
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [startingAction, setStartingAction] = useState(false);
+  const [completingReview, setCompletingReview] = useState(false);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setMessage("");
+  const load = useCallback(async (background = false) => {
+    if (!background) { setLoading(true); setMessage(""); }
     try { setData(await api.get<PerformanceResponse>(`/api/projects/${projectId}/website-performance`)); }
-    catch (error) { setMessage(error instanceof Error ? error.message : "Website performance could not be loaded."); }
-    finally { setLoading(false); }
+    catch (error) { if (!background) setMessage(error instanceof Error ? error.message : "Website performance could not be loaded."); }
+    finally { if (!background) setLoading(false); }
   }, [projectId]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    const refresh = () => { if (document.visibilityState === "visible") void load(true); };
+    const timer = window.setInterval(refresh, 20_000);
+    window.addEventListener("focus", refresh);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", refresh); };
+  }, [load]);
+
+  async function completePageMapReview(taskId: string) {
+    if (completingReview) return;
+    setCompletingReview(true); setMessage("");
+    try {
+      await api.post(`/api/execution-tasks/${encodeURIComponent(taskId)}/complete`, {});
+      await load(true);
+      setMessage("Page-map review completed. Continue with the next unfinished activity below.");
+    } catch (error) { setMessage(error instanceof Error ? error.message : "The review could not be completed."); }
+    finally { setCompletingReview(false); }
+  }
 
   async function startNextBestAction() {
     if (!data?.nextBestAction || startingAction) return;
@@ -62,16 +82,20 @@ export default function WebsitePerformance() {
   return <div className="space-y-5">
     <header className="overflow-hidden rounded-2xl bg-gradient-to-br from-slate-950 via-indigo-950 to-cyan-900 text-white shadow-xl">
       <div className="flex flex-col gap-5 p-6 lg:flex-row lg:items-center lg:justify-between">
-        <div><div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Website · Ongoing Performance</div><h1 className="mt-2 text-2xl font-black">{data.project.businessName || data.project.name}</h1><p className="mt-1 text-sm text-slate-300">{data.website?.domain || "Production website connection required"} · Last {data.periodDays} days</p><div className="mt-3 flex items-center gap-2"><span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${statusClass(data.growthStatus.key)}`}>{data.growthStatus.label}</span><span className="text-xs text-slate-300">{data.growthStatus.detail}</span></div></div>
+        <div><div className="text-[10px] font-black uppercase tracking-[0.18em] text-cyan-300">Website · Growth & Measurement</div><h1 className="mt-2 text-2xl font-black">{data.project.businessName || data.project.name}</h1><p className="mt-1 text-sm text-slate-300">{data.website?.domain || "Production website connection required"} · Last {data.periodDays} days</p><div className="mt-3 flex items-center gap-2"><span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase ${statusClass(data.growthStatus.key)}`}>{data.growthStatus.label}</span><span className="text-xs text-slate-300">{data.growthStatus.detail}</span></div></div>
         <div className="flex flex-wrap gap-2">{data.website&&<a href={data.website.rootUrl} target="_blank" rel="noreferrer" className="rounded-lg bg-white px-4 py-2.5 text-sm font-black text-slate-950">View Live Website ↗</a>}<Link to={`/site-architect?projectId=${encodeURIComponent(projectId)}&step=publish&manage=1`} className="rounded-lg border border-white/30 bg-white/10 px-4 py-2.5 text-sm font-black text-white">Edit Website</Link><Link to={data.reportUrl} className="rounded-lg border border-cyan-300/40 bg-cyan-300/10 px-4 py-2.5 text-sm font-black text-cyan-100">Open Reports</Link></div>
       </div>
     </header>
+
+    {message&&<div className={`rounded-xl border p-4 text-sm font-semibold ${/could not|failed|error/i.test(message)?"border-rose-200 bg-rose-50 text-rose-800":"border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message}</div>}
+
+    {data.growthJourney && <WebsiteGrowthJourney journey={data.growthJourney} baseline={postLaunch?.baseline} trackingVerified={Boolean(data.trackingHealth.lastVerifiedAt)} onCompleteReview={taskId => void completePageMapReview(taskId)} completingReview={completingReview} />}
 
     {postLaunch&&<section className="overflow-hidden rounded-2xl border border-indigo-200 bg-white"><div className="grid gap-3 p-4 sm:grid-cols-3"><div className="rounded-xl bg-slate-50 p-3"><div className="text-[9px] font-black uppercase text-slate-400">Tracking</div><b className={`mt-1 block text-sm ${postLaunch.tracking.verified?"text-emerald-700":"text-amber-700"}`}>{postLaunch.tracking.verified?"Active and verified":"Verification required"}</b></div><div className="rounded-xl bg-slate-50 p-3"><div className="text-[9px] font-black uppercase text-slate-400">Initial baseline</div><b className="mt-1 block text-sm text-slate-900">{postLaunch.baseline.label}</b><p className="mt-1 text-[10px] text-slate-500">{postLaunch.baseline.completeVerifiedDays} of {postLaunch.baseline.evaluationWindowDays} complete verified days</p></div><div className="rounded-xl bg-slate-50 p-3"><div className="text-[9px] font-black uppercase text-slate-400">Growth Blueprint</div><b className="mt-1 block text-sm text-indigo-800">{postLaunch.growthBlueprint?`Active · Version ${postLaunch.growthBlueprint.currentVersion}`:"Activating"}</b><Link to={`/growth?projectId=${encodeURIComponent(projectId)}`} className="mt-1 inline-block text-[10px] font-black text-indigo-700">Open Blueprint →</Link></div></div><div className="border-t bg-indigo-50/60 px-4 py-3"><div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] font-bold text-indigo-900">{postLaunch.workflow.map((item,index)=><span key={item} className="flex items-center gap-2"><span>{item}</span>{index<postLaunch.workflow.length-1&&<span className="text-indigo-300">→</span>}</span>)}</div></div></section>}
 
     {postLaunch&&!postLaunch.baseline.performanceClaimsAllowed&&<div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><b>Evidence safeguard:</b> traffic, ranking and conversion improvement claims remain disabled until the initial verified baseline is established. Growth Blueprint work can continue now.</div>}
 
-    {data.searchPerformance.searchConsoleStatus!=="connected"&&<section id="search-performance" className="scroll-mt-6 rounded-2xl border border-indigo-200 bg-indigo-50/50 p-5"><div className="text-[10px] font-black uppercase tracking-wide text-indigo-700">Guided Search Console setup</div><h2 className="mt-1 text-lg font-black text-slate-950">Submit the production sitemap and record the connection</h2><ol className="mt-3 grid gap-2 text-xs leading-5 text-slate-700 md:grid-cols-3"><li className="rounded-lg bg-white p-3"><b className="block text-indigo-700">1 · Verify the property</b>Use the exact production domain in Google Search Console.</li><li className="rounded-lg bg-white p-3"><b className="block text-indigo-700">2 · Submit the sitemap</b>Submit <span className="break-all font-mono">{data.website?`${data.website.rootUrl.replace(/\/$/,"")}/sitemap.xml`:"/sitemap.xml"}</span>.</li><li className="rounded-lg bg-white p-3"><b className="block text-indigo-700">3 · Record completion</b>Open Measurement Plan, set Search Console to Connected, and save the verified property reference.</li></ol>{data.website&&<Link to={`/website-projects?tracking=${encodeURIComponent(data.website.id)}`} className="mt-4 inline-flex rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-black text-white">Open Measurement Plan →</Link>}</section>}
+    <GoogleSearchConsolePanel projectId={projectId} />
 
     <section><div className="mb-2 flex items-center justify-between"><h2 className="text-lg font-black text-slate-950">Important results</h2><span className="text-xs text-slate-500">First-party measured activity</span></div><div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">{data.importantResults.map((result) => <div key={result.key} className="rounded-xl border bg-white p-4 shadow-sm"><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">{result.label}</div><div className="mt-2 text-2xl font-black text-slate-950">{result.value ?? "—"}</div>{result.value==null&&<p className="mt-1 text-[10px] text-amber-700">Not collected yet</p>}</div>)}</div></section>
 
@@ -85,9 +109,9 @@ export default function WebsitePerformance() {
       <section className="rounded-2xl border bg-white p-5"><div className="flex items-center justify-between"><h2 className="font-black text-slate-950">Tracking health</h2><span className={`rounded-full px-2.5 py-1 text-[9px] font-black uppercase ${statusClass(data.trackingHealth.state)}`}>{human(data.trackingHealth.state)}</span></div><div className="mt-3 grid gap-2 text-xs"><div className="flex justify-between rounded-lg bg-slate-50 p-3"><span>Measurement Plan</span><b>{data.trackingHealth.planVersion ? `Version ${data.trackingHealth.planVersion}` : "Not configured"}</b></div><div className="flex justify-between rounded-lg bg-slate-50 p-3"><span>Last verified</span><b>{date(data.trackingHealth.lastVerifiedAt)}</b></div><div className="flex justify-between rounded-lg bg-slate-50 p-3"><span>Last event</span><b>{date(data.trackingHealth.lastEventAt)}</b></div></div><div className="mt-3 flex flex-wrap gap-1.5">{data.trackingHealth.sources.map((source) => <span key={source.key} className={`rounded-full px-2 py-1 text-[9px] font-black uppercase ${statusClass(source.status)}`}>{human(source.key)} · {human(source.status)}{source.required?" · required":""}</span>)}</div></section>
     </div>
 
-    {data.nextBestAction&&<section id="next-best-action" className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 via-white to-cyan-50 p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-[10px] font-black uppercase tracking-wide text-indigo-700">Current Next Best Action</div><h2 className="mt-1 text-lg font-black text-slate-950">{data.nextBestAction.title}</h2><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">{data.nextBestAction.recommendation}</p>{data.nextBestAction.reasoningSummary&&<p className="mt-2 text-xs text-slate-500">Why now: {data.nextBestAction.reasoningSummary}</p>}<p className="mt-2 text-xs font-semibold text-indigo-800">Expected outcome: {data.nextBestAction.expectedImpact}</p></div>{["accepted","in_progress"].includes(data.nextBestAction.status)?<Link to={data.nextBestAction.followupTask?.relatedUrl||`/guided-projects/${projectId}?tab=execution`} className="shrink-0 rounded-xl bg-emerald-700 px-5 py-3 text-center text-sm font-black text-white">Open Execution Task →</Link>:<button type="button" disabled={startingAction||data.nextBestAction.sourceType!=="growth_engine"} onClick={()=>void startNextBestAction()} className="shrink-0 rounded-xl bg-indigo-700 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300">{startingAction?"Adding to Execution Plan…":"Review and Start Action"}</button>}</div></section>}
+    {data.nextBestAction&&(!data.growthJourney || data.nextBestAction.priorityScore >= 96)&&<section id={data.growthJourney ? "launch-attention" : "next-best-action"} className="rounded-2xl border border-indigo-200 bg-gradient-to-r from-indigo-50 via-white to-cyan-50 p-5"><div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-[10px] font-black uppercase tracking-wide text-indigo-700">Current Next Best Action</div><h2 className="mt-1 text-lg font-black text-slate-950">{data.nextBestAction.title}</h2><p className="mt-2 max-w-4xl text-sm leading-6 text-slate-600">{data.nextBestAction.recommendation}</p>{data.nextBestAction.reasoningSummary&&<p className="mt-2 text-xs text-slate-500">Why now: {data.nextBestAction.reasoningSummary}</p>}<p className="mt-2 text-xs font-semibold text-indigo-800">Expected outcome: {data.nextBestAction.expectedImpact}</p></div>{["accepted","in_progress"].includes(data.nextBestAction.status)?<Link to={data.nextBestAction.followupTask?.relatedUrl||`/guided-projects/${projectId}?tab=execution`} className="shrink-0 rounded-xl bg-emerald-700 px-5 py-3 text-center text-sm font-black text-white">Open Execution Task →</Link>:<button type="button" disabled={startingAction||data.nextBestAction.sourceType!=="growth_engine"} onClick={()=>void startNextBestAction()} className="shrink-0 rounded-xl bg-indigo-700 px-5 py-3 text-sm font-black text-white disabled:bg-slate-300">{startingAction?"Adding to Execution Plan…":"Review and Start Action"}</button>}</div></section>}
 
-    {message&&<div className={`rounded-xl border p-4 text-sm font-semibold ${/could not|failed|error/i.test(message)?"border-rose-200 bg-rose-50 text-rose-800":"border-emerald-200 bg-emerald-50 text-emerald-800"}`}>{message}</div>}
+
 
     <div className="grid gap-5 xl:grid-cols-2"><section className="rounded-2xl border bg-white p-5"><h2 className="font-black text-slate-950">Work completed</h2><div className="mt-3 divide-y">{data.workCompleted.length?data.workCompleted.slice(0,8).map((task) => <div key={task.id} className="py-3"><div className="flex items-center justify-between gap-3"><b className="text-sm text-slate-900">{task.title}</b><span className="text-[9px] font-black uppercase text-emerald-700">{human(task.status)}</span></div><p className="mt-1 text-[11px] text-slate-400">{human(task.moduleName)} · {date(task.publishedAt || task.completedAt)}</p></div>):<p className="text-sm text-slate-500">No completed project work is recorded yet.</p>}</div></section>
     <section className="rounded-2xl border bg-white p-5"><h2 className="font-black text-slate-950">Performance history by website version</h2><div className="mt-3 space-y-2">{data.performanceHistory.length?data.performanceHistory.map((release) => <div key={release.releaseId} className="rounded-xl border p-3"><div className="flex items-center justify-between"><b className="text-sm text-slate-950">Website version {release.version}</b><span className="text-[9px] font-black uppercase text-slate-500">{human(release.target)}</span></div><p className="mt-1 text-[11px] text-slate-400">Published {date(release.publishedAt)} · Release {release.releaseId.slice(-6)}</p><div className="mt-2 flex flex-wrap gap-2 text-[10px] font-bold text-slate-600"><span>{release.metrics.pageViews} views</span><span>{release.metrics.sessions} sessions</span><span>{release.metrics.formSuccesses} leads</span><span>{release.metrics.ctaClicks} CTA clicks</span>{release.eventCount===0&&<span className="text-amber-700">No version-labelled events yet</span>}</div></div>):<p className="rounded-xl border border-dashed p-4 text-xs text-slate-500">Performance history begins after the first verified production publication.</p>}</div></section></div>

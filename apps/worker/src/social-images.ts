@@ -49,6 +49,7 @@ async function notifyCampaignImagesReady(input: SocialImageJobData) {
     const content = actionEmail({
       greeting: membership.user.name?.trim() ? `Hi ${membership.user.name.trim()},` : "Hello,",
       title: "Your social campaign images are ready",
+      notificationType: type,
       message: `${strategy.campaignName || strategy.project.name}: ${readyCount} image${readyCount === 1 ? " is" : "s are"} ready. Review the captions, CTAs, hashtags, and visuals before scheduling.`,
       ctaLabel: "Review social campaign",
       ctaUrl: reviewUrl,

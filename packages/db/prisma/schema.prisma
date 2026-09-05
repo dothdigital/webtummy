@@ -1416,6 +1416,7 @@ model WebsiteTrackingEvent {
 // ─── Guided Project Foundation ──────────────────────────────────────────────
 
 model Project {
+  googleSearchConsoleConnection GoogleSearchConsoleConnection?
   id                        String        @id @default(cuid())
   clientId                  String
   client                    Client        @relation(fields: [clientId], references: [id], onDelete: Cascade)
@@ -5445,4 +5446,47 @@ model SocialRepurposedAsset {
   @@index([batchId, status])
   @@index([channel])
   @@index([socialCalendarPostId])
+}
+
+
+model GoogleSearchConsoleConnection {
+  id                     String @id @default(cuid())
+  projectId              String @unique
+  project                Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspaceId            String
+  connectedByUserId      String
+  websiteId              String
+  status                 String @default("not_connected")
+  revision               Int @default(0)
+  propertyUrl            String?
+  propertiesJson         Json @default("[]")
+  oauthStateHash         String? @unique
+  oauthStateExpiresAt    DateTime?
+  pkceVerifierCiphertext String?
+  accessTokenCiphertext  String?
+  refreshTokenCiphertext String?
+  accessTokenExpiresAt   DateTime?
+  grantedScopesJson      Json @default("[]")
+  lastSyncedAt           DateTime?
+  lastSyncAttemptAt      DateTime?
+  syncStatus             String @default("idle")
+  errorMessage           String?
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  snapshots              GoogleSearchConsoleSnapshot[]
+
+  @@index([status, lastSyncedAt])
+}
+
+model GoogleSearchConsoleSnapshot {
+  id              String @id @default(cuid())
+  connectionId    String
+  connection      GoogleSearchConsoleConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  propertyUrl     String
+  startDate       String
+  endDate         String
+  dataJson        Json @default("{}")
+  sourceFetchedAt DateTime @default(now())
+
+  @@index([connectionId, sourceFetchedAt])
 }

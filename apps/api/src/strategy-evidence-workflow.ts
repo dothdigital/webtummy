@@ -29,7 +29,7 @@ export function resolveStrategyEvidenceWorkflow(input: {
   const hasNewerEvidence = latestEvidenceTime !== null && (strategyTime === null || latestEvidenceTime > strategyTime);
 
   let state: StrategyEvidenceWorkflowState;
-  if (latestEvidenceTime === null) state = "evidence_required";
+  if (timestamp(input.latestGapAnalysisAt) === null || (timestamp(input.latestCrawlAt) ?? 0) > (timestamp(input.latestGapAnalysisAt) ?? 0)) state = "evidence_required";
   else if (!input.latestStrategy) state = "strategy_required";
   else if (hasNewerEvidence) state = "strategy_update_required";
   else if (input.latestStrategy.status === "draft") state = "strategy_review_required";

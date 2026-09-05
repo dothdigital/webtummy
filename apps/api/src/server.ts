@@ -1,3 +1,4 @@
+import { googleSearchConsoleCallbackRouter, googleSearchConsoleRouter } from "./routes/google-search-console.js";
 // SEnuke AI - AI Growth Operating System API server.
 import "./async-errors.js";
 import express from "express";
@@ -127,7 +128,8 @@ app.use((req, res, next) => {
   }
 
   const fetchSite = req.headers["sec-fetch-site"];
-  if (!isGoogleBusinessProfileCallback && (fetchSite === "cross-site" || (origin && !allowedOrigins.has(origin)))) {
+  const isGoogleSearchConsoleCallback = req.path === "/api/integrations/google-search-console/callback" || req.path === "/api/integrations/google-search-console/callback/";
+  if (!isGoogleBusinessProfileCallback && !isGoogleSearchConsoleCallback && (fetchSite === "cross-site" || (origin && !allowedOrigins.has(origin)))) {
     return res.status(403).json({ error: "forbidden origin" });
   }
 
@@ -198,6 +200,7 @@ app.use("/api/public", publicWebsiteTrackingRouter);
 app.use("/api/public", publicProjectReportsRouter);
 app.use("/api/public", publicGeneratedAssetsRouter);
 app.use("/api/integrations/google-business-profile/callback", googleBusinessProfileCallbackRouter);
+app.use("/api/integrations/google-search-console/callback", googleSearchConsoleCallbackRouter);
 app.use("/api", requireAuth, enforceCommercialAccess, enforceArchivedReadOnly, enforceWorkspacePermissions);
 app.use("/api/clients", clientsRouter);
 app.use("/api/users", usersRouter);
@@ -229,6 +232,7 @@ app.use("/api", socialStrategyRouter);
 app.use("/api", socialConnectRouter);
 app.use("/api", localSeoRouter);
 app.use("/api", googleBusinessProfileRouter);
+app.use("/api", googleSearchConsoleRouter);
 app.use("/api", discoveryDraftsRouter);
 app.use("/api", executionTasksRouter);
 app.use("/api", optimizationWorkflowRouter);

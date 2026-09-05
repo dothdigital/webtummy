@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../api.js";
 
 export type ApprovalRoute = "self_approve" | "send_to_team";
@@ -27,7 +28,10 @@ export function useApprovalRouting() {
   const chooseApprovalRoute = async (projectId: string, subject: string): Promise<ApprovalRoute | null> => {
     const route = await api.get<RouteResponse>(`/api/projects-v2/${projectId}/approval-route`);
     if (route.workspaceType === "personal") return "self_approve";
-    if (!route.canSelfApprove) return route.approvalMode === "team" ? "send_to_team" : null;
+    if (!route.canSelfApprove) {
+      if (route.approvalMode === "team") return "send_to_team";
+      throw new Error("Your account cannot approve this work and no team approver is available. Ask a workspace owner or admin to approve it or configure team approval.");
+    }
     if (route.preference === "self_approve") return route.preference;
     if (route.preference === "send_to_team" && route.approvalMode === "team") return route.preference;
     return new Promise((resolve) => {
@@ -64,9 +68,9 @@ export function useApprovalRouting() {
     }
   };
 
-  const approvalRouteDialog = pending ? <div className="fixed inset-0 z-[180] grid place-items-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-labelledby="approval-route-title">
+  const approvalRouteDialog = pending ? createPortal(<div className="fixed inset-0 z-[180] grid place-items-center bg-slate-950/60 p-4" role="dialog" aria-modal="true" aria-labelledby="approval-route-title">
     <button type="button" className="absolute inset-0" aria-label="Close approval choice" onClick={close} />
-    <div className="relative w-full max-w-lg overflow-hidden rounded-2xl bg-white shadow-2xl">
+    <div className="relative max-h-[90dvh] w-full max-w-lg overflow-y-auto rounded-2xl bg-white shadow-2xl">
       <div className="border-b bg-gradient-to-r from-indigo-50 via-white to-emerald-50 px-6 py-5">
         <div className="text-xs font-black uppercase tracking-wide text-indigo-700">Project approval</div>
         <h2 id="approval-route-title" className="mt-1 text-xl font-black text-slate-950">Choose the approval path once</h2>
@@ -87,7 +91,7 @@ export function useApprovalRouting() {
         <button type="button" disabled={Boolean(busy)} onClick={() => void saveChoice("send_to_team")} className="rounded-lg bg-indigo-700 px-4 py-2.5 text-sm font-black text-white disabled:opacity-50">{busy === "send_to_team" ? "Saving…" : pending.approvalMode === "team" ? "Yes — send to team" : "Yes — invite an approver"}</button>
       </div>
     </div>
-  </div> : null;
+  </div>, document.body) : null;
 
   return { chooseApprovalRoute, approvalRouteDialog };
 }

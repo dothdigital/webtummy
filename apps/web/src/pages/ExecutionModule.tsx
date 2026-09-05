@@ -216,7 +216,7 @@ const moduleCopy: Record<ModuleKind, { title: string; subtitle: string; primary:
   strategy: {
     title: "SEnuke AI Intelligence Strategy Engine",
     subtitle: "Turn opportunity insights into a structured execution strategy.",
-    primary: "Create new Strategy version",
+    primary: "Generate Strategy",
     secondary: "How it works",
   },
   keywords: {
@@ -1088,9 +1088,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     : kind === "ai-citations"
       ? "Citation Snapshot"
     : kind === "strategy" && strategyBusy === "generate"
-      ? "Refreshing..."
+      ? "Generating..."
     : kind === "strategy" && workflowController && !workflowController.intelligenceReady
       ? "Complete intelligence first"
+    : kind === "strategy" && activeProject?.strategyPlans?.[0]
+      ? "Create new Strategy version"
     : kind === "opportunities" && opportunityBusy === "generate"
       ? hasOpportunities ? "Refreshing..." : "Creating..."
     : kind === "opportunities"
@@ -1120,7 +1122,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       return;
     }
     if (kind === "strategy") {
-      setStrategyMessage("Creating a new Strategy version from the latest project data...");
+      setStrategyMessage(activeProject?.strategyPlans?.[0] ? "Creating a new Strategy version from the latest project data..." : "Generating your first Strategy from the project data...");
       void runStrategyAction("generate");
       return;
     }
@@ -1167,7 +1169,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         </div>
       ) : hasActiveProject && kind === "strategy" ? (
         <div className={`flex flex-wrap items-center justify-between gap-3 rounded-lg border px-4 py-3 text-sm ${strategyMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
-          <span>{strategyMessage || (activeProject?.strategyPlans?.[0]?.status === "approved" ? `Strategy v${activeProject.strategyPlans[0].version ?? 1} is approved. The Master Workflow controls the next required action.` : activeProject ? "Review and approve the generated Strategy before continuing." : "Create a guided project before approving a strategy.")}</span>
+          <span>{strategyMessage || (activeProject?.strategyPlans?.[0]?.status === "approved" ? `Strategy v${activeProject.strategyPlans[0].version ?? 1} is approved. The Master Workflow controls the next required action.` : activeProject?.strategyPlans?.[0] ? "Review and approve the generated Strategy before continuing." : activeProject ? "Generate your first Strategy, then review and approve it before continuing." : "Create a guided project before generating a strategy.")}</span>
           {strategyJob?.delayed && <button type="button" onClick={() => void releaseDelayedStrategyJob()} className="rounded-lg bg-brand-700 px-3 py-2 text-xs font-black text-white">Release and retry safely</button>}
         </div>
       ) : null}
@@ -1199,7 +1201,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
         <ModuleNextStepCallout
           step={moduleNextStep}
           onAction={moduleNextStep.action === "generate-strategy"
-            ? () => { setStrategyMessage("Creating a new Strategy version from the latest project data..."); void runStrategyAction("generate"); }
+            ? () => { setStrategyMessage(activeProject?.strategyPlans?.[0] ? "Creating a new Strategy version from the latest project data..." : "Generating your first Strategy from the project data..."); void runStrategyAction("generate"); }
             : moduleNextStep.action === "analyze-site"
               ? () => { void analyzeSite(); }
               : undefined}
@@ -3836,7 +3838,7 @@ function SiteAnalysisScreen({ data }: { data: ModuleData }) {
       <Card className={`border ${missingKeywordResearch.length ? "border-amber-200 bg-amber-50/60" : "border-emerald-200 bg-emerald-50/50"}`}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div><div className={`text-xs font-black uppercase tracking-wide ${missingKeywordResearch.length ? "text-amber-700" : "text-emerald-700"}`}>Shared keyword evidence</div><h3 className="mt-1 font-black text-slate-950">{approvedKeywords.length} approved Primary and Secondary keyword{approvedKeywords.length === 1 ? "" : "s"} connected to this crawl</h3><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Site Analysis captures each page’s URL, title, meta description, H1, H2, body, links, and schema. SEO &amp; Gap Analysis compares those exact crawl signals with every approved keyword, so the crawl does not invent page targets from the Industry / Niche field.</p></div>
-          <Link to={missingKeywordResearch.length ? `/keywords?projectId=${project?.id ?? ""}` : `/gap-analysis?projectId=${project?.id ?? ""}`} className={`shrink-0 rounded-lg px-4 py-2.5 text-sm font-black text-white ${missingKeywordResearch.length ? "bg-amber-600" : "bg-emerald-600"}`}>{missingKeywordResearch.length ? `Analyze ${missingKeywordResearch.length} remaining` : "Map keywords to pages"}</Link>
+          <Link to={missingKeywordResearch.length ? `/keywords?projectId=${project?.id ?? ""}` : `/gap-analysis?projectId=${project?.id ?? ""}`} className={`shrink-0 rounded-lg px-4 py-2.5 text-sm font-black text-white ${missingKeywordResearch.length ? "bg-amber-600" : "bg-emerald-600"}`}>{missingKeywordResearch.length ? `Analyze ${missingKeywordResearch.length} remaining` : "Continue to Gap Analysis"}</Link>
         </div>
       </Card>
       <Card className="overflow-hidden">

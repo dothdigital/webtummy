@@ -1,7 +1,9 @@
 import { Prisma, prisma, type Client } from "@webtummy/db";
 import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
-import { actionEmail, notificationPresentation, sendMail } from "./email.js";
+import { actionEmail, metricChange, notificationPresentation, sendMail } from "./email.js";
+import { collectReportEmailEvidence } from "./report-email-evidence.js";
+import { savedReportEmailTables } from "./report-email.js";
 import { approvalEscalationStage } from "@webtummy/core/approvals";
 import { scheduledReportKey } from "@webtummy/core/reporting";
 import { lookup } from "node:dns/promises";
@@ -389,8 +391,8 @@ export async function weeklyRankingReportGeneration() {
         const sorted = items.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
         const current = sorted[0];
         const previous = sorted[1];
-        const currentRank = current ? current.manualRank ?? current.targetRank : null;
-        const previousRank = previous ? previous.manualRank ?? previous.targetRank : null;
+        const currentRank = current ? current.manualRank : null;
+        const previousRank = previous ? previous.manualRank : null;
         return current && currentRank != null && previousRank != null ? { keyword: current.seedKeyword, currentRank, previousRank, change: currentRank - previousRank } : null;
       }).filter((item): item is { keyword: string; currentRank: number; previousRank: number; change: number } => Boolean(item && item.change !== 0));
       const topMovements = movements.sort((a, b) => Math.abs(b.change) - Math.abs(a.change)).slice(0, 10);
@@ -403,8 +405,8 @@ export async function weeklyRankingReportGeneration() {
         clientId: client.id,
         fallbackEmail: client.contactEmail,
         subject: "Your weekly SEnuke AI - AI Growth Operating System ranking changes",
-        text: [`Weekly ranking changes for ${client.name}:`, "", ...lines, "", `Open dashboard: ${appLink("/keyword-insights")}`].join("\n"),
-        html: `<p>Weekly ranking changes for <strong>${client.name}</strong>:</p><ul>${topMovements.map((item) => `<li><strong>${item.change < 0 ? "Up" : "Down"} ${Math.abs(item.change)}</strong>: ${item.keyword} is now #${item.currentRank} (was #${item.previousRank})</li>`).join("")}</ul><p><a href="${appLink("/keyword-insights")}">Open keyword dashboard</a></p>`,
+        ...actionEmail({ title: `Weekly ranking changes for ${client.name}`, message: "Recorded manual ranking observations, grouped by website, keyword, market and device. Lower rank numbers are better.", notificationType: "report_ready", ctaLabel: "Open keyword dashboard", ctaUrl: appLink("/keyword-insights"), occurredAt: now,
+          tables: [{ title: "Ranking movements", columns: ["Keyword", "Previous", "Current", "Change"], rows: topMovements.map(item => [item.keyword, `#${item.previousRank}`, `#${item.currentRank}`, metricChange(item.currentRank, item.previousRank, true)]), note: "Up to 10 largest recorded movements. These are manual observations, not live Google rank checks. Target rankings are excluded." }], preferencesUrl: appLink("/reports"), supportEmail: config.supportEmail }),
       });
       if (sent) emailed += 1;
       await prisma.client.update({ where: { id: client.id }, data: { lastWeeklyReportAt: now } });
@@ -459,8 +461,8 @@ export async function monthlyClientReportGeneration() {
         clientId: client.id,
         fallbackEmail: client.contactEmail,
         subject: `Your SEnuke AI - AI Growth Operating System monthly report is ready`,
-        text: `Your monthly report for ${latest.website.domain} is ready. Score: ${latest.siteScore ?? "not scored"}. Open SEnuke AI - AI Growth Operating System: ${appLink("/")}`,
-        html: `<p>Your monthly report for <strong>${latest.website.domain}</strong> is ready.</p><p>Score: <strong>${latest.siteScore ?? "not scored"}</strong></p><p><a href="${appLink("/")}">Open SEnuke AI - AI Growth Operating System</a></p>`,
+        ...actionEmail({ title: `Monthly website report: ${latest.website.domain}`, message: "Review the latest saved website audit and the previous audit comparison.", notificationType: "report_ready", ctaLabel: "Open reports", ctaUrl: appLink("/reports"), occurredAt: now,
+          tables: [{ title: "Website health", columns: ["Metric", "Current", "Previous", "Change"], rows: [["Site score", String(latest.siteScore ?? "Not available"), String(previous?.siteScore ?? "Not available"), metricChange(latest.siteScore, previous?.siteScore ?? null)], ["Pages crawled", String(latest.pagesCrawled), "—", "—"], ["Errors", String(latest.errorCount), "—", "—"]], note: "Comparison is between saved audits, not necessarily equal calendar periods." }, { title: "Issues by severity", columns: ["Severity", "Count"], rows: issuesBySeverity.map(item => [item.severity, String(item._count)]) }, { title: "Recommended next actions", columns: ["Action"], rows: summary.recommendations.map(item => [item]) }], preferencesUrl: appLink("/reports"), supportEmail: config.supportEmail }),
       });
       if (sent) {
         await prisma.monthlyClientReport.update({ where: { id: report.id }, data: { emailSentAt: now } });
@@ -527,6 +529,7 @@ export async function taskDeadlineNotifications() {
           const actionUrl = appLink(`/guided-projects/${task.projectId}#execution-tasks`);
           const content = actionEmail({
             greeting: recipient.name?.trim() ? `Hi ${recipient.name.trim()},` : "Hello,",
+            notificationType: isOverdue ? "deadline_overdue" : "deadline_approaching",
             title: `${task.title}: ${isOverdue ? "deadline overdue" : "due soon"}`,
             message: `${body} Please complete it, update the status, or add notes if the deadline needs attention.`,
             ctaLabel: isOverdue ? "Update task" : "Open task",
@@ -627,17 +630,28 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       if (readyRoutine.length) batches.push(readyRoutine);
       deferred += routine.length - readyRoutine.length;
       for (const batch of batches) {
-        const lines = batch.map((item) => `${item.title}: ${item.body}${batch.length > 1 ? `\nCompleted at: ${item.createdAt.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC")}` : ""}`);
+        const lines = batch.map((item) => `${item.title}: ${item.body}${batch.length > 1 ? `\nUpdate recorded: ${item.createdAt.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC")}` : ""}`);
         const presentation = batch.length > 1
           ? { ctaLabel: "Open SEnuke AI dashboard", previewText: "Review completed work and updates that need your attention." }
           : notificationPresentation(batch[0].type);
+        const reportTables = new Map<string, ReturnType<typeof savedReportEmailTables>>();
+        for (const item of batch) {
+          if (!item.type.startsWith("report_ready:") || !item.projectId || !item.actionUrl) continue;
+          const reportId = new URL(item.actionUrl, config.webAppUrl).searchParams.get("reportId");
+          if (!reportId) continue;
+          const report = await prisma.gapReportExport.findFirst({ where: { id: reportId, workspaceId: item.workspaceId, projectId: item.projectId, generatedBy: "scheduler", workspace: { ownerUserId: item.userId } }, select: { contentJson: true } });
+          if (report) reportTables.set(item.id, savedReportEmailTables(report.contentJson));
+        }
         const content = actionEmail({
+          tables: batch.length === 1 ? reportTables.get(batch[0].id) : undefined,
           title: batch.length > 1 ? `${batch.length} project updates are ready` : batch[0].title,
           message: lines.join("\n\n"),
           ctaLabel: presentation.ctaLabel,
           ctaUrl: appLink(batch.length > 1 ? "/" : batch[0].actionUrl || "/"),
           previewText: presentation.previewText,
-          completedAt: batch.length === 1 ? batch[0].createdAt : now,
+          notificationType: batch.length === 1 ? batch[0].type : undefined,
+          occurredAt: batch.length === 1 ? batch[0].createdAt : now,
+          updates: batch.length > 1 ? batch.map(item => ({ title: item.title, message: item.body, notificationType: item.type, occurredAt: item.createdAt, ctaLabel: notificationPresentation(item.type).ctaLabel, ctaUrl: appLink(item.actionUrl || "/"), tables: reportTables.get(item.id) })) : undefined,
           preferencesUrl: appLink("/reports"),
           supportEmail: config.supportEmail,
           reason: batch.length > 1
@@ -916,7 +930,8 @@ export async function scheduledProjectReportGeneration(now = new Date()) {
           { key: "next_period", title: "Next Period", items: pending.slice(0, 8).map((item) => item.title) },
         ];
         const branding = await prisma.whiteLabelProfile.findFirst({ where: { workspaceId: workspace.id }, orderBy: { updatedAt: "desc" } });
-        const content = { title: `${project.businessName ?? project.name} - ${reportTitle}`, reportType, generatedAt: now.toISOString(), frequency: schedule.frequency, reportingPeriod: sourceSnapshot.reportingPeriod, sourceSnapshot, branding: { agencyName: workspace.workspaceType === "agency" ? branding?.agencyName ?? workspace.name : workspace.name, agencyLogoDataUrl: workspace.workspaceType === "agency" ? branding?.agencyLogoDataUrl ?? null : null, colorPreference: branding?.colorPreference ?? "#0F9F8F", secondaryColor: branding?.secondaryColor ?? "#0F172A", footerDisclaimer: branding?.footerDisclaimer ?? "Confidential workspace project report.", minimizeSenukeBranding: workspace.workspaceType === "agency" ? branding?.minimizeSenukeBranding ?? true : false }, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations }, health: { workflowStep: project.currentStep, strategyStatus: latestStrategy?.status ?? "not_started", completedTasks: completed.length, totalTasks: project.executionTasks.length, blockedTasks: blocked.length }, performance: { trackedKeywords: project.keywordResearchRuns.length, siteScore: latestCrawl?.siteScore ?? null }, evidence: { siteAnalysis: latestCrawl ? { score: latestCrawl.siteScore, pagesCrawled: latestCrawl.pagesCrawled, issuesFound: latestCrawl._count.issues, completedAt: latestCrawl.completedAt } : null }, execution: { completed: completed.map((item) => ({ title: item.title, module: item.moduleName })), published: published.map((item) => item.title), awaitingApproval: pending.filter((item) => !item.approvedAt && /approval/.test(item.status)).map((item) => item.title), blocked: blocked.map((item) => item.title), scheduledNext: pending.slice(0, 10).map((item) => ({ title: item.title })) }, strategy: latestStrategy ? { version: latestStrategy.version, status: latestStrategy.status, summary: latestStrategy.strategySummary } : null, growth: { nextBestActions: project.nextBestActions.map((item) => ({ title: item.title, recommendation: item.recommendation, expectedImpact: item.expectedImpact, status: item.status })), experiments: project.growthExperiments.map((item) => ({ title: item.title, status: item.status, metric: item.metric, result: item.results[0] ?? null })) }, recommendations: project.nextBestActions.map((item) => item.recommendation), clientNarrative: { executiveNarrative: narrative, wins: completed.slice(0, 5).map((item) => item.title), risks: blocked.slice(0, 5).map((item) => item.title), interpretation: "Review verified changes, completed work, missing sources, and the current Next Best Action together. No causal result is claimed without a valid baseline and comparison period." }, sections: baseSections.map((section, index) => ({ key: section.key, title: section.title, order: index, enabled: true })), clientSections: baseSections, dataQuality: { confidence: Math.max(20, 100 - missingSources.length * 15), missingSources, limitations: missingSources.map((source) => `${source} is disconnected or has no current saved evidence.`) }, clientSafe: true, narrativeGeneration: { mode: "passive_evidence_template", customerCapacityUnits: 0, generatedAt: now.toISOString() } };
+        const emailPerformanceTables = await collectReportEmailEvidence(project.id, schedule.periodStart, now);
+        const content = { emailPerformanceTables, title: `${project.businessName ?? project.name} - ${reportTitle}`, reportType, generatedAt: now.toISOString(), frequency: schedule.frequency, reportingPeriod: sourceSnapshot.reportingPeriod, sourceSnapshot, branding: { agencyName: workspace.workspaceType === "agency" ? branding?.agencyName ?? workspace.name : workspace.name, agencyLogoDataUrl: workspace.workspaceType === "agency" ? branding?.agencyLogoDataUrl ?? null : null, colorPreference: branding?.colorPreference ?? "#0F9F8F", secondaryColor: branding?.secondaryColor ?? "#0F172A", footerDisclaimer: branding?.footerDisclaimer ?? "Confidential workspace project report.", minimizeSenukeBranding: workspace.workspaceType === "agency" ? branding?.minimizeSenukeBranding ?? true : false }, project: { id: project.id, name: project.name, businessName: project.businessName, website: project.website?.domain, primaryGoal: project.primaryGoal, targetMarkets: project.targetLocations }, health: { workflowStep: project.currentStep, strategyStatus: latestStrategy?.status ?? "not_started", completedTasks: completed.length, totalTasks: project.executionTasks.length, blockedTasks: blocked.length }, performance: { trackedKeywords: project.keywordResearchRuns.length, siteScore: latestCrawl?.siteScore ?? null }, evidence: { siteAnalysis: latestCrawl ? { score: latestCrawl.siteScore, pagesCrawled: latestCrawl.pagesCrawled, issuesFound: latestCrawl._count.issues, completedAt: latestCrawl.completedAt } : null }, execution: { completed: completed.map((item) => ({ title: item.title, module: item.moduleName })), published: published.map((item) => item.title), awaitingApproval: pending.filter((item) => !item.approvedAt && /approval/.test(item.status)).map((item) => item.title), blocked: blocked.map((item) => item.title), scheduledNext: pending.slice(0, 10).map((item) => ({ title: item.title })) }, strategy: latestStrategy ? { version: latestStrategy.version, status: latestStrategy.status, summary: latestStrategy.strategySummary } : null, growth: { nextBestActions: project.nextBestActions.map((item) => ({ title: item.title, recommendation: item.recommendation, expectedImpact: item.expectedImpact, status: item.status })), experiments: project.growthExperiments.map((item) => ({ title: item.title, status: item.status, metric: item.metric, result: item.results[0] ?? null })) }, recommendations: project.nextBestActions.map((item) => item.recommendation), clientNarrative: { executiveNarrative: narrative, wins: completed.slice(0, 5).map((item) => item.title), risks: blocked.slice(0, 5).map((item) => item.title), interpretation: "Review verified changes, completed work, missing sources, and the current Next Best Action together. No causal result is claimed without a valid baseline and comparison period." }, sections: baseSections.map((section, index) => ({ key: section.key, title: section.title, order: index, enabled: true })), clientSections: baseSections, dataQuality: { confidence: Math.max(20, 100 - missingSources.length * 15), missingSources, limitations: missingSources.map((source) => `${source} is disconnected or has no current saved evidence.`) }, clientSafe: true, narrativeGeneration: { mode: "passive_evidence_template", customerCapacityUnits: 0, generatedAt: now.toISOString() } };
         const approvalStatus = workspace.workspaceType === "agency" ? "needs_review" : "approved";
         const qa = { status: "passed", checkedAt: now.toISOString(), checks: [{ key: "identity", status: "passed", message: "Workspace and project identity are present." }, { key: "period", status: "passed", message: "The reporting period is recorded." }, { key: "sources", status: "passed", message: "Source timestamps and missing sources are recorded." }, { key: "client_safety", status: "passed", message: "The scheduled report contains no internal costs, margins, capacity balances, or team notes." }] };
         try {

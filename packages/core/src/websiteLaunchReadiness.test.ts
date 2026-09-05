@@ -96,6 +96,14 @@ const validModel: WebsiteModel = {
 };
 
 describe("website launch readiness", () => {
+  it("blocks launch when any form has no recipient and identifies it", () => {
+    const result = evaluateWebsiteLaunchReadiness({ ...validModel, forms: [{ formId: "contact-enquiry", type: "lead", destination: "  ", fields: ["Name", "Email", "Message"] }] }, { approvedReleaseId: "release-no-recipient", snapshotHash: "no-recipient" });
+    const finding = result.checks.find(check => check.key === "lead_form");
+    expect(finding?.status).toBe("blocking");
+    expect(JSON.stringify(finding)).toContain("contact-enquiry");
+    expect(result.blockingCount).toBeGreaterThan(0);
+  });
+
   it("checks an immutable release and all renderer outputs", () => {
     const result = evaluateWebsiteLaunchReadiness(validModel, { approvedReleaseId: "release-1", snapshotHash: "abc123" });
     expect(result.blockingCount, JSON.stringify({ checks: result.checks, qualityGate: result.qualityGate }, null, 2)).toBe(0);

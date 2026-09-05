@@ -726,3 +726,33 @@ describe("Approved Release website renderer", () => {
     expect(staging.find((file) => file.path === "sitemap.xml")?.content).toBe(siteFiles.sitemap);
   });
 });
+
+
+describe("testimonial slider", () => {
+  const quote = "A detailed client experience. ".repeat(100) + "\n\nThe final paragraph must remain visible.";
+  const testimonials: WebsiteComponentInstance = {
+    instanceId: "testimonials", componentId: "trust.proof", componentVersion: "1.0.0", variant: "review_summary",
+    props: { heading: "Testimonials", items: [{ title: "First client", description: quote }, { title: "Second client", description: "Another complete review." }] },
+  };
+
+  it("exports complete quotes with one full-width slide and navigation", () => {
+    const testimonialModel = { ...model, pages: [{ ...model.pages[0], sections: [hero, testimonials] }] };
+    const files = createStaticWebsiteFiles(testimonialModel);
+    const html = files.find(file => file.mimeType === "text/html")!.content;
+    const css = files.find(file => file.path === "assets/senuke.css")!.content;
+    expect(html).toContain(quote);
+    expect(html).toContain('aria-label="1 of 2"');
+    expect(html).toContain('aria-label="2 of 2"');
+    expect(html).toContain('aria-label="Previous testimonial"');
+    expect(html).toContain('aria-label="Next testimonial"');
+    expect(html).toContain('slider.scrollTo(');
+    expect(css).toContain('grid-auto-columns:100%;gap:0');
+    expect(css).toContain('white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;max-height:none');
+  });
+
+  it("omits unnecessary navigation for one testimonial", () => {
+    const html = renderWebsiteComponentHtml({ ...testimonials, props: { heading: "Testimonials", items: [{ title: "Client", description: quote }] } });
+    expect(html).toContain(quote);
+    expect(html).not.toContain('data-testimonial-direction');
+  });
+});

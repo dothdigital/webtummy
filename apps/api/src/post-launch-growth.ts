@@ -57,14 +57,6 @@ export function selectPostLaunchNextBestAction(input: PostLaunchActionInput): Po
     reason: `${input.indexingIssueCount} verified crawl or indexing issue${input.indexingIssueCount === 1 ? " requires" : "s require"} attention before promotion is expanded.`,
     route: "technical", priorityScore: 96, confidence: 95, effort: "medium", actionType: "indexing_repair",
   };
-  if (!input.sitemapVerified || !input.searchConsoleConnected) return {
-    key: "submit-sitemap-search-console",
-    title: "Submit the sitemap and verify Search Console",
-    recommendation: "Connect the correct Search Console property, submit the production sitemap, and confirm that the canonical website URLs are discoverable. Keep Search Console optional for launch, but record its limitation until connected.",
-    expectedImpact: "Verified search discovery signals and access to impressions, clicks, queries, and indexing evidence.",
-    reason: "The website is live and tracking is active; search discovery is the next unresolved launch dependency.",
-    route: "technical", priorityScore: 92, confidence: 94, effort: "low", actionType: "search_setup",
-  };
   if (input.formErrors > input.formSuccesses && input.formErrors > 0) return {
     key: "fix-live-form-conversion",
     title: "Fix the live lead-form conversion issue",
@@ -96,6 +88,14 @@ export function selectPostLaunchNextBestAction(input: PostLaunchActionInput): Po
     expectedImpact: "Improved local completeness and stronger evidence for relevant local discovery.",
     reason: "An applicable Local SEO priority is ready without waiting for the complete website baseline.",
     route: "local_seo", priorityScore: 78, confidence: 84, effort: "medium", actionType: "local_growth",
+  };
+  if (!input.sitemapVerified || !input.searchConsoleConnected) return {
+    key: "submit-sitemap-search-console",
+    title: "Submit the sitemap and verify Search Console",
+    recommendation: "Connect the correct Search Console property, submit the production sitemap, and confirm that the canonical website URLs are discoverable. Keep Search Console optional for launch, but record its limitation until connected.",
+    expectedImpact: "Verified search discovery signals and access to impressions, clicks, queries, and indexing evidence.",
+    reason: "The website is live and tracking is active; search discovery is the next unresolved launch dependency.",
+    route: "technical", priorityScore: 92, confidence: 94, effort: "low", actionType: "search_setup",
   };
   const topic = input.primaryKeyword?.trim() || "the website’s primary topic cluster";
   return {
@@ -155,7 +155,7 @@ export async function activatePostLaunchGrowthLifecycle(input: { projectId: stri
       websitePublications: { where: { publishedAt: { not: null } }, orderBy: { publishedAt: "desc" }, take: 1, select: { releaseId: true, publishedAt: true, status: true, verificationJson: true } },
       websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { pages: { where: { status: { not: "deferred" } }, orderBy: { sortOrder: "asc" }, take: 100, select: { title: true, pageType: true, primaryKeyword: true } } } },
       discoveryChecks: { orderBy: { createdAt: "desc" }, take: 20, select: { status: true, indexable: true, robotsAllowed: true, canonicalMatches: true, sitemapPresent: true } },
-      executionTasks: { where: { status: { in: ["ready", "planned", "approved", "pending", "needs_review"] } }, orderBy: [{ priority: "asc" }, { createdAt: "asc" }], take: 100, select: { id: true, title: true, moduleName: true, sourceType: true, status: true } },
+      executionTasks: { where: { status: { in: ["ready", "approved", "needs_review"] }, blockedReason: null, dependencies: { every: { requiredTask: { status: { in: ["completed", "approved", "published", "verified", "skipped"] } } } } }, orderBy: [{ priority: "asc" }, { createdAt: "asc" }], take: 100, select: { id: true, title: true, moduleName: true, sourceType: true, status: true } },
       growthBlueprint: { include: { versions: { orderBy: { version: "desc" }, take: 1 } } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: { createdAt: "desc" }, take: 50 },
       localBusinessProfiles: { take: 1, select: { id: true } },

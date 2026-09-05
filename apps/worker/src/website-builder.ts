@@ -18,6 +18,7 @@ import {
   ensureConciseFirstSupportingOverview,
   ensurePageSpecificFirstH2,
   ensureSeoFocusedHeroHeading,
+  WEBSITE_HOME_HERO_COPY_DIRECTION,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
@@ -1843,6 +1844,7 @@ async function aiPage(page: { id: string; title: string; pageType: string; prima
   const policy = compositionForPage(page);
   const uniquenessSignals = reservedWebsiteSignals(siblingPages, page.id);
   instructions = `${instructions || "Build a complete conversion-focused page."}${localDraftGuardrail}
+${WEBSITE_HOME_HERO_COPY_DIRECTION}
 Visible page word budget: ${policy.minimumWords}–${policy.maximumWords} words across all website sections combined, including hero, service descriptions, proof, FAQs, forms, and CTA copy. Do not exceed ${policy.maximumWords} words. Metadata and schema are outside this visible-content budget.
 Page uniqueness contract: return an original SEO title, H1, first post-hero H2, and meta description that do not match values reserved by another page. The first H2 must name this page's assigned topic or intent. Never use “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”. Keep its follow-up overview concise at 70–130 words before deeper sections. Reserved page identity values: ${promptJson(uniquenessSignals, 20_000)}`.trim();
   const businessContext = interpretedBusinessContext(seoPlan, project);
@@ -2052,6 +2054,7 @@ async function notifyWebsiteJob(
   const content = actionEmail({
     greeting,
     title: input.title,
+    notificationType: input.type,
     message: input.body,
     ctaLabel: reviewLabel,
     ctaUrl: reviewUrl,

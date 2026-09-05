@@ -27,3 +27,10 @@ describe("completed website work", () => {
     }, { websiteLaunched: true, websitePlanApproved: false })).toBe(false);
   });
 });
+
+
+it("recognizes a published canonical intent architecture without hiding later optimization", () => {
+  const state = { websiteLaunched: true, websitePlanApproved: true };
+  expect(isCompletedWebsiteLaunchFoundationAction({ title: "Create a small canonical intent architecture", route: "website" }, state)).toBe(true);
+  expect(isCompletedWebsiteLaunchFoundationAction({ title: "Improve the canonical intent architecture", route: "website" }, state)).toBe(false);
+});
