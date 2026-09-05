@@ -757,6 +757,7 @@ export default function GrowthEngine() {
     const day = plannedDay(item) ?? 180;
     return Math.min(180, Math.max(30, Math.ceil(day / 30) * 30));
   };
+  const contentWindowCount = (contentRoadmap?.opportunities ?? []).filter(item => item.lifecycleStatus !== "superseded" && (contentWindow === "all" || scheduleWindow(item) === contentWindow)).length;
   const visibleContentOpportunities = (contentRoadmap?.opportunities ?? []).filter((item) =>
     item.lifecycleStatus !== "superseded" && (contentQueue === "all" || item.queue === contentQueue) && (contentWindow === "all" || scheduleWindow(item) === contentWindow),
   ).sort((left, right) => (plannedDay(left) ?? 999) - (plannedDay(right) ?? 999) || contentQueueOrder[left.queue] - contentQueueOrder[right.queue] || right.priorityScore - left.priorityScore);
@@ -1135,14 +1136,14 @@ export default function GrowthEngine() {
                 <div className="border-b border-cyan-100 bg-cyan-50/60 p-4">
                   <div className="text-xs font-bold uppercase tracking-wide text-cyan-700">180-day publishing plan</div>
                   <h2 className="mt-1 text-lg font-bold text-charcoal-950">Choose a delivery window</h2>
-                  <p className="mt-1 text-sm text-slate-600">Without a start date, the plan stays relative as Day 1–180. Set a start date and recreate it to trigger calendar dates and Website Plan deadlines.</p>
+                  <p className="mt-1 text-sm text-slate-600">These windows show planned topics, not finished articles. Empty months do not fill automatically when their dates arrive. Add researched keywords and review a plan refresh to discover more opportunities. Article drafting follows Website Plan approval. Without a start date, dates remain relative to Day 1.</p>
                 </div>
                 <div className="grid gap-2 p-4 sm:grid-cols-3 xl:grid-cols-7">
                   {([30, 60, 90, 120, 150, 180] as const).map((days) => {
                     const count = contentRoadmap.opportunities.filter((item) => item.lifecycleStatus !== "superseded" && scheduleWindow(item) === days).length;
-                    return <button key={days} type="button" onClick={() => { setContentWindow(days); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === days ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Days {days - 29}–{days}</span><span className="mt-1 block text-xs text-slate-500">{count} planned {count === 1 ? "article" : "articles"}</span></button>;
+                    return <button key={days} type="button" onClick={() => { setContentWindow(days); setContentQueue("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === days ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Days {days - 29}–{days}</span><span className="mt-1 block text-xs text-slate-500">{count} planned {count === 1 ? "article" : "articles"}</span></button>;
                   })}
-                  <button type="button" onClick={() => { setContentWindow("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === "all" ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Full plan</span><span className="mt-1 block text-xs text-slate-500">{contentRoadmap.opportunityCount} opportunities</span></button>
+                  <button type="button" onClick={() => { setContentWindow("all"); setContentQueue("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === "all" ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Full plan</span><span className="mt-1 block text-xs text-slate-500">{contentRoadmap.opportunityCount} opportunities</span></button>
                 </div>
               </Card>
 
@@ -1198,7 +1199,11 @@ export default function GrowthEngine() {
                       </div>
                     </div>;
                   })}
-                  {!visibleContentOpportunities.length && <div className="p-8 text-center text-sm text-slate-500">No supporting-content opportunities are assigned to this queue.</div>}
+                  {!visibleContentOpportunities.length && <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center">
+                    <h3 className="font-bold text-charcoal-950">{contentWindowCount ? "Planned topics are hidden by this queue filter" : `No topics planned ${contentWindow === "all" ? "yet" : `for days ${contentWindow - 29}–${contentWindow}`}`}</h3>
+                    <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">{contentWindowCount ? `${contentWindowCount} planned topic${contentWindowCount === 1 ? " is" : "s are"} available in this delivery window. Show all queues to see them.` : "This is an empty planning window, not an article-generation job waiting to run. Research and approve more relevant keywords, then use Review & Recreate Plan above. New topics depend on the available evidence; an empty month does not fill automatically."}</p>
+                    {contentWindowCount ? <button type="button" onClick={() => { setContentQueue("all"); setSelectedContentIds([]); }} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Show all queues in this window</button> : <Link to={`/keywords?projectId=${encodeURIComponent(projectId)}`} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Review keyword research →</Link>}
+                  </div>}
                 </div>
               </Card>
 
