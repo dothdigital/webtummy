@@ -75,22 +75,34 @@ export function parseHtml(html: string, pageUrl: string): ParsedPage {
 
   // Links
   const links: ExtractedLink[] = [];
-  const seenLinks = new Set<string>();
+  const linkIndexByNormalized = new Map<string, number>();
   $("a[href]").each((_, el) => {
     const href = $(el).attr("href");
     if (!href) return;
     const abs = resolveUrl(pageUrl, href);
     if (!abs) return;
     const normalized = normalizeForDedup(abs);
-    if (seenLinks.has(normalized)) return;
-    seenLinks.add(normalized);
+    const text = $(el).text().replace(/\s+/g, " ").trim();
+    const ariaLabel = $(el).attr("aria-label")?.trim() || "";
+    const imageAlt = $(el).find("img[alt]").map((__, image) => $(image).attr("alt")?.trim() || "").get().filter(Boolean).join(" ");
+    const titleText = $(el).attr("title")?.trim() || "";
+    const anchorText = (text || ariaLabel || imageAlt || titleText).slice(0, 300);
+    const placement = linkPlacement($, el);
+    const existingIndex = linkIndexByNormalized.get(normalized);
+    if (existingIndex != null) {
+      const existing = links[existingIndex];
+      if ((!existing.anchorText || anchorText.length > existing.anchorText.length) && anchorText) existing.anchorText = anchorText;
+      if (placement === "body" && existing.placement !== "body") existing.placement = "body";
+      return;
+    }
+    linkIndexByNormalized.set(normalized, links.length);
     links.push({
       url: abs,
       normalized,
-      anchorText: $(el).text().trim().slice(0, 300),
+      anchorText,
       rel: $(el).attr("rel")?.trim() || null,
       isInternal: isSameHost(pageUrl, abs),
-      placement: linkPlacement($, el),
+      placement,
     });
   });
 

@@ -58,7 +58,9 @@ export function detectPageIssues(
     });
   }
 
-  if (!parsed) return issues; // non-HTML or fetch failed — nothing more to check
+  // Error documents are not the target page. Do not turn an Apache/Nginx 404
+  // response into misleading title, meta, H1, content, schema, or social issues.
+  if (!parsed || fetch.statusCode < 200 || fetch.statusCode >= 400) return issues;
 
   // ── Robots / canonical ─────────────────────────────────────────────────────
   const robots = (parsed.robotsMeta || "").toLowerCase();

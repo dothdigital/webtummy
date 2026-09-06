@@ -1,0 +1,180 @@
+import { describe, expect, it } from "vitest";
+import { evaluateWebsiteQualityGovernance, findWebsiteUnsupportedClaims } from "./websiteQualityGovernance.js";
+import { createStaticWebsiteFiles, renderWebsitePageDocument } from "./websiteRenderer.js";
+import { SENUKE_COMPONENT_REGISTRY_V1, type WebsiteModel } from "./websiteModel.js";
+
+const model = (body: string, headline = "Super Visa Insurance in Brampton"): WebsiteModel => ({
+  modelId: "model", websiteId: "website", projectId: "project", version: 1, status: "validated", componentRegistryVersion: SENUKE_COMPONENT_REGISTRY_V1.version,
+  identity: { businessName: "Example Insurance", contactEmail: "hello@example.test", contactPhone: "416-555-0100" },
+  designSystem: { version: "1", colors: { primary: "#123456", secondary: "#234567", accent: "#f59e0b", background: "#fff", surface: "#fff", text: "#111", mutedText: "#555" }, typography: { headingFont: "Inter", bodyFont: "Inter" }, spacingScale: "comfortable", radiusScale: "medium" },
+  pages: [{
+    pageId: "page", name: "Super Visa Insurance in Brampton", slug: "/super-visa-insurance-brampton/", pageType: "service", primaryCta: { label: "Request a quote", url: "/contact/" },
+    sections: [
+      { instanceId: "hero", componentId: "hero.local_service", componentVersion: "1.0.0", variant: "split", props: { headline, summary: "Understand available coverage and next steps.", primaryCtaLabel: "Request a quote", primaryCtaUrl: "/contact/" } },
+      { instanceId: "body", componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: "Coverage information", body } },
+    ],
+    seo: { title: "Super Visa Insurance in Brampton | Example", metaDescription: "Learn about Super Visa insurance coverage in Brampton and request a consultation.", canonicalUrl: "/super-visa-insurance-brampton/", robots: "index, follow", primaryKeyword: "super visa insurance Brampton", secondaryKeywords: [], dominantIntent: "commercial", internalLinks: [], faqs: [], schemaJsonLd: { "@context": "https://schema.org", "@type": "Service" }, imageAltText: [] },
+  }],
+  navigation: [{ pageId: "page", label: "Super Visa Insurance" }], forms: [], mediaAssets: [],
+});
+
+describe("website quality governance", () => {
+  it("does not block advisory CTAs or best-fit comparison language during generation", () => {
+    const components = model("Select a policy that best fits your needs and budget.").pages[0].sections;
+    components[0].props.primaryCtaLabel = "Consult with an Expert";
+    expect(findWebsiteUnsupportedClaims(components, { regulatedIndustry: true, evidenceAvailable: false })).toEqual([]);
+  });
+
+  it("still blocks actual guarantees and rankings during generation", () => {
+    const components = model("We guarantee the highest returns for every client.").pages[0].sections;
+    expect(findWebsiteUnsupportedClaims(components, { regulatedIndustry: true, evidenceAvailable: false })).toEqual([
+      expect.objectContaining({ classification: "regulated_performance_or_guarantee" }),
+    ]);
+  });
+  it("blocks welcome and company-name-only hero headings", () => {
+    for (const headline of ["Welcome to Example Insurance", "Example Insurance"]) {
+      const result = evaluateWebsiteQualityGovernance(model("Compare coverage and choose the next step.", headline));
+      expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_or_missing_h1", severity: "blocker", evidence: headline })]));
+    }
+  });
+
+  it("keeps generic H2 copy as a non-blocking website-quality recommendation", () => {
+    const website = model("Compare coverage and choose the next step.");
+    website.pages[0].sections[1].props.heading = "Our Services";
+    const result = evaluateWebsiteQualityGovernance(website);
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "generic_h2", severity: "medium", evidence: "Our Services" })]));
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+  });
+  it("blocks visitor-visible placeholders and internal instructions", () => {
+    const result = evaluateWebsiteQualityGovernance(model("Insert the business phone here. Lorem ipsum."));
+    expect(result.status).toBe("blocked");
+    expect(result.issues.filter((issue) => issue.category === "content_leakage").every((issue) => issue.severity === "blocker")).toBe(true);
+  });
+
+  it("keeps regulated guarantees as non-blocking wording advisories", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We guarantee the best returns for every client."), { industry: "Insurance and financial services" });
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium", status: "open", autoFixable: true })]));
+  });
+
+  it("treats advisory best-fit wording as an acknowledgeable warning", () => {
+    const statement = "Evaluate your coverage needs, budget, and the financial stability of the insurer to find the best fit for your situation.";
+    const result = evaluateWebsiteQualityGovernance(model(statement), { industry: "Insurance and financial services" });
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "regulated_or_guaranteed_claim",
+        severity: "medium",
+        status: "open",
+        autoFixable: true,
+        evidence: statement,
+      }),
+    ]));
+  });
+
+  it("keeps subjective regulated business-quality wording non-blocking", () => {
+    const result = evaluateWebsiteQualityGovernance(model("Key Outcomes of a Trusted Insurance Advisory."), { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "unsupported_business_claim",
+        severity: "medium",
+        status: "open",
+        evidence: "Key Outcomes of a Trusted Insurance Advisory.",
+      }),
+    ]));
+  });
+
+  it("keeps an expert service heading non-blocking when industry metadata is missing", () => {
+    const result = evaluateWebsiteQualityGovernance(model("Expert RRSP Planning Services."));
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: "unsupported_business_claim",
+        severity: "medium",
+        status: "open",
+        evidence: "Expert RRSP Planning Services.",
+      }),
+    ]));
+  });
+
+  it("keeps unsupported rankings and guarantees visible without blocking", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are the #1 top-rated provider and guarantee the highest returns."), { industry: "Insurance and financial services" });
+    expect(result.status).toBe("needs_review");
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium", status: "open" }),
+    ]));
+  });
+
+  it("does not request credentials or flag credential wording", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are licensed and certified professionals."), { industry: "Insurance and financial services" });
+    expect(result.issues.some((issue) => issue.code === "regulated_or_guaranteed_claim")).toBe(false);
+    expect(result.issues.some((issue) => /credential|licen[cs]e|certif/i.test(issue.message))).toBe(false);
+  });
+
+  it("treats absolute compliance wording as an optional copy advisory", () => {
+    const result = evaluateWebsiteQualityGovernance(model("We are licensed and certified, ensuring compliance with all regulatory standards."), { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "regulated_or_guaranteed_claim", severity: "medium" }),
+    ]));
+  });
+
+  it("allows a written waiver for high issues but never for blockers", () => {
+    const highIssueModel = model("Coverage may depend on eligibility and policy terms.");
+    highIssueModel.pages[0].primaryCta = { label: "", url: "" };
+    const draft = evaluateWebsiteQualityGovernance(highIssueModel);
+    const high = draft.issues.find((issue) => issue.severity === "high");
+    expect(high).toBeTruthy();
+    const waived = evaluateWebsiteQualityGovernance(highIssueModel, { waivedIssues: { [high!.issueId]: "Approved as a documented exception by the manager." } });
+    expect(waived.issues.find((issue) => issue.issueId === high!.issueId)?.status).toBe("waived");
+
+    const blockerDraft = evaluateWebsiteQualityGovernance(model("Content goes here."));
+    const blocker = blockerDraft.issues.find((issue) => issue.severity === "blocker")!;
+    const notWaived = evaluateWebsiteQualityGovernance(model("Content goes here."), { waivedIssues: { [blocker.issueId]: "This must not bypass the blocker." } });
+    expect(notWaived.issues.find((issue) => issue.issueId === blocker.issueId)?.status).toBe("open");
+  });
+
+  it("accepts Who We Are as a semantically aligned About-page H1", () => {
+    const about = model("Our team consists of experienced professionals who help visitors review insurance and financial-planning questions.", "Who We Are");
+    about.pages[0].name = "About Example Insurance";
+    about.pages[0].slug = "/about/";
+    about.pages[0].pageType = "about";
+    about.pages[0].seo.title = "Example Insurance | Your Trusted Insurance Advisors";
+    about.pages[0].seo.primaryKeyword = "About Example Insurance";
+    about.pages[0].seo.dominantIntent = "navigational";
+    const result = evaluateWebsiteQualityGovernance(about, { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues.some((issue) => issue.code === "h1_intent_mismatch" || issue.code === "title_h1_mismatch")).toBe(false);
+    expect(result.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unsupported_business_claim", severity: "medium", status: "open" }),
+    ]));
+  });
+
+  it("accepts Get in Touch as a semantically aligned Contact-page H1", () => {
+    const contact = model("Contact Example Insurance to discuss your questions and available next steps.", "Get in Touch");
+    contact.pages[0].name = "Contact Example Insurance";
+    contact.pages[0].slug = "/contact/";
+    contact.pages[0].pageType = "contact";
+    contact.pages[0].seo.title = "Contact Example Insurance for Your Insurance Needs";
+    contact.pages[0].seo.primaryKeyword = "Contact Example Insurance";
+    contact.pages[0].seo.dominantIntent = "navigational";
+    const result = evaluateWebsiteQualityGovernance(contact, { industry: "Insurance and financial services" });
+    expect(result.openBlockingCount).toBe(0);
+    expect(result.issues.some((issue) => issue.code === "h1_intent_mismatch" || issue.code === "title_h1_mismatch")).toBe(false);
+  });
+
+  it("forces noindex on staging and restores production directives", () => {
+    const website = model("Coverage depends on eligibility and policy terms.");
+    const staging = renderWebsitePageDocument(website, website.pages[0], { environmentType: "staging", baseUrl: "https://staging.example.test" });
+    const production = renderWebsitePageDocument(website, website.pages[0], { environmentType: "production", baseUrl: "https://example.test" });
+    expect(staging).toContain('<meta name="robots" content="noindex, nofollow">');
+    expect(production).toContain('<meta name="robots" content="index, follow">');
+    expect(production).toContain('<link rel="canonical" href="https://example.test/super-visa-insurance-brampton/">');
+    expect(createStaticWebsiteFiles(website, { environmentType: "staging" }).find((file) => file.path === "robots.txt")?.content).toContain("Disallow: /");
+  });
+});

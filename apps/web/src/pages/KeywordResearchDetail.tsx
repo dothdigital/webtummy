@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiContentStatus, AiGenerationType, GeoKeywordAudit, GeoKeywordAuditPage, KeywordIdea, KeywordResearchRun, KeywordSerpCompetitor, OrganicGrowthPlan, OrganicGrowthTask } from "../types.js";
 import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatNumber(value: number | null | undefined): string {
-  return value == null ? "-" : new Intl.NumberFormat().format(value);
+  return value == null ? "Data unavailable" : new Intl.NumberFormat().format(value);
 }
 
 function formatShortDate(value: string | null | undefined): string {
@@ -17,6 +18,59 @@ function canRefreshKeyword(run: KeywordResearchRun): boolean {
   if (typeof run.canRefresh === "boolean") return run.canRefresh;
   const blockedUntil = new Date(new Date(run.createdAt).getTime() + 24 * 60 * 60 * 1000);
   return blockedUntil.getTime() <= Date.now();
+}
+
+function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh }: { run: KeywordResearchRun; projectId: string; backUrl: string; refreshing: boolean; onRefresh: () => void }) {
+  const ideas = (run.ideas ?? []).slice().sort((a, b) => (b.avgMonthlySearches ?? 0) - (a.avgMonthlySearches ?? 0));
+  const competitors = (run.competitors ?? []).slice().sort((a, b) => a.rank - b.rank);
+  const pricedIdeas = ideas.filter((idea) => idea.cpc != null);
+  const averageCpc = pricedIdeas.length ? pricedIdeas.reduce((sum, idea) => sum + (idea.cpc ?? 0), 0) / pricedIdeas.length : null;
+  const averageCompetition = ideas.filter((idea) => idea.competitionIndex != null);
+  const competitionIndex = averageCompetition.length ? Math.round(averageCompetition.reduce((sum, idea) => sum + (idea.competitionIndex ?? 0), 0) / averageCompetition.length) : null;
+  const strategyUrl = `/strategy?projectId=${encodeURIComponent(projectId)}`;
+
+  return <div className="space-y-6">
+    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <div>
+        <Link to={backUrl} className="text-sm font-medium text-brand-600 hover:underline">← Back to Keyword Intelligence</Link>
+        <div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold uppercase tracking-wide text-brand-700">New website market research</span><StatusPill status={run.status} /></div>
+        <h1 className="mt-3 text-3xl font-bold tracking-tight text-charcoal-900">{run.seedKeyword}</h1>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-500">Market demand and SERP opportunity for {run.locationName}. No website is connected, so this report intentionally excludes domain rankings, page audits and current-site visibility.</p>
+      </div>
+      <Button onClick={onRefresh} disabled={refreshing || !canRefreshKeyword(run)} variant="ghost">{refreshing ? "Refreshing..." : canRefreshKeyword(run) ? "Refresh market data" : refreshBlockedLabel(run)}</Button>
+    </div>
+
+    {run.error && <Card className="border-red-200 bg-red-50 p-5 text-sm text-red-800">{run.error}</Card>}
+
+    <Card className="overflow-hidden border-brand-100">
+      <div className="grid gap-5 bg-gradient-to-r from-brand-50 via-white to-cyan-50 p-6 lg:grid-cols-[minmax(0,1fr)_360px] lg:items-center">
+        <div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">What this analysis can answer</div><h2 className="mt-2 text-xl font-bold text-charcoal-900">Is this keyword market worth prioritizing?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Use demand, commercial value, competition and the pages already winning in Google to approve the keyword direction. Approved keyword evidence moves into Strategy first; the Website Execution Plan is created only after Strategy review and approval.</p></div>
+        <div className="rounded-xl border border-white bg-white/90 p-4 shadow-sm"><div className="text-sm font-bold text-charcoal-900">Website-specific analysis is deferred</div><div className="mt-2 text-xs leading-5 text-charcoal-500">After publishing: connect domain → crawl website → map live URLs → start ranking and visibility tracking.</div></div>
+      </div>
+    </Card>
+
+    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+      <StatCard label="Keyword opportunities" value={run.keywordCount} detail="Related demand discovered" />
+      <StatCard label="Average search volume" value={formatNumber(run.averageVolume)} detail={run.locationName} />
+      <StatCard label="Average CPC" value={averageCpc == null ? "Data unavailable" : `$${averageCpc.toFixed(2)}`} detail="Commercial value signal" />
+      <StatCard label="Competition index" value={competitionIndex ?? "Data unavailable"} detail={`${run.competitorCount} SERP competitors reviewed`} />
+    </div>
+
+    <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
+      <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><h2 className="font-bold text-charcoal-900">Highest-demand keyword opportunities</h2><p className="mt-1 text-sm text-charcoal-500">Use these as evidence for keyword grouping and page planning—not as automatic one-page-per-keyword instructions.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400"><tr><th className="px-5 py-2">Keyword</th><th className="px-5 py-2">Volume</th><th className="px-5 py-2">Competition</th><th className="px-5 py-2">CPC</th></tr></thead><tbody>{ideas.slice(0, 10).map((idea) => <tr key={idea.id} className="border-t border-charcoal-100"><td className="px-5 py-3 font-semibold text-charcoal-800">{idea.keyword}</td><td className="px-5 py-3 text-charcoal-600">{formatNumber(idea.avgMonthlySearches)}</td><td className="px-5 py-3 text-charcoal-600">{idea.competition ?? idea.competitionIndex ?? "-"}</td><td className="px-5 py-3 text-charcoal-600">{money(idea.cpc, idea.currency)}</td></tr>)}</tbody></table></div></Card>
+      <div className="space-y-5">
+        <Card className="p-5"><div className="text-xs font-bold uppercase tracking-wide text-violet-700">SERP benchmarks</div><h2 className="mt-2 font-bold text-charcoal-900">Pages currently winning</h2><p className="mt-1 text-sm text-charcoal-500">These competitors inform the future page format, depth, proof and content requirements.</p><div className="mt-4 space-y-3">{competitors.slice(0, 5).map((competitor) => <a key={competitor.id} href={competitor.url} target="_blank" rel="noreferrer" className="block rounded-lg border border-charcoal-100 p-3 hover:border-brand-200 hover:bg-brand-50"><div className="text-xs font-bold text-brand-700">#{competitor.rank} · {competitor.domain}</div><div className="mt-1 line-clamp-2 text-sm font-semibold text-charcoal-800">{competitor.title || competitor.url}</div></a>)}</div></Card>
+      </div>
+    </div>
+
+    <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Governed project workflow</div><h2 className="mt-1 text-xl font-bold text-charcoal-900">Move approved keyword evidence into Strategy</h2></div><div className="grid gap-px bg-charcoal-100 md:grid-cols-5">{[
+      ["1", "Approve keyword direction", "Keep relevant terms and combine overlapping intent."],
+      ["2", "Generate execution strategy", "Use the approved opportunity, market and keyword evidence."],
+      ["3", "Review and approve Strategy", "Confirm priorities, markets, channels and execution direction."],
+      ["4", "Generate Website Execution Plan", "Create architecture, page ownership, content and publishing tasks from the approved Strategy."],
+      ["5", "Build, publish and measure", "Complete the governed website workflow, then crawl and track the live result."],
+    ].map(([step, title, detail]) => <div key={step} className="bg-white p-5"><div className="flex h-7 w-7 items-center justify-center rounded-full bg-brand-600 text-xs font-bold text-white">{step}</div><div className="mt-3 font-bold text-charcoal-900">{title}</div><p className="mt-1 text-xs leading-5 text-charcoal-500">{detail}</p></div>)}</div><div className="flex flex-wrap gap-3 border-t border-charcoal-100 bg-charcoal-50 px-5 py-4"><Link to={backUrl} className="rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white hover:bg-brand-700">Review keyword direction</Link><Link to={strategyUrl} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 hover:border-brand-200">Continue to Strategy</Link></div></Card>
+  </div>;
 }
 
 function refreshBlockedLabel(run: KeywordResearchRun): string {
@@ -447,6 +501,19 @@ function CompareDrawer({
 export default function KeywordResearchDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const campaignQuery = () => {
+    const next = new URLSearchParams();
+    for (const key of ["project", "projectId", "groupId", "groupIds"]) {
+      const value = searchParams.get(key);
+      if (value) next.set(key, value);
+    }
+    return next.toString();
+  };
+  const campaignSuffix = campaignQuery() ? `?${campaignQuery()}` : "";
+  const guidedProjectId = searchParams.get("projectId");
+  const focusedKeyword = searchParams.get("keyword")?.trim() || "";
+  const backToIntelligence = guidedProjectId ? `/keywords?projectId=${encodeURIComponent(guidedProjectId)}` : "/keywords";
   const [run, setRun] = useState<KeywordResearchRun | null>(null);
   const [growthPlan, setGrowthPlan] = useState<OrganicGrowthPlan | null>(null);
   const [growthPlanLoading, setGrowthPlanLoading] = useState(false);
@@ -459,7 +526,7 @@ export default function KeywordResearchDetail() {
   const [comparisonError, setComparisonError] = useState<string | null>(null);
   const [comparing, setComparing] = useState(false);
   const [pageCompareCompetitorIds, setPageCompareCompetitorIds] = useState<Record<string, string>>({});
-  const [tab, setTab] = useState<DetailTab>("growth");
+  const [tab, setTab] = useState<DetailTab>(() => focusedKeyword ? "keywords" : "growth");
   const [manualPage, setManualPage] = useState("");
   const [manualPosition, setManualPosition] = useState("");
   const [manualUrl, setManualUrl] = useState("");
@@ -484,7 +551,7 @@ export default function KeywordResearchDetail() {
       if (!id) return;
       setLoading(true);
       try {
-        const result = await api.get<{ run: KeywordResearchRun }>(`/api/keyword-research/${id}`);
+        const result = await api.get<{ run: KeywordResearchRun }>(`/api/keyword-research/${id}${guidedProjectId ? `?projectId=${encodeURIComponent(guidedProjectId)}` : ""}`);
         setRun(result.run);
         setManualPage(result.run.manualPage ? String(result.run.manualPage) : "");
         setManualPosition(result.run.manualPosition ? String(result.run.manualPosition) : "");
@@ -507,6 +574,7 @@ export default function KeywordResearchDetail() {
   if (!run) return <Card className="p-6 text-red-700">Keyword research report not found.</Card>;
 
   const ideas = run.ideas ?? [];
+  const focusedIdea = focusedKeyword ? ideas.find((idea) => idea.keyword.trim().toLowerCase() === focusedKeyword.toLowerCase()) : undefined;
   const competitors = run.competitors ?? [];
   const topIdea = ideas[0] as KeywordIdea | undefined;
   const competitorsAbove = run.competitorsAboveJson ?? [];
@@ -632,7 +700,7 @@ export default function KeywordResearchDetail() {
     if (!canRefreshKeyword(run)) return;
     setRefreshing(true);
     try {
-      const result = await api.post<{ run: KeywordResearchRun }>(`/api/keyword-research/${run.id}/refresh`, {});
+      const result = await api.post<{ run: KeywordResearchRun }>(`/api/keyword-research/${run.id}/refresh${guidedProjectId ? `?projectId=${encodeURIComponent(guidedProjectId)}` : ""}`, {});
       setRun(result.run);
       setManualPage(result.run.manualPage ? String(result.run.manualPage) : "");
       setManualPosition(result.run.manualPosition ? String(result.run.manualPosition) : "");
@@ -641,7 +709,7 @@ export default function KeywordResearchDetail() {
       await loadPageAudit(result.run);
       await loadGrowthPlan(result.run.id);
       await loadStoredContentFixes(result.run, result.run.targetUrl || result.run.rankingUrl || result.run.manualUrl || "");
-      navigate(`/keyword-insights/${result.run.id}`, { replace: true });
+      navigate(`/keyword-insights/${result.run.id}${campaignSuffix}`, { replace: true });
     } catch (e) {
       alert(String(e));
     } finally {
@@ -785,14 +853,18 @@ export default function KeywordResearchDetail() {
     }
   };
 
+  if (guidedProjectId && !run.websiteId) {
+    return <NoWebsiteKeywordReport run={run} projectId={guidedProjectId} backUrl={backToIntelligence} refreshing={refreshing} onRefresh={refreshRun} />;
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <Link to="/keyword-insights" className="text-sm font-medium text-brand-600 hover:underline">Back to Keyword Insight</Link>
+        <div className="flex flex-wrap gap-4"><Link to={backToIntelligence} className="text-sm font-medium text-brand-600 hover:underline">← Back to Keyword Results</Link><Link to={`/keyword-insights${campaignSuffix}`} className="text-sm font-medium text-brand-600 hover:underline">All Analysis Runs</Link></div>
         <div className="mt-2 flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-charcoal-800">{run.seedKeyword}</h1>
-            <p className="mt-1 text-sm text-charcoal-400">{run.locationName} · {run.device} · {run.website?.domain ?? "No website selected"}</p>
+            <h1 className="text-2xl font-bold text-charcoal-800">{focusedIdea?.keyword || run.seedKeyword}</h1>
+            <p className="mt-1 text-sm text-charcoal-400">{focusedIdea ? `Keyword idea from analysis: ${run.seedKeyword} · ` : ""}{run.locationName} · {run.device} · {run.website?.domain ?? "No website selected"}</p>
           </div>
           <div className="flex items-center gap-3">
             <StatusPill status={run.status} />
@@ -835,7 +907,7 @@ export default function KeywordResearchDetail() {
                 <div>
                   <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Organic growth plan</div>
                   <h2 className="mt-2 text-xl font-bold text-charcoal-900">Connect this keyword to real actions</h2>
-                  <p className="mt-2 text-sm leading-6 text-charcoal-500">Run page mapping first so Webtummy can choose whether to create a new page, improve an existing one, fix blockers, or track the result.</p>
+                  <p className="mt-2 text-sm leading-6 text-charcoal-500">Run page mapping first so SEnuke AI - AI Growth Operating System can choose whether to create a new page, improve an existing one, fix blockers, or track the result.</p>
                 </div>
                 <Button onClick={createPageAudit} disabled={creatingPageAudit || !run.websiteId}>{creatingPageAudit ? "Scoring pages..." : "Run page mapping"}</Button>
               </div>
@@ -902,7 +974,7 @@ export default function KeywordResearchDetail() {
                             {task.url && <a href={task.url} target="_blank" rel="noreferrer" className="mt-2 block truncate text-sm font-medium text-brand-600 hover:underline">{task.url}</a>}
                           </div>
                           <div className="flex gap-2 lg:justify-end">
-                            {task.group === "create" || task.group === "improve" || task.group === "support" ? <Button variant="ghost" onClick={openContentWizard}>Generate fixes</Button> : null}
+                            {(task.group === "create" || task.group === "improve" || task.group === "support") && guidedProjectId ? <WebsitePlanSuggestionAction projectId={guidedProjectId} suggestion={{ sourceModule: "keyword_research", sourceType: "organic_growth_task", sourceId: task.id, title: task.title, targetUrl: task.url || contentTargetUrl, evidence: task.detail, recommendedAction: task.detail, expectedImpact: task.impact }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-black text-brand-700 disabled:opacity-50" /> : null}
                             {task.group === "fix" ? <Button variant="ghost" onClick={() => setTab("page-map")}>Open map</Button> : null}
                             {task.group === "track" ? <Button variant="ghost" onClick={refreshRun} disabled={refreshing || !canRefreshKeyword(run)}>{refreshing ? "Refreshing..." : "Refresh"}</Button> : null}
                           </div>
@@ -999,6 +1071,7 @@ export default function KeywordResearchDetail() {
         <div className="border-b border-charcoal-100 px-5 py-3">
           <div className="font-semibold text-charcoal-700">Keyword research analytics</div>
           <div className="mt-0.5 text-xs text-charcoal-400">Demand, CPC, competition, and bid range.</div>
+          {focusedIdea && <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-800"><span>Selected keyword: {focusedIdea.keyword}</span><span>Market: {run.locationName}</span><span>Parent analysis: {run.seedKeyword}</span></div>}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full min-w-[900px] text-sm">
@@ -1014,7 +1087,7 @@ export default function KeywordResearchDetail() {
             </thead>
             <tbody>
               {ideas.map((idea) => (
-                <tr key={idea.id} className="border-t border-charcoal-50">
+                <tr key={idea.id} className={`border-t border-charcoal-50 ${focusedIdea?.id === idea.id ? "bg-brand-50 ring-1 ring-inset ring-brand-200" : ""}`}>
                   <td className="px-5 py-3 font-medium text-charcoal-800">{idea.keyword}</td>
                   <td className="px-5 py-3 text-charcoal-600">{formatNumber(idea.avgMonthlySearches)}</td>
                   <td className="px-5 py-3 text-charcoal-600">{idea.competition ?? "-"}</td>
@@ -1362,7 +1435,7 @@ export default function KeywordResearchDetail() {
                           <h3 className="font-semibold text-charcoal-700">Apply these first</h3>
                           <p className="mt-1 text-sm text-charcoal-500">Turn the priority fixes into ready-to-use H1, title, FAQ, and schema changes on demand.</p>
                         </div>
-                        <Button onClick={openContentWizard} disabled={!bestPage && !contentTargetUrl}>Generate content fixes</Button>
+                        {guidedProjectId && (bestPage || contentTargetUrl) ? <WebsitePlanSuggestionAction projectId={guidedProjectId} suggestion={{ sourceModule: "keyword_research", sourceType: "page_content_fixes", sourceId: `${run.id}:${contentTargetUrl || bestPage?.url || "page"}`, title: `Apply keyword content fixes for ${run.seedKeyword}`, targetUrl: contentTargetUrl || bestPage?.url || null, evidence: bestPage?.gapSummary || `Keyword research identified page-content improvements for ${run.seedKeyword}.`, recommendedAction: "Add the approved H1, title, FAQ, schema and content-alignment requirements to the owning page before content preparation.", expectedImpact: "Improves keyword-to-page alignment and search-intent coverage." }} /> : null}
                       </div>
                     </div>
                     <div className="p-5">

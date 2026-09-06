@@ -2,14 +2,23 @@
 import { createHash, randomBytes } from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
-import { prisma } from "@webtummy/db";
-import { verifyPassword, signToken, hashPassword } from "../auth.js";
+import { Prisma, prisma } from "@webtummy/db";
+import { clearSessionCookie, hashPassword, sessionCookie, signToken, verifyPassword } from "../auth.js";
 import { requireAuth } from "../middleware.js";
+import { authRateLimit } from "../auth-rate-limit.js";
 import { config } from "../config.js";
 import { sendMail } from "../email.js";
 import { trialEndsFrom } from "../billing.js";
+import { hasWorkspacePermission, preferredWorkspaceIdForUser, reconcileWorkspaceTypeFromCommercialPlan, workspaceApprovalMode, workspaceSeatUsage, type WorkspaceContext } from "../workspace-access.js";
+import { rolesConsumeSeat } from "@webtummy/core/workspace-permissions";
+import { commercialRegistrationPolicy, reconcilePendingJvZooEventsForUser, workspaceTypeForCommercialPlan } from "../commercial-service.js";
 
 export const authRouter = Router();
+
+// Public self-registration is intentionally retained for a possible future
+// launch mode, but disabled while all customer accounts originate from a
+// verified JVZoo purchase or the protected Admin Users workflow.
+const PUBLIC_SELF_REGISTRATION_ENABLED = false;
 
 const VERIFY_TOKEN_TTL_MS = 24 * 60 * 60 * 1000;
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -26,8 +35,68 @@ function authUser(user: { id: string; email: string; name: string | null; role: 
   return { id: user.id, email: user.email, name: user.name, role: user.role, clientId: user.clientId };
 }
 
-function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null }) {
-  return signToken({ userId: user.id, role: user.role, clientId: user.clientId });
+async function workspaceSession(userId: string, clientId: string | null) {
+  const workspaceId = await preferredWorkspaceIdForUser(userId, clientId);
+  const membership = workspaceId ? await prisma.workspaceMembership.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId } },
+    include: { workspace: { select: { id: true, name: true, workspaceType: true, ownerUserId: true, legacyClientId: true, commercialState: true, accessMode: true, settingsJson: true, securitySettingsJson: true, autoApprovalPolicyJson: true } }, roles: { select: { role: true } } },
+  }) : null;
+  if (!membership) return null;
+  membership.workspace.workspaceType = await reconcileWorkspaceTypeFromCommercialPlan(membership.workspace.id, membership.workspace.workspaceType);
+  if (membership.workspace.workspaceType === "personal" && membership.workspace.ownerUserId !== userId) return null;
+  const [clientCount, projectCount] = await Promise.all([
+    membership.workspace.workspaceType === "agency"
+      ? prisma.agencyClient.count({ where: { workspaceId: membership.workspace.id } })
+      : Promise.resolve(0),
+    membership.workspace.workspaceType === "agency"
+      ? prisma.project.count({ where: { agencyClient: { workspaceId: membership.workspace.id } } })
+      : membership.workspace.legacyClientId
+        ? prisma.project.count({ where: { clientId: membership.workspace.legacyClientId } })
+        : Promise.resolve(0),
+  ]);
+  const stored = new Set(membership.roles.map((item) => item.role));
+  const roles = [
+    ...(stored.has("owner") || stored.has("admin") ? ["admin"] : []),
+    ...(stored.has("manager") || stored.has("approver") || stored.has("manager_approver") ? ["manager"] : []),
+    ...(stored.has("editor") ? ["editor"] : []),
+    ...(stored.has("viewer") ? ["viewer"] : []),
+    ...(stored.has("client_viewer") ? ["client_viewer"] : []),
+  ];
+  const primaryRole = roles.find((role) => ["admin", "manager", "editor", "viewer", "client_viewer"].includes(role)) ?? "viewer";
+  const landingPath = primaryRole === "client_viewer" || primaryRole === "admin" || primaryRole === "manager" ? "/workspace" : "/";
+  const context: WorkspaceContext = { workspace: membership.workspace, membership, roles: stored };
+  const approvalMode = await workspaceApprovalMode(context);
+  const permissionNames = ["manage_settings", "manage_projects", "create_projects", "edit_project_settings", "assign_tasks", "approve", "edit_assigned_work", "run_ai_analysis", "edit_strategy", "execute_tasks", "publish", "billing", "read_internal", "manage_clients", "manage_users", "manage_integrations", "read_integrations", "manage_api_keys", "view_reports", "export_reports", "view_activity", "view_notifications"];
+  const permissions = Object.fromEntries(permissionNames.map((permission) => [permission, hasWorkspacePermission(context, permission)]));
+  return {
+    id: membership.workspace.id,
+    name: membership.workspace.name,
+    type: membership.workspace.workspaceType,
+    membershipId: membership.id,
+    roles,
+    primaryRole,
+    primaryOwner: membership.workspace.ownerUserId === userId,
+    commercialState: membership.workspace.commercialState,
+    accessMode: membership.workspace.accessMode,
+    onboardingRequired: clientCount === 0 && projectCount === 0,
+    landingPath,
+    capabilities: {
+      manageWorkspace: permissions.manage_settings,
+      manageProjects: permissions.manage_projects,
+      assignTasks: permissions.assign_tasks,
+      approve: permissions.approve,
+      edit: permissions.edit_assigned_work,
+      publish: permissions.publish,
+      billing: permissions.billing,
+      viewInternal: permissions.read_internal,
+      permissions,
+      approvalMode,
+    },
+  };
+}
+
+function issueLogin(user: { id: string; role: "super_admin" | "client_admin" | "client_user"; clientId: string | null; sessionVersion?: number }) {
+  return signToken({ userId: user.id, role: user.role, clientId: user.clientId, sessionVersion: user.sessionVersion ?? 0 });
 }
 
 function escapeHtml(value: string) {
@@ -39,7 +108,22 @@ function escapeHtml(value: string) {
     .replace(new RegExp(String.fromCharCode(39), "g"), "&#39;");
 }
 
-async function verifyCaptcha(token: string | undefined, expectedAction: string, remoteIp?: string) {
+function localCaptchaBypass(req: import("express").Request) {
+  if (!config.recaptchaBypassLocal) return false;
+  const localHosts = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
+  const requestHost = req.hostname.toLowerCase();
+  if (!localHosts.has(requestHost)) return false;
+  const origin = req.header("origin");
+  if (!origin) return true;
+  try {
+    return localHosts.has(new URL(origin).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
+async function verifyCaptcha(token: string | undefined, expectedAction: string, remoteIp?: string, bypass = false) {
+  if (bypass) return;
   if (!config.recaptchaSecretKey) return;
   if (!token) throw new Error("captcha_required");
 
@@ -60,8 +144,9 @@ async function verifyCaptcha(token: string | undefined, expectedAction: string, 
   }
 }
 
-authRouter.get("/config", (_req, res) => {
-  res.json({ recaptchaSiteKey: config.recaptchaSiteKey });
+authRouter.get("/config", async (req, res) => {
+  const registrationPolicy = await commercialRegistrationPolicy();
+  res.json({ recaptchaSiteKey: localCaptchaBypass(req) ? "" : config.recaptchaSiteKey, trialEnabled: registrationPolicy.trialEnabled, trialDays: registrationPolicy.trialDays });
 });
 
 async function sendVerificationEmail(user: { id: string; email: string; name: string | null }) {
@@ -76,13 +161,13 @@ async function sendVerificationEmail(user: { id: string; email: string; name: st
   const link = `${config.webAppUrl.replace(/\/$/, "")}/verify-email?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Verify your Webtummy account",
+    subject: "Verify your SEnuke AI - AI Growth Operating System account",
     text: `Hi ${user.name ?? "there"}, verify your account by opening this link: ${link}. This link expires in 24 hours.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your Webtummy account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
+    html: `<p>Hi ${user.name ?? "there"},</p><p>Verify your SEnuke AI - AI Growth Operating System account by opening this secure link:</p><p><a href="${link}">Verify email address</a></p><p>This link expires in 24 hours.</p>`,
   });
 }
 
-async function sendPasswordResetEmail(user: { id: string; email: string; name: string | null }) {
+export async function sendPasswordResetEmail(user: { id: string; email: string; name: string | null }, purpose: "reset" | "setup" = "reset") {
   const token = randomToken();
   await prisma.passwordResetToken.create({
     data: {
@@ -94,21 +179,25 @@ async function sendPasswordResetEmail(user: { id: string; email: string; name: s
   const link = `${config.webAppUrl.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
   await sendMail({
     to: user.email,
-    subject: "Reset your Webtummy password",
-    text: `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
-    html: `<p>Hi ${user.name ?? "there"},</p><p>Reset your Webtummy password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
+    subject: purpose === "setup" ? "Set up your SEnuke AI - AI Growth Operating System account" : "Reset your SEnuke AI - AI Growth Operating System password",
+    text: purpose === "setup"
+      ? `Hi ${user.name ?? "there"}, an administrator created your SEnuke AI - AI Growth Operating System account. Set your password by opening this link: ${link}. This link expires in 1 hour.`
+      : `Hi ${user.name ?? "there"}, reset your password by opening this link: ${link}. This link expires in 1 hour.`,
+    html: purpose === "setup"
+      ? `<p>Hi ${user.name ?? "there"},</p><p>An administrator created your SEnuke AI - AI Growth Operating System account.</p><p><a href="${link}">Set password and sign in</a></p><p>This secure link expires in 1 hour.</p>`
+      : `<p>Hi ${user.name ?? "there"},</p><p>Reset your SEnuke AI - AI Growth Operating System password by opening this secure link:</p><p><a href="${link}">Reset password</a></p><p>This link expires in 1 hour.</p>`,
   });
 }
 
-async function sendSignupNotification(input: { name: string; companyName: string; email: string }) {
+async function sendSignupNotification(input: { name: string; workspaceType: string; email: string }) {
   if (!config.signupNotifyEmail) return;
 
-  const subject = "New Webtummy signup";
+  const subject = "New SEnuke AI - AI Growth Operating System signup";
   const text = [
-    "A new user registered for Webtummy.",
+    "A new user registered for SEnuke AI - AI Growth Operating System.",
     "",
     "Name: " + input.name,
-    "Company: " + input.companyName,
+    "Workspace Type: " + input.workspaceType,
     "Email: " + input.email,
   ].join("\n");
 
@@ -116,7 +205,7 @@ async function sendSignupNotification(input: { name: string; companyName: string
     to: config.signupNotifyEmail,
     subject,
     text,
-    html: "<p>A new user registered for Webtummy.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Company:</strong> " + escapeHtml(input.companyName) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
+    html: "<p>A new user registered for SEnuke AI - AI Growth Operating System.</p><ul><li><strong>Name:</strong> " + escapeHtml(input.name) + "</li><li><strong>Workspace Type:</strong> " + escapeHtml(input.workspaceType) + "</li><li><strong>Email:</strong> " + escapeHtml(input.email) + "</li></ul>",
   });
 }
 
@@ -125,7 +214,7 @@ const loginSchema = z.object({
   password: z.string().min(1),
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", authRateLimit({ scope: "login", limit: 10, windowSeconds: 15 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
 
@@ -137,11 +226,13 @@ authRouter.post("/login", async (req, res) => {
     return res.status(403).json({ error: "email_not_verified" });
   }
 
+  const firstLogin = !user.lastLoginAt;
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
   res.json({
     token,
-    user: authUser(user),
+    user: { ...authUser(user), firstLogin, workspace: await workspaceSession(user.id, user.clientId) },
   });
 });
 
@@ -149,7 +240,10 @@ authRouter.post("/login", async (req, res) => {
 // (Super-admins are created via the seed script, not here.)
 const registerSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  companyName: z.string().min(1, "Company name is required"),
+  // Retained as an optional compatibility field for older browser builds. The
+  // server derives the workspace from a verified purchase or the default
+  // Entrepreneur trial; an unauthenticated form cannot grant Agency access.
+  workspaceType: z.enum(["Personal", "Business", "Agency", "Ecommerce"]).optional(),
   email: z.string().email("Enter a valid email"),
   password: z
     .string()
@@ -160,7 +254,13 @@ const registerSchema = z.object({
   captchaToken: z.string().optional(),
 });
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", authRateLimit({ scope: "register", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
+  if (!PUBLIC_SELF_REGISTRATION_ENABLED) {
+    return res.status(403).json({
+      error: "Public account creation is disabled. Complete checkout through JVZoo and use the secure activation email, or contact support.",
+      code: "public_registration_disabled",
+    });
+  }
   const parsed = registerSchema.safeParse(req.body);
   if (!parsed.success) {
     return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
@@ -168,7 +268,7 @@ authRouter.post("/register", async (req, res) => {
   const d = parsed.data;
 
   try {
-    await verifyCaptcha(d.captchaToken, "register", req.ip);
+    await verifyCaptcha(d.captchaToken, "register", req.ip, localCaptchaBypass(req));
   } catch {
     return res.status(400).json({ error: { captchaToken: ["Complete the captcha check"] } });
   }
@@ -176,16 +276,37 @@ authRouter.post("/register", async (req, res) => {
   const existing = await prisma.user.findUnique({ where: { email: d.email } });
   if (existing) return res.status(409).json({ error: { email: ["Email already registered"] } });
 
+  const registrationPolicy = await commercialRegistrationPolicy();
+  const verifiedPurchases = await prisma.externalSubscription.findMany({
+    where: {
+      provider: "jvzoo",
+      providerCustomerEmail: { equals: d.email, mode: "insensitive" },
+      activationStatus: "unclaimed",
+      status: { in: ["active", "cancel_at_period_end"] },
+    },
+    orderBy: { purchasedAt: "desc" },
+    take: 2,
+    select: { planCode: true },
+  });
+  const verifiedTypes = [...new Set(verifiedPurchases.map((purchase) => {
+    try { return workspaceTypeForCommercialPlan(purchase.planCode); } catch { return null; }
+  }).filter((value): value is string => Boolean(value)))];
+  const workspaceType = verifiedTypes.length === 1 ? verifiedTypes[0] : "personal";
+
   const { user } = await prisma.$transaction(async (tx) => {
     const trialStartedAt = new Date();
+    const workspaceName = workspaceType === "agency" ? "Agency" : workspaceType === "business" ? "Business" : "Personal";
+    const compatibilityPlan = workspaceType === "agency" ? "agency" : workspaceType === "business" ? "business" : "starter";
+    const commercialState = registrationPolicy.trialEnabled ? "trialing" : "payment_required";
     const client = await tx.client.create({
       data: {
-        name: d.companyName,
+        name: workspaceName,
         contactEmail: d.email,
-        plan: "mini",
-        aiSubscriptionStatus: "trialing",
-        trialStartedAt,
-        trialEndsAt: trialEndsFrom(trialStartedAt),
+        plan: compatibilityPlan,
+        aiSubscriptionStatus: commercialState,
+        subscriptionSource: registrationPolicy.trialEnabled ? "trial" : "registration",
+        trialStartedAt: registrationPolicy.trialEnabled ? trialStartedAt : null,
+        trialEndsAt: registrationPolicy.trialEnabled ? trialEndsFrom(trialStartedAt, registrationPolicy.trialDays) : null,
       },
     });
     const user = await tx.user.create({
@@ -198,6 +319,26 @@ authRouter.post("/register", async (req, res) => {
         emailVerifiedAt: null,
       },
     });
+    const workspace = await tx.workspace.create({
+      data: {
+        legacyClientId: client.id,
+        name: workspaceName,
+        workspaceType,
+        ownerUserId: user.id,
+        commercialState,
+        accessMode: registrationPolicy.trialEnabled ? "full" : "read_only",
+      },
+    });
+    const membership = await tx.workspaceMembership.create({
+      data: { workspaceId: workspace.id, userId: user.id, status: "active", joinedAt: new Date() },
+    });
+    const initialRoles = workspaceType === "personal" ? ["owner"] : ["owner", "admin"];
+    await tx.workspaceMemberRole.createMany({
+      data: initialRoles.map((role) => ({ membershipId: membership.id, role, grantedById: user.id })),
+    });
+    await tx.workspaceActivity.create({
+      data: { workspaceId: workspace.id, actorUserId: user.id, action: "workspace.created", entityType: "workspace", entityId: workspace.id, nextJson: { workspaceType, roles: initialRoles } },
+    });
     return { client, user };
   });
 
@@ -208,7 +349,7 @@ authRouter.post("/register", async (req, res) => {
     return res.status(502).json({ error: { email: ["Account was created, but the verification email could not be sent. Contact support to verify the account."] } });
   }
 
-  sendSignupNotification({ name: d.name, companyName: d.companyName, email: d.email }).catch((error) => {
+  sendSignupNotification({ name: d.name, workspaceType, email: d.email }).catch((error) => {
     console.error("Failed to send signup notification", error);
   });
 
@@ -218,8 +359,67 @@ authRouter.post("/register", async (req, res) => {
   });
 });
 
+const acceptWorkspaceInvitationSchema = z.object({
+  token: z.string().min(32),
+  name: z.string().trim().min(1).max(180).optional(),
+  password: z.string().min(8).max(128).optional(),
+});
+
+authRouter.post("/workspace-invitations/accept", authRateLimit({ scope: "invitation", limit: 20, windowSeconds: 15 * 60, identityFields: ["token", "email"] }), async (req, res) => {
+  const parsed = acceptWorkspaceInvitationSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+  const hash = tokenHash(parsed.data.token);
+  const invitation = await prisma.workspaceInvitation.findUnique({ where: { tokenHash: hash }, include: { workspace: true } });
+  if (!invitation || invitation.status !== "invited" || invitation.expiresAt < new Date()) return res.status(400).json({ error: "invalid or expired invitation" });
+  if (invitation.workspace.workspaceType === "personal") return res.status(409).json({ error: "Personal is a single-user Owner/Admin workspace and cannot accept team invitations." });
+  const roles = Array.isArray(invitation.rolesJson) ? invitation.rolesJson.map(String) : [];
+  const allowedRoles = invitation.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
+  if (!roles.length || roles.includes("owner") || roles.some((role) => !allowedRoles.includes(role))) return res.status(400).json({ error: "invitation contains roles that are not allowed for this workspace" });
+  if (roles.includes("client_viewer") && (invitation.workspace.workspaceType !== "agency" || roles.length !== 1)) return res.status(400).json({ error: "Client Viewer is Agency-only and cannot be combined with an internal role" });
+  if (rolesConsumeSeat(roles)) {
+    const usage = await workspaceSeatUsage(invitation.workspace.id, invitation.workspace.settingsJson);
+    if (usage.limit != null && usage.total > usage.limit) return res.status(409).json({ error: "No paid workspace seat is available for this invitation." });
+  }
+  const teamIds = Array.isArray(invitation.teamIdsJson) ? invitation.teamIdsJson.map(String) : [];
+  const agencyClientIds = Array.isArray(invitation.agencyClientIdsJson) ? invitation.agencyClientIdsJson.map(String) : [];
+  let user = await prisma.user.findUnique({ where: { email: invitation.normalizedEmail } });
+  const existingAccount = Boolean(user);
+  if (!user && (!parsed.data.name && !invitation.name || !parsed.data.password)) {
+    return res.status(400).json({ error: "name and password are required for a new account" });
+  }
+  const now = new Date();
+  const result = await prisma.$transaction(async (tx) => {
+    if (!user) user = await tx.user.create({ data: {
+      email: invitation.normalizedEmail,
+      name: parsed.data.name ?? invitation.name,
+      passwordHash: await hashPassword(parsed.data.password!),
+      role: "client_user",
+      clientId: invitation.workspace.legacyClientId,
+      emailVerifiedAt: now,
+    } });
+    const membership = await tx.workspaceMembership.create({ data: {
+      workspaceId: invitation.workspaceId, userId: user.id, status: "active", joinedAt: now,
+      permissionOverrides: invitation.permissionOverrides as Prisma.InputJsonValue,
+    } });
+    if (roles.length) await tx.workspaceMemberRole.createMany({ data: roles.map((role) => ({ membershipId: membership.id, role, grantedById: invitation.invitedByUserId })) });
+    if (teamIds.length) await tx.workspaceTeamMember.createMany({ data: teamIds.map((teamId) => ({ teamId, membershipId: membership.id })) });
+    if (agencyClientIds.length) await tx.agencyClientMember.createMany({ data: agencyClientIds.map((agencyClientId) => ({ agencyClientId, membershipId: membership.id, assignmentRole: roles.includes("client_viewer") ? "client_viewer" : null })) });
+    await tx.workspaceInvitation.update({ where: { id: invitation.id }, data: { status: "accepted", acceptedAt: now } });
+    await tx.workspaceNotification.create({ data: {
+      workspaceId: invitation.workspaceId, userId: user.id, type: "workspace_invitation",
+      title: "Workspace invitation accepted", body: `You joined ${invitation.workspace.name}.`, actionUrl: "/workspace", emailEligible: false,
+    } });
+    await tx.workspaceActivity.create({ data: {
+      workspaceId: invitation.workspaceId, actorUserId: user.id, action: "membership.joined",
+      entityType: "workspace_membership", entityId: membership.id, nextJson: { roles, teamIds, agencyClientIds },
+    } });
+    return { membership, user };
+  });
+  res.json({ accepted: true, workspaceId: result.membership.workspaceId, existingAccount });
+});
+
 const verifyEmailSchema = z.object({ token: z.string().min(32) });
-authRouter.post("/verify-email", async (req, res) => {
+authRouter.post("/verify-email", authRateLimit({ scope: "verify-email", limit: 20, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = verifyEmailSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "invalid token" });
 
@@ -242,15 +442,23 @@ authRouter.post("/verify-email", async (req, res) => {
     });
     return tx.user.update({
       where: { id: record.userId },
-      data: { emailVerifiedAt: now, lastLoginAt: now },
+      data: { emailVerifiedAt: now },
     });
   });
 
-  res.json({ token: issueLogin(user), user: authUser(user) });
+  try {
+    await reconcilePendingJvZooEventsForUser(user.id);
+  } catch (error) {
+    console.error("Failed to reconcile a verified JVZoo purchase after email verification", error);
+  }
+
+  const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
+  res.json({ token, user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
 });
 
 const resendVerificationSchema = z.object({ email: z.string().email("Enter a valid email") });
-authRouter.post("/resend-verification", async (req, res) => {
+authRouter.post("/resend-verification", authRateLimit({ scope: "resend-verification", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = resendVerificationSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
 
@@ -268,7 +476,7 @@ authRouter.post("/resend-verification", async (req, res) => {
 
 // Always returns a generic message to prevent email enumeration.
 const forgotSchema = z.object({ email: z.string().email("Enter a valid email") });
-authRouter.post("/forgot-password", async (req, res) => {
+authRouter.post("/forgot-password", authRateLimit({ scope: "forgot-password", limit: 5, windowSeconds: 60 * 60, identityFields: ["email"] }), async (req, res) => {
   const parsed = forgotSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
   const user = await prisma.user.findUnique({ where: { email: parsed.data.email } });
@@ -294,7 +502,7 @@ const resetPasswordSchema = z.object({
     .regex(/[0-9]/, "Include a number")
     .regex(/[^A-Za-z0-9]/, "Include a special character"),
 });
-authRouter.post("/reset-password", async (req, res) => {
+authRouter.post("/reset-password", authRateLimit({ scope: "reset-password", limit: 20, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = resetPasswordSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten().fieldErrors });
 
@@ -318,13 +526,21 @@ authRouter.post("/reset-password", async (req, res) => {
       where: { id: record.userId },
       data: {
         passwordHash,
+        sessionVersion: { increment: 1 },
         emailVerifiedAt: record.user.emailVerifiedAt ?? now,
         lastLoginAt: now,
       },
     });
   });
 
-  res.json({ token: issueLogin(user), user: authUser(user) });
+  const token = issueLogin(user);
+  res.append("Set-Cookie", sessionCookie(token));
+  res.json({ token, user: { ...authUser(user), workspace: await workspaceSession(user.id, user.clientId) } });
+});
+
+authRouter.post("/logout", (_req, res) => {
+  res.append("Set-Cookie", clearSessionCookie());
+  res.status(204).end();
 });
 
 authRouter.get("/me", requireAuth, async (req, res) => {
@@ -332,5 +548,5 @@ authRouter.get("/me", requireAuth, async (req, res) => {
     where: { id: req.user!.userId },
     select: { id: true, email: true, name: true, role: true, clientId: true },
   });
-  res.json({ user });
+  res.json({ user: user ? { ...user, workspace: await workspaceSession(user.id, user.clientId) } : null });
 });

@@ -3,6 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { AiContentGeneration, AiGenerationType, CrawlSummary, DomainBacklinkLinks, DomainBacklinkSummary, GeoKeywordAudit, GeoKeywordAuditPage, HealthReport, KeywordResearchRun, PageRow, Website } from "../types.js";
 import { ActionIconButton, ActionIconLink, Card } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatUpdatedDate(value: string | null | undefined): string {
   if (!value) return "-";
@@ -119,6 +120,8 @@ function organizationNotes(details: OrganizationDetails) {
 }
 
 function ReadinessGenerateModal({
+  projectId,
+  targetUrl,
   activeKey,
   organizationDetails,
   setOrganizationDetails,
@@ -132,6 +135,8 @@ function ReadinessGenerateModal({
   onCopy,
   onClose,
 }: {
+  projectId: string;
+  targetUrl: string | null;
   activeKey: ReadinessGenerateKey | null;
   organizationDetails: OrganizationDetails;
   setOrganizationDetails: (details: OrganizationDetails) => void;
@@ -219,7 +224,22 @@ function ReadinessGenerateModal({
         </div>
         <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
-          <button type="button" onClick={onGenerate} disabled={generating || !canGenerate} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60">{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</button>
+          {generated
+            ? <div className="text-sm font-semibold text-emerald-700">Saved output is available above.</div>
+            : <WebsitePlanSuggestionAction
+                projectId={projectId}
+                suggestion={{
+                  sourceModule: "keyword_research",
+                  sourceType: `readiness_${activeKey}`,
+                  sourceId: `${projectId}:${activeKey}`,
+                  title: config.label,
+                  targetUrl,
+                  evidence: missingContext.join(" ") || `${config.label} is missing from the current website evidence.`,
+                  recommendedAction: `Review and approve the ${config.label} requirement in Website Plan before preparing implementation content.`,
+                  expectedImpact: "Adds this verified readiness requirement to the approved website workflow.",
+                }}
+                className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700 disabled:opacity-60"
+              />}
         </div>
       </div>
     </div>
@@ -387,7 +407,7 @@ function MiniBacklinkStat({ label, value, tone }: { label: string; value: React.
   );
 }
 
-function ToxicityPill({ score }: { score: number | null }) {
+function RiskSignalPill({ score }: { score: number | null }) {
   const tone = score == null ? "bg-charcoal-100 text-charcoal-500" : score >= 50 ? "bg-red-50 text-red-700" : score >= 35 ? "bg-amber-50 text-amber-700" : "bg-green-50 text-green-700";
   return <span className={`inline-flex min-w-10 justify-center rounded-full px-2 py-1 text-xs font-bold ${tone}`}>{score ?? "-"}</span>;
 }
@@ -742,7 +762,7 @@ function BacklinkLinksDrawer({
                       <th className="px-4 py-3 font-semibold">Target page</th>
                       <th className="px-4 py-3 font-semibold">Anchor</th>
                       <th className="px-4 py-3 font-semibold">Type</th>
-                      <th className="px-4 py-3 font-semibold">Toxicity</th>
+                      <th className="px-4 py-3 font-semibold">Provider risk signal</th>
                       <th className="px-4 py-3 font-semibold">Seen</th>
                     </tr>
                   </thead>
@@ -770,7 +790,7 @@ function BacklinkLinksDrawer({
                             {link.dofollow === false ? "Nofollow" : link.dofollow === true ? "Dofollow" : "Unknown"}
                           </span>
                         </td>
-                        <td className="px-4 py-3"><ToxicityPill score={link.toxicityScore} /></td>
+                        <td className="px-4 py-3"><RiskSignalPill score={link.toxicityScore} /></td>
                         <td className="whitespace-nowrap px-4 py-3 text-charcoal-500">
                           <div>{formatShortDate(link.firstSeen)}</div>
                           <div className="text-xs text-charcoal-400">Last {formatShortDate(link.lastSeen)}</div>
@@ -1076,7 +1096,7 @@ export default function KeywordResearch() {
     .sort((a, b) => a.page.totalScore - b.page.totalScore)
     .slice(0, 5);
   const onPageUpdatedAt = projectAudits[0]?.completedAt ?? projectAudits[0]?.createdAt ?? crawl?.completedAt ?? crawl?.createdAt ?? null;
-  const toxicBacklinks = (backlinkLinks?.links ?? [])
+  const backlinksForReview = (backlinkLinks?.links ?? [])
     .filter((link) => link.toxicityScore != null)
     .slice()
     .sort((a, b) => (b.toxicityScore ?? -1) - (a.toxicityScore ?? -1))
@@ -1214,7 +1234,7 @@ export default function KeywordResearch() {
         const [summary, health, pageResult] = await Promise.all([
           api.get<CrawlSummary>(`/api/crawls/${crawlForInsight.id}/summary`),
           api.get<HealthReport>(`/api/crawls/${crawlForInsight.id}/health-report`),
-          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=25`),
+          api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${crawlForInsight.id}/pages?take=25&logical=1`),
         ]);
         setCrawlSummary(summary);
         setHealthReport(health);
@@ -1278,7 +1298,7 @@ export default function KeywordResearch() {
         <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-sm">
           <span className="text-charcoal-400">Last crawled: {formatShortDate(crawl?.completedAt ?? crawl?.createdAt)}</span>
           {crawl && <Link to={`/crawls/${crawl.id}`} className="font-medium text-brand-600 hover:underline">Open latest audit</Link>}
-          {selectedWebsite && <Link to={`/projects/${selectedWebsite.id}`} className="font-medium text-brand-600 hover:underline">View previous crawls</Link>}
+          {selectedWebsite && <Link to={`/website-projects/${selectedWebsite.id}`} className="font-medium text-brand-600 hover:underline">View previous crawls</Link>}
         </div>
       </Card>
 
@@ -1314,8 +1334,8 @@ export default function KeywordResearch() {
               <div className="overflow-hidden rounded-lg border border-charcoal-100 bg-white shadow-sm">
                 <div className="flex flex-col gap-3 border-b border-charcoal-100 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
                   <div>
-                    <div className="text-sm font-semibold text-charcoal-800">Most Toxic Backlinks</div>
-                    <div className="text-xs text-charcoal-400">Sorted by parsed spam/toxicity score from stored backlink rows.</div>
+                    <div className="text-sm font-semibold text-charcoal-800">Backlinks with elevated provider risk signals</div>
+                    <div className="text-xs text-charcoal-400">These signals require human review and do not establish that a link is harmful.</div>
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-charcoal-400">{backlinkLinks?.cached ? "Cached" : backlinkLinks ? "Fresh" : ""}</span>
@@ -1327,22 +1347,22 @@ export default function KeywordResearch() {
                     <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
                       <tr>
                         <th className="px-4 py-2">Source URL</th>
-                        <th className="px-4 py-2 text-right">Toxicity Score</th>
+                        <th className="px-4 py-2 text-right">Provider risk signal</th>
                       </tr>
                     </thead>
                     <tbody>
                       {loadingBacklinks ? (
                         <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">Loading stored backlink rows...</td></tr>
-                      ) : toxicBacklinks.length ? toxicBacklinks.map((link, index) => (
-                        <tr key={(link.sourceUrl ?? "toxic") + index} className="border-t border-charcoal-50">
+                      ) : backlinksForReview.length ? backlinksForReview.map((link, index) => (
+                        <tr key={(link.sourceUrl ?? "risk-review") + index} className="border-t border-charcoal-50">
                           <td className="max-w-[520px] px-4 py-3">
                             {link.sourceUrl ? <a href={link.sourceUrl} target="_blank" rel="noreferrer" className="block truncate font-medium text-brand-600 hover:underline">{displayUrl(link.sourceUrl)}</a> : <span className="text-charcoal-400">Unknown source</span>}
                             <div className="mt-1 text-xs text-charcoal-400">{link.sourceDomain ?? "Unknown domain"}</div>
                           </td>
-                          <td className="px-4 py-3 text-right"><ToxicityPill score={link.toxicityScore} /></td>
+                          <td className="px-4 py-3 text-right"><RiskSignalPill score={link.toxicityScore} /></td>
                         </tr>
                       )) : (
-                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">No toxicity scores are stored for this domain yet.</td></tr>
+                        <tr><td colSpan={2} className="px-4 py-5 text-center text-charcoal-400">No provider risk signals are stored for this domain yet.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1596,6 +1616,8 @@ export default function KeywordResearch() {
             )}
 
             <ReadinessGenerateModal
+              projectId={selectedWebsite?.id ?? ""}
+              targetUrl={selectedWebsite?.rootUrl ?? null}
               activeKey={activeGenerateKey}
               organizationDetails={organizationDetails}
               setOrganizationDetails={setOrganizationDetails}

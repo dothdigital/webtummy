@@ -1,0 +1,758 @@
+import { describe, expect, it } from "vitest";
+import {
+  createStaticWebsiteFiles,
+  renderWebsiteComponentHtml,
+  renderWebsitePageDocument,
+  renderWebsitePageWordPressBlocks,
+  websiteLayoutCssVariables,
+  websitePagePublicationPath,
+} from "./websiteRenderer.js";
+import {
+  SENUKE_COMPONENT_REGISTRY_V1,
+  type WebsiteComponentInstance,
+  type WebsiteModel,
+} from "./websiteModel.js";
+
+const hero: WebsiteComponentInstance = {
+  instanceId: "hero-1",
+  componentId: "hero.local_service",
+  componentVersion: "1.0.0",
+  variant: "split",
+  props: {
+    headline: "Super Visa Insurance in Brampton",
+    summary: "Compare coverage without unsupported claims.",
+    primaryCtaLabel: "Request a Quote",
+    primaryCtaUrl: "/contact/",
+  },
+};
+
+const model: WebsiteModel = {
+  modelId: "model-7",
+  websiteId: "website-1",
+  projectId: "project-1",
+  version: 7,
+  status: "validated",
+  componentRegistryVersion: SENUKE_COMPONENT_REGISTRY_V1.version,
+  designSystem: {
+    version: "1.0.0",
+    colors: {
+      primary: "#2563eb",
+      secondary: "#0f766e",
+      accent: "#f59e0b",
+      background: "#f8fafc",
+      surface: "#ffffff",
+      text: "#0f172a",
+      mutedText: "#475569",
+    },
+    typography: { headingFont: "Poppins", bodyFont: "Inter" },
+    spacingScale: "comfortable",
+    radiusScale: "medium",
+  },
+  pages: [{
+    pageId: "page-1",
+    name: "Super Visa Insurance in Brampton",
+    slug: "/super-visa-insurance-brampton/",
+    pageType: "local_service",
+    primaryCta: { label: "Request a Quote", url: "/contact/" },
+    sections: [
+      hero,
+      {
+        instanceId: "content-1",
+        componentId: "content.rich_text",
+        componentVersion: "1.0.0",
+        variant: "answer_first",
+        props: { heading: "What to compare", body: "Review coverage.\n\n<script>alert('no')</script>" },
+      },
+    ],
+    seo: {
+      title: "Super Visa Insurance Brampton | Example",
+      metaDescription: "Compare Super Visa insurance coverage in Brampton and understand the next step before requesting an appropriate quote.",
+      canonicalUrl: "/super-visa-insurance-brampton/",
+      robots: "index,follow",
+      primaryKeyword: "super visa insurance Brampton",
+      secondaryKeywords: [],
+      dominantIntent: "local_commercial",
+      internalLinks: [],
+      faqs: [],
+      schemaJsonLd: { "@context": "https://schema.org", "@type": "Service" },
+      imageAltText: [],
+    },
+  }],
+  navigation: [{ pageId: "page-1", label: "Super Visa Insurance" }],
+  forms: [],
+  mediaAssets: [],
+};
+
+describe("Approved Release website renderer", () => {
+  it("renders only registered component data and escapes content", () => {
+    const html = renderWebsiteComponentHtml(model.pages[0].sections[1]);
+    expect(html).toContain("<h2>What to compare</h2>");
+    expect(html.match(/<p>/g)).toHaveLength(2);
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).not.toContain("<script>alert");
+  });
+
+  it("renders an optional editable internal-link section as page content", () => {
+    const section: WebsiteComponentInstance = {
+      instanceId: "links-1",
+      componentId: "content.link_section",
+      componentVersion: "1.0.0",
+      variant: "editorial",
+      props: {
+        heading: "Insurance services for nearby communities",
+        introduction: "Use these pages when your question is location-specific.",
+        links: [{ label: "Insurance planning in Mississauga", url: "/mississauga/", targetPageId: "page-2" }],
+        closingText: "Return to this page for the broader coverage comparison.",
+      },
+    };
+    const html = renderWebsiteComponentHtml(section);
+    expect(html).toContain("senuke-internal-link-section");
+    expect(html).toContain('<a href="/mississauga/">Insurance planning in Mississauga</a>');
+    expect(html).toContain("Return to this page for the broader coverage comparison.");
+  });
+
+  it("renders a saved section alignment into publishable website HTML and CSS", () => {
+    const aligned = {
+      ...model.pages[0].sections[1],
+      props: { ...model.pages[0].sections[1].props, alignment: "center", headingSize: "large", headingWeight: "black", headingColor: "primary" },
+    } as WebsiteComponentInstance;
+    expect(renderWebsiteComponentHtml(aligned)).toContain("senuke-align-center");
+    expect(renderWebsiteComponentHtml(aligned)).toContain("senuke-heading-large senuke-heading-black senuke-heading-color-primary");
+    const alignedModel: WebsiteModel = {
+      ...model,
+      pages: [{ ...model.pages[0], sections: [hero, aligned] }],
+    };
+    const css = String(createStaticWebsiteFiles(alignedModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-align-center");
+    expect(css).toContain(".senuke-card,.senuke-faq details,.senuke-contact-form form");
+    expect(css).toContain("color-mix(in srgb,var(--senuke-primary) 22%,var(--senuke-background))");
+  });
+
+  it("renders nested section columns, colours, and a saved background image for static and WordPress output", () => {
+    const layout: WebsiteComponentInstance = {
+      instanceId: "layout-1",
+      componentId: "layout.section",
+      componentVersion: "1.0.0",
+      variant: "two_left_wide",
+      props: {
+        backgroundColor: "secondary",
+        textColor: "white",
+        backgroundImageAssetId: "section-background",
+        backgroundOverlay: 60,
+        spacing: "spacious",
+        columnOne: [{
+          instanceId: "nested-copy",
+          componentId: "content.rich_text",
+          componentVersion: "1.0.0",
+          variant: "answer_first",
+          props: { heading: "Nested decision support", body: "This content remains inside the first website column." },
+        }],
+        columnTwo: [{
+          instanceId: "nested-image",
+          componentId: "media.image",
+          componentVersion: "1.0.0",
+          variant: "card",
+          props: { imageAssetId: "section-background", altText: "Advisor helping a customer" },
+        }],
+        columnThree: [],
+      },
+    };
+    const html = renderWebsiteComponentHtml(layout, {
+      mediaAssets: [{ assetId: "section-background", status: "approved", sourceUrl: "https://example.com/advisor.jpg", altText: "Advisor helping a customer" }],
+    });
+    expect(html).toContain("senuke-layout-two_left_wide");
+    expect(html).toContain("senuke-layout-bg-secondary");
+    expect(html).toContain("Nested decision support");
+    expect(html.match(/https:\/\/example.com\/advisor.jpg/g)).toHaveLength(2);
+
+    const layoutModel: WebsiteModel = {
+      ...model,
+      mediaAssets: [{ assetId: "section-background", status: "approved", sourceUrl: "https://example.com/advisor.jpg", altText: "Advisor helping a customer" }],
+      pages: [{ ...model.pages[0], sections: [hero, layout] }],
+    };
+    const css = String(createStaticWebsiteFiles(layoutModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-layout-two_left_wide");
+    expect(css).toContain(".senuke-layout-background-image");
+    const wordpressBlocks = renderWebsitePageWordPressBlocks(layoutModel, layoutModel.pages[0]);
+    expect(wordpressBlocks).toContain("<!-- wp:senuke/section-layout");
+    expect(wordpressBlocks).toContain("<!-- wp:columns");
+    expect(wordpressBlocks).toContain("<!-- wp:column -->");
+    expect(wordpressBlocks).not.toContain('"lock":{"move":true,"remove":true}');
+  });
+
+  it("rejects unsupported components at the renderer boundary", () => {
+    expect(() => renderWebsiteComponentHtml({ ...hero, componentId: "custom.javascript" })).toThrow("Unsupported website component");
+  });
+
+  it("renders metadata and schema from the exact model page", () => {
+    const html = renderWebsitePageDocument(model, model.pages[0], { approvedReleaseId: "release-1" });
+    expect(html).toContain("<title>Super Visa Insurance Brampton | Example</title>");
+    expect(html).toContain('type="application/ld+json"');
+    expect(html).toContain("https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800;900&amp;family=Inter:wght@400;500;600;700;800;900&amp;display=swap");
+    expect(html).toContain('<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>');
+    expect(html).toContain("All rights reserved.");
+    expect(html).not.toContain("approved SEnuke AI - AI Growth Operating System release");
+  });
+
+  it("publishes each governed page section as a separate Gutenberg block", () => {
+    const content = renderWebsitePageWordPressBlocks(model, model.pages[0]);
+    expect(content).toContain("<!-- wp:senuke/local-service-hero");
+    expect(content).toContain("<!-- wp:senuke/rich-text");
+    expect(content).not.toContain('"lock":{"move":true,"remove":true}');
+    expect(content).toContain('"isSecondFold":true');
+    expect(content).not.toContain('<!-- wp:html -->\n<section class="senuke-component senuke-hero');
+  });
+
+  it("does not append automatic related-page and CTA navigation to the homepage", () => {
+    const destination = {
+      ...model.pages[0],
+      pageId: "page-2",
+      name: "Contact Us",
+      slug: "/contact/",
+      pageType: "contact",
+      seo: { ...model.pages[0].seo, internalLinks: [] },
+    };
+    const homeModel: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        name: "Home",
+        slug: "/",
+        pageType: "home",
+        seo: {
+          ...model.pages[0].seo,
+          internalLinks: [
+            { targetPageId: "page-2", anchorText: "Contact Us", placement: "related_pages", linkType: "related", status: "approved" },
+            { targetPageId: "page-2", anchorText: "Contact us today", placement: "cta", linkType: "cta", status: "approved" },
+          ],
+        },
+      }, destination],
+    };
+    const content = renderWebsitePageWordPressBlocks(homeModel, homeModel.pages[0]);
+    expect(content).not.toContain("senuke-related-pages");
+    expect(content).not.toContain("senuke-link-cta");
+    expect(content).not.toContain("Contact us today");
+  });
+
+  it("adds the approved favicon to every rendered page document", () => {
+    const withFavicon: WebsiteModel = {
+      ...model,
+      identity: { businessName: "Example Insurance", faviconAssetId: "favicon-1" },
+      mediaAssets: [{ assetId: "favicon-1", status: "approved", altText: "Example Insurance favicon", sourceUrl: "https://example.com/favicon.png" }],
+    };
+    const html = renderWebsitePageDocument(withFavicon, withFavicon.pages[0]);
+    expect(html).toContain('<link rel="icon" href="https://example.com/favicon.png">');
+  });
+
+  it("renders fixed, wide, and full-screen website canvas variables", () => {
+    expect(websiteLayoutCssVariables("fixed")).toContain("--senuke-layout-max:1120px");
+    expect(websiteLayoutCssVariables("wide")).toContain("--senuke-layout-max:1440px");
+    expect(websiteLayoutCssVariables("full")).toContain("--senuke-layout-max:100%");
+    const wideModel: WebsiteModel = {
+      ...model,
+      designSystem: { ...model.designSystem, layoutMode: "wide" },
+    };
+    const html = renderWebsitePageDocument(wideModel, wideModel.pages[0]);
+    expect(html).toContain("--senuke-layout-max:1440px");
+    expect(html).toContain("--senuke-layout-gutter:1.25rem");
+    expect(html).toContain("--senuke-reading-max:90ch");
+    const css = String(createStaticWebsiteFiles(wideModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(css).toContain(".senuke-rich-text{display:block;width:min(var(--senuke-layout-max,1120px)");
+    expect(css).not.toContain(".senuke-rich-text{display:block;width:min(900px");
+  });
+
+  it("merges duplicate legacy footer columns while preserving their links", () => {
+    const secondPage = { ...model.pages[0], pageId: "page-2", name: "Critical Illness Insurance", slug: "/critical-illness/" };
+    const legacyModel: WebsiteModel = {
+      ...model,
+      pages: [...model.pages, secondPage],
+      navigationModel: {
+        primaryMenu: model.navigation,
+        utilityMenu: [],
+        breadcrumbs: [],
+        clusterNavigationBlocks: [],
+        contextualNavRules: [],
+        footerMenus: [
+          { groupId: "services-one", label: "Services", items: [{ pageId: "page-1", label: "Services" }] },
+          { groupId: "services-two", label: "Services", items: [{ pageId: "page-2", label: "Services" }] },
+        ],
+      },
+    };
+    const html = renderWebsitePageDocument(legacyModel, legacyModel.pages[0]);
+    expect(html.match(/<h2>Our Services<\/h2>/g)).toHaveLength(1);
+    expect(html).toContain(">Super Visa Insurance in Brampton</a>");
+    expect(html).toContain(">Critical Illness Insurance</a>");
+  });
+
+  it("centres the first post-hero H2 even when the second fold is not rich text", () => {
+    const secondFoldModel: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        sections: [
+          hero,
+          {
+            instanceId: "services-first-fold",
+            componentId: "service.grid",
+            componentVersion: "1.0.0",
+            variant: "three_column",
+            props: { heading: "Insurance options for your needs", introduction: "Review the available options.", items: [] },
+          },
+        ],
+      }],
+    };
+    const files = createStaticWebsiteFiles(secondFoldModel);
+    const html = String(files.find((file) => file.path.endsWith("index.html"))?.content ?? "");
+    const css = String(files.find((file) => file.path === "assets/senuke.css")?.content ?? "");
+    expect(html).toContain('class="senuke-component senuke-second-fold senuke-services');
+    expect(css).toContain(".senuke-second-fold>h2");
+    expect(css).toContain("text-align:center");
+  });
+
+  it("renders the uploaded WordPress media URL inside the first-fold hero", () => {
+    const heroWithImage: WebsiteComponentInstance = {
+      ...hero,
+      props: { ...hero.props, imageAssetId: "home-hero" },
+    };
+    const html = renderWebsiteComponentHtml(heroWithImage, {
+      mediaAssets: [{ assetId: "home-hero", status: "approved", altText: "Team helping a customer", sourceUrl: "data:image/png;base64,ignored" }],
+      assetUrls: { "home-hero": "https://wordpress.example/wp-content/uploads/home-hero.png" },
+    });
+    expect(html).toContain('class="senuke-hero-image"');
+    expect(html).toContain('src="https://wordpress.example/wp-content/uploads/home-hero.png"');
+    expect(html).toContain('alt="Team helping a customer"');
+    expect(html).toContain('width="1200" height="800"');
+    expect(html).toContain('loading="eager" fetchpriority="high" decoding="async"');
+  });
+
+  it("renders verified contact details and custom copyright in the global footer", () => {
+    const withFooter: WebsiteModel = {
+      ...model,
+      identity: {
+        businessName: "Example Insurance",
+        businessSummary: "Clear insurance guidance for families and business owners.",
+        contactPhone: "+1 905 555 0100",
+        contactEmail: "hello@example.com",
+        businessAddress: "Brampton, Ontario",
+        copyrightText: "© 2026 Example Insurance. Coverage subject to policy terms.",
+      },
+    };
+    const html = renderWebsitePageDocument(withFooter, withFooter.pages[0]);
+    expect(html).toContain('href="tel:+19055550100"');
+    expect(html).toContain('href="mailto:hello@example.com"');
+    expect(html).toContain("Brampton, Ontario");
+    expect(html).toContain('class="senuke-site-topbar"');
+    expect(html).toContain('class="senuke-footer-main"');
+    expect(html).toContain("Clear insurance guidance for families and business owners.");
+    expect(html).toContain("© 2026 Example Insurance. Coverage subject to policy terms.");
+    expect(html).not.toContain("Powered by");
+  });
+
+  it("renders only confirmed social profiles as accessible global-footer icons", () => {
+    const withSocialProfiles: WebsiteModel = {
+      ...model,
+      identity: {
+        businessName: "Example Insurance",
+        socialProfiles: [
+          { network: "linkedin", url: "https://linkedin.com/company/example-insurance" },
+          { network: "instagram", url: "" },
+        ],
+      },
+    };
+    const html = renderWebsitePageDocument(withSocialProfiles, withSocialProfiles.pages[0]);
+    expect(html).toContain("senuke-social-links");
+    expect(html).toContain("senuke-header-social");
+    expect(html).toContain("senuke-footer-social");
+    expect(html).toContain('href="https://linkedin.com/company/example-insurance"');
+    expect(html).toContain('aria-label="LinkedIn"');
+    expect(html).not.toContain('aria-label="Instagram"');
+  });
+
+  it("renders a usable registered contact form and WordPress form replacement", () => {
+    const contactForm: WebsiteComponentInstance = {
+      instanceId: "contact-form-1",
+      componentId: "conversion.contact_form",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: {
+        heading: "Contact us",
+        introduction: "Tell us what you need.",
+        formId: "primary-contact",
+        fields: [
+          { label: "Name", name: "name", inputType: "text", required: true },
+          { label: "Email", name: "email", inputType: "email", required: true },
+          { label: "Message", name: "message", inputType: "textarea", required: true },
+          { label: "I agree to be contacted.", name: "consent", inputType: "checkbox", required: true },
+        ],
+        submitLabel: "Send enquiry",
+        successMessage: "Thank you. Your enquiry has been received.",
+      },
+    };
+    const html = renderWebsiteComponentHtml(contactForm, {
+      formAction: "https://app.example.com/api/public/website-forms/release-1/signed-token",
+    });
+    expect(html).toContain('data-senuke-form-id="primary-contact"');
+    expect(html).toContain('action="https://app.example.com/api/public/website-forms/release-1/signed-token"');
+    expect(html).toContain("data-senuke-managed-form");
+    expect(html).toContain('name="_senuke_company_website"');
+    expect(html).toContain('type="email"');
+    expect(html).toContain("<textarea");
+    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('type="submit"');
+    expect(renderWebsiteComponentHtml(contactForm, { formShortcode: "[contact-form-7 id=\"12\"]" })).toContain("[contact-form-7");
+  });
+
+  it("preserves a lead-magnet form endpoint instead of replacing it with the website contact form", () => {
+    const leadForm: WebsiteComponentInstance = {
+      instanceId: "lead-form-1",
+      componentId: "conversion.contact_form",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: {
+        heading: "Get the checklist",
+        introduction: "Enter your email to receive the approved resource.",
+        formId: "lead-magnet-checklist",
+        submissionUrl: "https://app.example.com/api/public/lead-magnets/checklist/subscribe",
+        fields: [
+          { label: "Email", name: "email", inputType: "email", required: true },
+          { label: "I agree to receive the resource.", name: "consent", inputType: "checkbox", required: true },
+        ],
+        submitLabel: "Send my checklist",
+        successMessage: "Check your inbox for the resource.",
+      },
+    };
+    const componentHtml = renderWebsiteComponentHtml(leadForm, { formAction: "https://app.example.com/contact", formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(componentHtml).toContain('id="lead-magnet-checklist"');
+    expect(componentHtml).toContain('action="https://app.example.com/api/public/lead-magnets/checklist/subscribe"');
+    expect(componentHtml).not.toContain("[contact-form-7");
+    const landingPage = { ...model.pages[0], pageId: "lead-page", pageType: "landing", sections: [hero, leadForm] };
+    const documentHtml = renderWebsitePageDocument({ ...model, pages: [landingPage] }, landingPage);
+    expect(documentHtml).toContain('document.querySelectorAll("[data-senuke-managed-form]")');
+    expect(documentHtml).toContain('field.type==="checkbox"?field.checked');
+  });
+
+  it("renders a validated provider form in a sandbox for static HTML and WordPress", () => {
+    const providerForm: WebsiteComponentInstance = {
+      instanceId: "provider-form-1",
+      componentId: "conversion.contact_form",
+      componentVersion: "1.0.0",
+      variant: "split",
+      props: {
+        heading: "Register for the guide",
+        introduction: "Use the provider form to register.",
+        formId: "provider-guide-form",
+        providerEmbedHtml: '<script src="https://forms.example.com/embed.js"></script><form action="https://forms.example.com/subscribe"></form>',
+        fields: [{ label: "Email", name: "email", inputType: "email", required: true }],
+        submitLabel: "Register",
+        successMessage: "Thank you.",
+      },
+    };
+    const html = renderWebsiteComponentHtml(providerForm, { formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(html).toContain('sandbox="allow-forms allow-scripts allow-popups"');
+    expect(html).toContain("forms.example.com");
+    expect(html).not.toContain("[contact-form-7");
+    expect(html).not.toContain("data-senuke-managed-form");
+
+    const landingPage = { ...model.pages[0], pageId: "provider-page", pageType: "landing", sections: [hero, providerForm] };
+    const providerModel = { ...model, pages: [landingPage] };
+    const wordpress = renderWebsitePageWordPressBlocks(providerModel, landingPage, { formShortcode: "[contact-form-7 id=\"12\"]" });
+    expect(wordpress).toContain("<!-- wp:html -->");
+    expect(wordpress).toContain("senuke-provider-form-embed");
+    expect(wordpress).not.toContain("[contact-form-7");
+  });
+
+  it("adds a managed fallback form to a contact page even when no form component was registered", () => {
+    const contactPage = {
+      ...model.pages[0],
+      pageId: "contact-page",
+      name: "Contact Us",
+      slug: "/contact-us/",
+      pageType: "contact",
+      sections: [hero],
+      seo: { ...model.pages[0].seo, title: "Contact Us", canonicalUrl: "/contact-us/" },
+    };
+    const contactModel: WebsiteModel = {
+      ...model,
+      pages: [contactPage],
+      navigation: [{ pageId: "contact-page", label: "Contact" }],
+      forms: [{
+        formId: "primary-contact",
+        type: "lead",
+        destination: "hello@example.com",
+        fields: ["Name", "Email", "Phone", "Message", "Consent"],
+      }],
+    };
+    const html = renderWebsitePageDocument(contactModel, contactPage, {
+      formAction: "https://app.example.com/api/public/website-forms/release-1/signed-token",
+    });
+    expect(html).toContain('class="senuke-component senuke-contact-form"');
+    expect(html).toContain('name="email"');
+    expect(html).toContain('type="email"');
+    expect(html).toContain("<textarea");
+    expect(html).toContain('data-senuke-managed-form');
+    expect(html).toContain('document.querySelectorAll("[data-senuke-managed-form]")');
+  });
+
+  it("routes the standard contact CTA to the generated Contact page slug", () => {
+    const contactPage = {
+      ...model.pages[0],
+      pageId: "page-contact",
+      name: "Contact Us",
+      slug: "/contact-us/",
+      pageType: "conversion",
+      seo: { ...model.pages[0].seo, title: "Contact Us", canonicalUrl: "/contact-us/", primaryKeyword: "contact" },
+    };
+    const withContact = {
+      ...model,
+      pages: [model.pages[0], contactPage],
+      navigation: [...model.navigation, { pageId: "page-contact", label: "Contact Us" }],
+    };
+    const html = renderWebsitePageDocument(withContact, withContact.pages[0]);
+    expect(html).toContain('href="/contact-us/"');
+    expect(html).not.toContain('href="/contact/"');
+  });
+
+  it("renders the approved business logo and saved navigation branches", () => {
+    const brandedModel: WebsiteModel = {
+      ...model,
+      identity: { businessName: "Top Financial", logoAssetId: "brand-logo" },
+      navigation: [
+        { pageId: "custom-services", label: "Services", custom: true },
+        { ...model.navigation[0], parentPageId: "custom-services" },
+      ],
+      mediaAssets: [{ assetId: "brand-logo", status: "approved", altText: "Top Financial logo", sourceUrl: "https://example.com/logo.svg" }],
+    };
+    const html = renderWebsitePageDocument(brandedModel, brandedModel.pages[0]);
+    expect(html).toContain('class="senuke-brand-logo"');
+    expect(html).toContain("https://example.com/logo.svg");
+    expect(html).toContain("<span>Services</span>");
+    expect(html).toContain("Super Visa Insurance");
+  });
+
+  it("renders an accessible responsive hamburger menu with the same navigation tree", () => {
+    const html = renderWebsitePageDocument(model, model.pages[0]);
+    expect(html).toContain('class="senuke-mobile-menu"');
+    expect(html).toContain('aria-label="Open navigation menu"');
+    expect(html).toContain('class="senuke-mobile-menu-panel"');
+    expect(html.match(/Super Visa Insurance/g)?.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("creates a complete static website package file map", () => {
+    const files = createStaticWebsiteFiles(model, { approvedReleaseId: "release-1", snapshotHash: "abc123" });
+    expect(files.map((file) => file.path)).toEqual(expect.arrayContaining([
+      "super-visa-insurance-brampton/index.html",
+      "assets/senuke.css",
+      "sitemap.xml",
+      "robots.txt",
+      "llms.txt",
+      "senuke-release.json",
+    ]));
+    expect(files.find((file) => file.path === "senuke-release.json")?.content).toContain('"approvedReleaseId": "release-1"');
+    expect(files.find((file) => file.path === "super-visa-insurance-brampton/index.html")?.content).toContain('href="../assets/senuke.css"');
+    const css = files.find((file) => file.path === "assets/senuke.css")?.content || "";
+    expect(css).toContain("@media(max-width:860px)");
+    expect(css).toContain(".senuke-mobile-menu{display:block");
+    expect(css).toContain(".senuke-header-navigation{display:none");
+  });
+
+  it("publishes Blog Articles beneath the Blog Section and builds an automatic archive and feed", () => {
+    const blogSection = {
+      ...model.pages[0],
+      pageId: "blog-page",
+      name: "Blog",
+      slug: "/blog/",
+      pageType: "blog_section",
+      sections: model.pages[0].sections.map((section) => section.componentId === "hero.local_service"
+        ? { ...section, props: { ...section.props, headline: "Blog Insights", summary: "Read practical articles created to help you make informed decisions." } }
+        : section),
+      seo: { ...model.pages[0].seo, title: "Blog", metaDescription: "Read the latest practical guidance.", canonicalUrl: "/blog/" },
+    };
+    const article = {
+      ...model.pages[0],
+      pageId: "article-page",
+      parentPageId: "blog-page",
+      name: "How to compare coverage",
+      slug: "/how-to-compare-coverage/",
+      pageType: "blog_article",
+      seo: { ...model.pages[0].seo, title: "How to compare coverage", metaDescription: "A practical guide to comparing the available coverage.", canonicalUrl: "/how-to-compare-coverage/", primaryKeyword: "compare coverage" },
+    };
+    const blogModel: WebsiteModel = {
+      ...model,
+      identity: { businessName: "Example Financial" },
+      pages: [blogSection, article],
+      navigation: [{ pageId: "blog-page", label: "Blog" }],
+    };
+    expect(websitePagePublicationPath(blogModel, article)).toBe("/blog/how-to-compare-coverage/");
+    const files = createStaticWebsiteFiles(blogModel, { environmentType: "production", baseUrl: "https://example.com" });
+    const paths = files.map((file) => file.path);
+    expect(paths).toEqual(expect.arrayContaining([
+      "blog/index.html",
+      "blog/how-to-compare-coverage/index.html",
+      "rss.xml",
+    ]));
+    expect(paths).not.toContain("how-to-compare-coverage/index.html");
+    const archive = files.find((file) => file.path === "blog/index.html")?.content || "";
+    expect(archive).toContain("senuke-blog-grid");
+    expect(archive).toContain("<h1>Blog Insights</h1>");
+    expect(archive).toContain("<p>Read practical articles created to help you make informed decisions.</p>");
+    expect((archive.match(/<h1>/g) || []).length).toBe(1);
+    expect(archive).not.toContain("senuke-faq");
+    expect(archive).toContain("How to compare coverage");
+    expect(archive).toContain('href="../blog/how-to-compare-coverage/index.html"');
+    const articleHtml = files.find((file) => file.path === "blog/how-to-compare-coverage/index.html")?.content || "";
+    expect(articleHtml).toContain('<link rel="canonical" href="https://example.com/blog/how-to-compare-coverage/">');
+    expect(articleHtml).toContain('type="application/rss+xml"');
+    expect(files.find((file) => file.path === "sitemap.xml")?.content).toContain("https://example.com/blog/how-to-compare-coverage/");
+    expect(files.find((file) => file.path === "rss.xml")?.content).toContain("<title>How to compare coverage</title>");
+  });
+
+  it("publishes the required root Home page as index.html", () => {
+    const homeModel: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        pageId: "home-page",
+        name: "Home",
+        slug: "/",
+        pageType: "home",
+        seo: { ...model.pages[0].seo, canonicalUrl: "/" },
+      }],
+      navigation: [{ pageId: "home-page", label: "Home" }],
+    };
+    const files = createStaticWebsiteFiles(homeModel, { approvedReleaseId: "release-home" });
+    expect(files.some((file) => file.path === "index.html")).toBe(true);
+    expect(files.find((file) => file.path === "sitemap.xml")?.content).toContain("<loc>/</loc>");
+    expect(files.find((file) => file.path === "llms.txt")?.content).toContain("[Home](/)");
+  });
+
+  it("uses file-compatible relative links throughout the downloaded static website", () => {
+    const homePage = {
+      ...model.pages[0],
+      pageId: "home-page",
+      name: "Home",
+      slug: "/",
+      pageType: "home",
+      seo: { ...model.pages[0].seo, title: "Home", canonicalUrl: "/" },
+    };
+    const nestedPage = {
+      ...model.pages[0],
+      pageId: "nested-page",
+      name: "Insurance Services",
+      slug: "/services/insurance/",
+      pageType: "service",
+      seo: { ...model.pages[0].seo, title: "Insurance Services", canonicalUrl: "/services/insurance/" },
+    };
+    const contactPage = {
+      ...model.pages[0],
+      pageId: "contact-page",
+      name: "Contact Us",
+      slug: "/contact-us/",
+      pageType: "conversion",
+      seo: { ...model.pages[0].seo, title: "Contact Us", canonicalUrl: "/contact-us/" },
+    };
+    const fileModel: WebsiteModel = {
+      ...model,
+      pages: [homePage, nestedPage, contactPage],
+      navigation: [
+        { pageId: "home-page", label: "Home" },
+        { pageId: "nested-page", label: "Services" },
+        { pageId: "contact-page", label: "Contact" },
+      ],
+    };
+
+    const files = createStaticWebsiteFiles(fileModel, { approvedReleaseId: "release-file-preview" });
+    const homeHtml = files.find((file) => file.path === "index.html")?.content || "";
+    const nestedHtml = files.find((file) => file.path === "services/insurance/index.html")?.content || "";
+
+    expect(homeHtml).toContain('href="index.html"');
+    expect(homeHtml).toContain('href="services/insurance/index.html"');
+    expect(homeHtml).toContain('href="contact-us/index.html"');
+    expect(nestedHtml).toContain('href="../../index.html"');
+    expect(nestedHtml).toContain('href="../../contact-us/index.html"');
+    expect(nestedHtml).toContain('href="../../assets/senuke.css"');
+  });
+
+  it("packages release-owned media and renders its approved asset reference", () => {
+    const withMedia: WebsiteModel = {
+      ...model,
+      pages: [{
+        ...model.pages[0],
+        sections: [{ ...hero, props: { ...hero.props, imageAssetId: "hero-media-1" } }, ...model.pages[0].sections.slice(1)],
+      }],
+      mediaAssets: [{
+        assetId: "hero-media-1",
+        status: "approved",
+        altText: "Family reviewing Super Visa insurance",
+        sourceUrl: "data:image/png;base64,iVBORw0KGgo=",
+      }],
+    };
+    const files = createStaticWebsiteFiles(withMedia, { approvedReleaseId: "release-2" });
+    expect(files.find((file) => file.path === "assets/media/hero-media-1.png")?.base64).toBe(true);
+    expect(files[0].content).toContain('src="../assets/media/hero-media-1.png"');
+    expect(files[0].content).toContain('alt="Family reviewing Super Visa insurance"');
+    expect(files[0].content).toContain('<link rel="preload" as="image" href="../assets/media/hero-media-1.png" fetchpriority="high">');
+  });
+
+  it("installs first-party and GA4 tracking only in production output", () => {
+    const tracking = { siteId: "site-123456789", scriptUrl: "https://api.example.test/api/public/website-tracking/tag.js?site=site-123456789", ga4MeasurementId: "G-ABC1234567" };
+    const production = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking });
+    const staging = renderWebsitePageDocument(model, model.pages[0], { environmentType: "staging", tracking });
+    const wordpress = renderWebsitePageWordPressBlocks(model, model.pages[0], { tracking });
+    expect(production).toContain('data-senuke-site="site-123456789"');
+    expect(production).toContain("googletagmanager.com/gtag/js?id=G-ABC1234567");
+    expect(production.match(/googletagmanager\.com\/gtag/g)).toHaveLength(1);
+    expect(staging).not.toContain("website-tracking/tag.js");
+    expect(staging).not.toContain("googletagmanager.com/gtag");
+    expect(wordpress).toContain('data-senuke-site="site-123456789"');
+    expect(wordpress).not.toContain("googletagmanager.com/gtag");
+
+    const invalid = renderWebsitePageDocument(model, model.pages[0], { environmentType: "production", tracking: { ...tracking, ga4MeasurementId: "not-a-measurement-id" } });
+    expect(invalid).not.toContain("googletagmanager.com/gtag");
+  });
+
+  it("publishes approved technical files while keeping staging robots protected", () => {
+    const siteFiles = {
+      sitemap: '<?xml version="1.0"?><urlset><url><loc>https://example.com/approved</loc></url></urlset>',
+      robots: "User-agent: *\nAllow: /\nSitemap: https://example.com/sitemap.xml\n",
+      llms: "# Approved AI-readable website guide\n\n- [Approved page](https://example.com/approved)",
+    };
+    const production = createStaticWebsiteFiles(model, { environmentType: "production", siteFiles });
+    expect(production.find((file) => file.path === "sitemap.xml")?.content).toBe(siteFiles.sitemap);
+    expect(production.find((file) => file.path === "robots.txt")?.content).toBe(siteFiles.robots.trim());
+    expect(production.find((file) => file.path === "llms.txt")?.content).toBe(siteFiles.llms);
+
+    const staging = createStaticWebsiteFiles(model, { environmentType: "staging", siteFiles });
+    expect(staging.find((file) => file.path === "robots.txt")?.content).toBe("User-agent: *\nDisallow: /\n");
+    expect(staging.find((file) => file.path === "sitemap.xml")?.content).toBe(siteFiles.sitemap);
+  });
+});
+
+
+describe("testimonial slider", () => {
+  const quote = "A detailed client experience. ".repeat(100) + "\n\nThe final paragraph must remain visible.";
+  const testimonials: WebsiteComponentInstance = {
+    instanceId: "testimonials", componentId: "trust.proof", componentVersion: "1.0.0", variant: "review_summary",
+    props: { heading: "Testimonials", items: [{ title: "First client", description: quote }, { title: "Second client", description: "Another complete review." }] },
+  };
+
+  it("exports complete quotes with one full-width slide and navigation", () => {
+    const testimonialModel = { ...model, pages: [{ ...model.pages[0], sections: [hero, testimonials] }] };
+    const files = createStaticWebsiteFiles(testimonialModel);
+    const html = files.find(file => file.mimeType === "text/html")!.content;
+    const css = files.find(file => file.path === "assets/senuke.css")!.content;
+    expect(html).toContain(quote);
+    expect(html).toContain('aria-label="1 of 2"');
+    expect(html).toContain('aria-label="2 of 2"');
+    expect(html).toContain('aria-label="Previous testimonial"');
+    expect(html).toContain('aria-label="Next testimonial"');
+    expect(html).toContain('slider.scrollTo(');
+    expect(css).toContain('grid-auto-columns:100%;gap:0');
+    expect(css).toContain('white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;max-height:none');
+  });
+
+  it("omits unnecessary navigation for one testimonial", () => {
+    const html = renderWebsiteComponentHtml({ ...testimonials, props: { heading: "Testimonials", items: [{ title: "Client", description: quote }] } });
+    expect(html).toContain(quote);
+    expect(html).not.toContain('data-testimonial-direction');
+  });
+});

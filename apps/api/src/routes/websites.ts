@@ -4,6 +4,8 @@ import { z } from "zod";
 import { prisma } from "@webtummy/db";
 import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
+import { captureWebsiteTracking, websiteTrackingMetrics } from "../website-tracking.js";
+import { config } from "../config.js";
 
 export const websitesRouter = Router();
 websitesRouter.use(requireAuth);
@@ -34,6 +36,35 @@ const createSchema = z.object({
   // super_admin must pass clientId; client_* ignore it (forced from token).
   clientId: z.string().optional(),
 });
+
+const trackingSourceKeys = ["search_console", "ga4", "senuke_tag", "forms_booking", "call_tracking", "crm", "stripe_ecommerce", "behavior_provider", "site_monitoring"] as const;
+const trackingSourceStatuses = ["connected", "needs_permission", "not_connected", "delayed", "error"] as const;
+const measurementPlanSchema = z.object({
+  projectId: z.string().trim().min(1).max(191).optional().nullable(),
+  businessGoal: z.enum(["leads", "appointments", "calls", "sales", "store_visits", "audience_growth", "other"]),
+  primaryConversion: z.enum(["form_success", "booking_success", "phone_click", "purchase_success", "download_success", "other"]),
+  primaryMeasurement: z.string().trim().min(2).max(160),
+  supportingActions: z.array(z.enum(["page_view", "cta_click", "form_start", "form_submit", "form_success", "form_error", "phone_click", "booking_success", "download_success", "purchase_success"])).max(10).default([]),
+  guardrails: z.array(z.string().trim().min(1).max(180)).max(10).default([]),
+  pagesAndForms: z.array(z.string().trim().min(1).max(512)).max(100).default([]),
+  dataSources: z.array(z.object({ key: z.enum(trackingSourceKeys), status: z.enum(trackingSourceStatuses), required: z.boolean().default(false), identifier: z.string().trim().max(512).optional().nullable() })).max(trackingSourceKeys.length),
+  baselineRule: z.enum(["existing_site_28_days", "new_site_initial_baseline", "no_compatible_baseline"]),
+  evaluationWindowDays: z.number().int().min(7).max(365).default(28),
+  consentRequirements: z.array(z.enum(["analytics_consent", "marketing_consent", "behavior_recording_consent"])).max(3).default([]),
+  installationMethod: z.enum(["wordpress_plugin", "static_script", "laravel_custom", "senuke_generated", "manual_platform"]),
+  installation: z.object({ ga4MeasurementId: z.string().trim().max(40).optional().nullable(), searchConsoleProperty: z.string().trim().max(512).optional().nullable(), measurementTagEnabled: z.boolean().default(true), excludeStaging: z.literal(true).default(true), consentModeEnabled: z.boolean().default(false) }),
+});
+
+export function trackingState(dataSources: z.infer<typeof measurementPlanSchema>["dataSources"], liveVerified = false) {
+  const required = dataSources.filter((source) => source.required);
+  if (required.some((source) => source.status === "error")) return "TRACKING_ERROR";
+  if (required.some((source) => ["not_connected", "needs_permission"].includes(source.status))) return "CONNECTION_REQUIRED";
+  if (required.some((source) => source.status === "delayed") || dataSources.some((source) => !source.required && source.status !== "connected")) return "TRACKING_PARTIAL";
+  if (!liveVerified) return "CONNECTION_REQUIRED";
+  return "COLLECTING_INITIAL_DATA";
+}
+
+export const trackingMetrics = websiteTrackingMetrics;
 
 function normalizeProjectUrl(input: string): { domain: string; rootUrl: string } | null {
   const trimmed = input.trim();
@@ -150,6 +181,7 @@ websitesRouter.post("/", async (req, res) => {
           data: profileData(d.localBusinessProfile, clientId, website.id, normalized.domain),
         });
       }
+      await captureWebsiteTracking(tx, { websiteId: website.id, clientId, domain: website.domain, rootUrl: website.rootUrl, createdByUserId: req.user?.userId });
       await tx.client.update({ where: { id: clientId }, data: { lastWebsiteReplacementAt: new Date() } });
       return tx.website.findUniqueOrThrow({
         where: { id: website.id },
@@ -175,6 +207,7 @@ websitesRouter.post("/", async (req, res) => {
         data: profileData(d.localBusinessProfile, clientId, created.id, normalized.domain),
       });
     }
+    await captureWebsiteTracking(tx, { websiteId: created.id, clientId, domain: created.domain, rootUrl: created.rootUrl, createdByUserId: req.user?.userId });
     return tx.website.findUniqueOrThrow({
       where: { id: created.id },
       include: { localBusinessProfiles: localProfileInclude },
@@ -203,6 +236,8 @@ websitesRouter.get("/", async (req, res) => {
         },
       },
       localBusinessProfiles: localProfileInclude,
+      measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 },
+      trackingSite: true,
     },
   }) : [];
   const completedCrawls = websites.length
@@ -213,7 +248,36 @@ websitesRouter.get("/", async (req, res) => {
       })
     : [];
   const completedWebsiteIds = new Set(completedCrawls.map((crawl) => crawl.websiteId));
-  res.json({ websites: websites.map((website) => ({ ...website, hasCompletedCrawl: completedWebsiteIds.has(website.id) })) });
+  res.json({ websites: websites.map((website) => ({ ...website, trackingPlan: website.measurementPlans[0] ?? null, measurementPlans: undefined, hasCompletedCrawl: completedWebsiteIds.has(website.id) })) });
+});
+
+websitesRouter.get("/:id/tracking", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
+  const periodStart = new Date(Date.now() - 28 * 24 * 60 * 60 * 1000);
+  const website = await prisma.website.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { id: true, clientId: true, domain: true, rootUrl: true, status: true, trackingSite: true, trackingEvents: { where: { occurredAt: { gte: periodStart } }, orderBy: { occurredAt: "desc" }, take: 10000, select: { eventName: true, sessionId: true, metadataJson: true, occurredAt: true } }, projects: { where: { status: "active" }, orderBy: { updatedAt: "desc" }, select: { id: true, name: true, primaryGoal: true }, take: 20 }, measurementPlans: { orderBy: { version: "desc" }, take: 20 } } });
+  if (!website) return res.status(404).json({ error: "website not found" });
+  const tagHtml = website.trackingSite ? `<script async src="${config.publicApiUrl.replace(/\/+$/, "")}/api/public/website-tracking/tag.js?site=${encodeURIComponent(website.trackingSite.id)}" data-senuke-site="${website.trackingSite.id}"></script>` : null;
+  res.json({ website: { id: website.id, domain: website.domain, rootUrl: website.rootUrl, status: website.status }, trackingSite: website.trackingSite, tagHtml, metrics: trackingMetrics(website.trackingEvents), periodDays: 28, projects: website.projects, plan: website.measurementPlans.find((plan) => plan.active) ?? null, history: website.measurementPlans });
+});
+
+websitesRouter.put("/:id/tracking", async (req, res) => {
+  const data = measurementPlanSchema.parse(req.body);
+  const clientId = await projectClientIdForRequest(req);
+  const website = await prisma.website.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { trackingSite: true, measurementPlans: { orderBy: { version: "desc" }, take: 1 } } });
+  if (!website) return res.status(404).json({ error: "website not found" });
+  if (website.status === "archived") return res.status(409).json({ error: "Archived websites keep tracking history but cannot receive a new Measurement Plan." });
+  if (data.projectId) {
+    const project = await prisma.project.findFirst({ where: { id: data.projectId, websiteId: website.id, clientId: website.clientId }, select: { id: true } });
+    if (!project) return res.status(400).json({ error: "The selected project does not belong to this website." });
+  }
+  const version = (website.measurementPlans[0]?.version ?? 0) + 1;
+  const state = trackingState(data.dataSources);
+  const plan = await prisma.$transaction(async (tx) => {
+    const site = website.trackingSite ?? await tx.websiteTrackingSite.create({ data: { websiteId: website.id, clientId: website.clientId, allowedHost: website.domain.toLowerCase().replace(/^www\./, "") } });
+    await tx.websiteMeasurementPlan.updateMany({ where: { websiteId: website.id, active: true }, data: { active: false } });
+    return tx.websiteMeasurementPlan.create({ data: { websiteId: website.id, clientId: website.clientId, projectId: data.projectId, version, active: true, status: "ready_to_install", businessGoal: data.businessGoal, primaryConversion: data.primaryConversion, primaryMeasurement: data.primaryMeasurement, supportingActionsJson: data.supportingActions, guardrailsJson: data.guardrails, pagesAndFormsJson: data.pagesAndForms, dataSourcesJson: data.dataSources, baselineRule: data.baselineRule, evaluationWindowDays: data.evaluationWindowDays, consentRequirementsJson: data.consentRequirements, installationMethod: data.installationMethod, installationJson: { ...data.installation, trackingSiteId: site.id, collectorUrl: `${config.publicApiUrl.replace(/\/+$/, "")}/api/public/website-tracking/events` }, trackingState: state, createdByUserId: req.user?.userId } });
+  });
+  res.json({ plan, message: `Measurement Plan version ${version} saved for ${website.domain}. Live measurement will not start until installation and live verification succeed.` });
 });
 
 websitesRouter.get("/:id", async (req, res) => {
@@ -238,6 +302,8 @@ websitesRouter.get("/:id", async (req, res) => {
         },
       },
       localBusinessProfiles: localProfileInclude,
+      measurementPlans: { where: { active: true }, orderBy: { version: "desc" }, take: 1 },
+      trackingSite: true,
     },
   });
   if (!website) {

@@ -1,3 +1,18 @@
+import { geographicTargetMarkets } from "./utils/projectLocations";
+
+export const COUNTRY_ALIASES = new Map([
+  ["united state", "United States"],
+  ["united states of america", "United States"],
+  ["usa", "United States"],
+  ["us", "United States"],
+  ["u.s.", "United States"],
+]);
+
+export function normalizeCountryMarket(value: string) {
+  const trimmed = value.trim().replace(/\s+/g, " ");
+  return COUNTRY_ALIASES.get(trimmed.toLowerCase()) ?? trimmed;
+}
+
 export const COUNTRY_OPTIONS = [
   { value: "Albania", locationCode: 2008, isoCode: "AL", locationType: "Country", label: "🇦🇱 Albania (AL)", defaultRegion: "", defaultCity: "" },
   { value: "Algeria", locationCode: 2012, isoCode: "DZ", locationType: "Country", label: "🇩🇿 Algeria (DZ)", defaultRegion: "", defaultCity: "" },
@@ -17,7 +32,7 @@ export const COUNTRY_OPTIONS = [
   { value: "Myanmar (Burma)", locationCode: 2104, isoCode: "MM", locationType: "Country", label: "🇲🇲 Myanmar (Burma) (MM)", defaultRegion: "", defaultCity: "" },
   { value: "Cambodia", locationCode: 2116, isoCode: "KH", locationType: "Country", label: "🇰🇭 Cambodia (KH)", defaultRegion: "", defaultCity: "" },
   { value: "Cameroon", locationCode: 2120, isoCode: "CM", locationType: "Country", label: "🇨🇲 Cameroon (CM)", defaultRegion: "", defaultCity: "" },
-  { value: "Canada", locationCode: 2124, isoCode: "CA", locationType: "Country", label: "🇨🇦 Canada (CA)", defaultRegion: "Ontario", defaultCity: "Mississauga" },
+  { value: "Canada", locationCode: 2124, isoCode: "CA", locationType: "Country", label: "🇨🇦 Canada (CA)", defaultRegion: "", defaultCity: "" },
   { value: "Sri Lanka", locationCode: 2144, isoCode: "LK", locationType: "Country", label: "🇱🇰 Sri Lanka (LK)", defaultRegion: "", defaultCity: "" },
   { value: "Chile", locationCode: 2152, isoCode: "CL", locationType: "Country", label: "🇨🇱 Chile (CL)", defaultRegion: "", defaultCity: "" },
   { value: "Taiwan", locationCode: 2158, isoCode: "TW", locationType: "Region", label: "🇹🇼 Taiwan (TW)", defaultRegion: "", defaultCity: "" },
@@ -102,14 +117,89 @@ export function citiesFromText(value: string): string[] {
 }
 
 export function buildLocationName(city: string, region: string, country: string): string {
-  return [city.trim(), region.trim(), country.trim()].filter(Boolean).join(",");
+  return [city.trim(), region.trim(), country.trim()].filter(Boolean).join(", ");
 }
 
 export function buildLocationNames(cities: string, region: string, country: string): string[] {
-  const parsed = citiesFromText(cities);
+  const regionLower = region.trim().toLowerCase();
+  const countryLower = country.trim().toLowerCase();
+  const seen = new Set<string>();
+  const parsed = citiesFromText(cities)
+    // Intake can contain a natural-language service area such as
+    // "Etobicoke and west Toronto". Research providers require one exact
+    // market per request, so split composite markets before adding the
+    // shared region and country. A country value containing "and" is removed
+    // by the country filter below before this split is applied.
+    .filter((part) => part.toLowerCase() !== regionLower && part.toLowerCase() !== countryLower)
+    .flatMap((part) => part.split(/\s+(?:and|&)\s+/i).map((market) => market.trim()).filter(Boolean))
+    .filter((part) => {
+      const value = part.toLowerCase();
+      return value !== regionLower && value !== countryLower;
+    })
+    .filter((city) => {
+      const key = city.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
   return (parsed.length ? parsed : [cities.trim()].filter(Boolean)).map((city) => buildLocationName(city, region, country));
 }
 
+function countryOption(value: string) {
+  const normalized = normalizeCountryMarket(value).toLowerCase();
+  return COUNTRY_OPTIONS.find((country) => country.value.toLowerCase() === normalized || country.isoCode.toLowerCase() === normalized) ?? null;
+}
+
+/**
+ * Convert independent project markets into provider-ready locations. A target
+ * market may itself be a country or the project's region, so it must not
+ * always inherit the business address's province and country.
+ */
+export function buildProjectMarketLocationNames(markets: string[], region: string, country: string): string[] {
+  const regionKey = region.trim().toLowerCase();
+  const countryKey = country.trim().toLowerCase();
+  const labels = geographicTargetMarkets(markets).map((market) => {
+    const normalized = market.trim().toLowerCase();
+    const matchedCountry = countryOption(market);
+    if (matchedCountry) return matchedCountry.value;
+    if (normalized === regionKey) return buildLocationName(region, "", country);
+    if (market.includes(",")) return market.split(",").map((part) => part.trim()).filter(Boolean).join(", ");
+    if (normalized === countryKey) return country.trim();
+    return buildLocationName(market, region, country);
+  });
+  return [...new Map(labels.filter(Boolean).map((label) => [label.toLowerCase(), label])).values()];
+}
+
+export function projectAnalysisLocations(input: {
+  targetLocations?: unknown;
+  businessLocationJson?: { country?: string | null; stateProvince?: string | null; city?: string | null } | null;
+}) {
+  const rawTargets = Array.isArray(input.targetLocations)
+    ? input.targetLocations.map(String)
+    : typeof input.targetLocations === "string"
+      ? input.targetLocations.split(/[;\n]/)
+      : [];
+  const countryValue = input.businessLocationJson?.country?.trim() || rawTargets.find((item) => COUNTRY_OPTIONS.some((country) =>
+    country.value.toLowerCase() === item.trim().toLowerCase() || country.isoCode.toLowerCase() === item.trim().toLowerCase(),
+  )) || "";
+  const country = COUNTRY_OPTIONS.find((item) =>
+    item.value.toLowerCase() === countryValue.toLowerCase() || item.isoCode.toLowerCase() === countryValue.toLowerCase(),
+  )?.value || countryValue;
+  const region = input.businessLocationJson?.stateProvince?.trim() || "";
+  const excluded = new Set([country.toLowerCase(), countryValue.toLowerCase(), region.toLowerCase()].filter(Boolean));
+  const explicitContextMarkets = new Set(rawTargets
+    .filter((item) => !item.includes(","))
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => excluded.has(item)));
+  const markets = [...new Map(geographicTargetMarkets(rawTargets)
+    .filter((item) => {
+      const normalized = item.toLowerCase();
+      return !excluded.has(normalized) || explicitContextMarkets.has(normalized);
+    })
+    .map((item) => [item.toLowerCase(), countryOption(item)?.value ?? item])).values()];
+  return { country, region, markets, locationNames: buildProjectMarketLocationNames(markets, region, country) };
+}
+
 export function defaultLocationParts() {
-  return { country: "Canada", region: "Ontario", city: "Mississauga" };
+  return { country: "", region: "", city: "" };
 }

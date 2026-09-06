@@ -6,9 +6,14 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "seed": "tsx src/seed.ts"
+    "seed": "tsx src/seed.ts",
+    "backfill:workflow": "tsx scripts/backfill-project-workflows.ts",
+    "migrate:dev059-commercial": "tsx scripts/migrate-dev059-commercial.ts"
   },
   "dependencies": {
+    "@ai-sdk/openai": "^4.0.15",
+    "@aws-sdk/credential-provider-node": "^3.972.81",
+    "@mastra/core": "^1.51.0",
     "@webtummy/core": "*",
     "@webtummy/db": "*",
     "bcryptjs": "^2.4.3",
@@ -18,12 +23,20 @@
     "express": "^4.21.2",
     "ioredis": "^5.4.2",
     "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "pdfkit": "^0.19.1",
+    "sanitize-html": "^2.17.7",
+    "sharp": "^0.35.3",
+    "ssh2-sftp-client": "^12.1.1",
     "zod": "^3.24.1"
   },
   "devDependencies": {
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21",
-    "@types/jsonwebtoken": "^9.0.7"
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/pdfkit": "^0.17.6",
+    "@types/sanitize-html": "^2.16.1",
+    "@types/ssh2-sftp-client": "^9.0.6"
   }
 }

@@ -3,15 +3,20 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Webtummy — SEO + AI Search website crawler & audit platform (Dot H Digital)",
+  "description": "SEnuke AI - AI Growth Operating System — SEO + AI Search website crawler & audit platform (Dot H Digital)",
   "workspaces": [
     "packages/*",
     "apps/*"
   ],
   "scripts": {
+    "postinstall": "npm run db:generate",
     "db:generate": "npm run -w @webtummy/db generate",
     "db:migrate": "npm run -w @webtummy/db migrate",
     "db:push": "npm run -w @webtummy/db push",
+    "db:postgres-init": "npm run -w @webtummy/db postgres:init",
+    "db:backfill-workspaces": "npm run -w @webtummy/db backfill-workspaces",
+    "db:backfill-workflows": "npm run -w @webtummy/api backfill:workflow",
+    "db:migrate-dev059-commercial": "npm run -w @webtummy/api migrate:dev059-commercial",
     "dev:api": "npm run -w @webtummy/api dev",
     "dev:worker": "npm run -w @webtummy/worker dev",
     "test": "vitest run",
@@ -20,11 +25,15 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "deepmerge-ts": "^8.0.2",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
-    "vitest": "^2.1.8"
+    "vitest": "^4.1.11"
   },
   "engines": {
     "node": ">=22"
+  },
+  "overrides": {
+    "deepmerge-ts": "$deepmerge-ts"
   }
 }

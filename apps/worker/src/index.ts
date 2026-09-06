@@ -1,11 +1,37 @@
+import { startSearchConsoleWorker } from "./google-search-console.js";
 // Worker entrypoint. Consumes crawl:start jobs and runs the crawl.
 import { Worker } from "bullmq";
 import { prisma } from "@webtummy/db";
 import { config, CRAWL_QUEUE, defaultCrawlOptions } from "./config.js";
 import { connection, type CrawlJobData } from "./queue.js";
 import { runCrawl } from "./crawl.js";
-import { startMaintenanceScheduler } from "./maintenance.js";
+import { recoverQueuedCrawlJobs, startMaintenanceScheduler, startNotificationEmailScheduler } from "./maintenance.js";
 import type { CrawlOptions } from "@webtummy/core";
+import { startWebsiteBuilderWorker } from "./website-builder.js";
+import { recoverGrowthIntelligenceCycles, startGrowthIntelligenceScheduler, startGrowthIntelligenceWorker } from "./growth-intelligence.js";
+import { startSocialImageWorker } from "./social-images.js";
+import { startChangeIntelligenceScheduler } from "./change-intelligence.js";
+// Discovery generation shares the API's authenticated generation service, but
+// its BullMQ consumer belongs to this dedicated worker lifecycle.
+import { startDiscoveryGenerationQueueWorker } from "../../api/src/routes/discovery-drafts.js";
+import { startStrategyGenerationQueueWorker } from "../../api/src/routes/projects-v2.js";
+import { startContentPlanGenerationQueueWorker } from "../../api/src/routes/execution-tasks.js";
+
+async function markCrawlFailed(crawlJobId: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await prisma.crawlJob.updateMany({
+        where: { id: crawlJobId, status: "running" },
+        data: { status: "failed", completedAt: new Date(), error: message },
+      });
+      return;
+    } catch (updateError) {
+      if (attempt === 3) throw updateError;
+      await new Promise((resolve) => setTimeout(resolve, attempt * 500));
+    }
+  }
+}
 
 async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
   let timeout: NodeJS.Timeout | null = null;
@@ -17,15 +43,14 @@ async function runWithTimeout(crawlJobId: string, task: Promise<void>) {
       }),
     ]);
   } catch (error) {
-    await prisma.crawlJob.updateMany({
-      where: { id: crawlJobId, status: "running" },
-      data: { status: "failed", completedAt: new Date(), error: error instanceof Error ? error.message : String(error) },
-    });
     throw error;
   } finally {
     if (timeout) clearTimeout(timeout);
   }
 }
+
+await recoverQueuedCrawlJobs();
+await recoverGrowthIntelligenceCycles();
 
 const worker = new Worker<CrawlJobData>(
   CRAWL_QUEUE,
@@ -59,18 +84,50 @@ const worker = new Worker<CrawlJobData>(
 );
 
 worker.on("failed", (job, err) => {
-  console.error(`[worker] crawl ${job?.data.crawlJobId} failed:`, err.message);
+  const crawlJobId = job?.data.crawlJobId;
+  console.error("[worker] crawl " + crawlJobId + " failed:", err.message);
+  if (crawlJobId) {
+    const exhausted = (job?.attemptsMade ?? 0) >= (job?.opts.attempts ?? 3);
+    (exhausted
+      ? markCrawlFailed(crawlJobId, err)
+      : prisma.crawlJob.updateMany({ where: { id: crawlJobId, status: "running" }, data: { status: "queued", startedAt: null, completedAt: null, error: `Retrying after worker interruption: ${err.message}` } }).then(() => undefined)
+    ).catch((updateError) => {
+      console.error("[worker] failed to persist crawl " + crawlJobId + " failure:", updateError);
+    });
+  }
 });
 
 const maintenanceTimer = startMaintenanceScheduler();
+const notificationEmailTimer = startNotificationEmailScheduler();
+const websiteBuilderWorker = startWebsiteBuilderWorker();
+const growthIntelligenceWorker = startGrowthIntelligenceWorker();
+const socialImageWorker = startSocialImageWorker();
+const discoveryGenerationWorker = startDiscoveryGenerationQueueWorker();
+const strategyGenerationWorker = startStrategyGenerationQueueWorker();
+const contentPlanGenerationWorker = startContentPlanGenerationQueueWorker();
+const searchConsoleWorker = startSearchConsoleWorker();
+const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
+const changeIntelligenceScheduler = startChangeIntelligenceScheduler(config.changeIntelligenceInitialDelayMs, config.changeIntelligenceIntervalMs);
 
-console.log(`[worker] Webtummy crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
+console.log(`[worker] SEnuke AI - AI Growth Operating System crawler up. UA="${config.userAgent}". Listening on "${CRAWL_QUEUE}".`);
 console.log(`[worker] Maintenance scheduler active every ${config.maintenanceIntervalMs}ms.`);
+console.log(`[worker] Continuous Growth scheduler active every ${config.growthIntelligenceScheduleIntervalMs}ms with ${config.growthIntelligenceConcurrency} worker slots.`);
+console.log(`[worker] Change Intelligence scheduler active every ${config.changeIntelligenceIntervalMs}ms.`);
 
 const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
+  clearInterval(notificationEmailTimer);
+  clearInterval(growthIntelligenceTimer);
+  changeIntelligenceScheduler.close();
   await worker.close();
+  await websiteBuilderWorker.close();
+  await growthIntelligenceWorker.close();
+  await socialImageWorker.close();
+  await discoveryGenerationWorker.close();
+  await strategyGenerationWorker.close();
+  await contentPlanGenerationWorker.close();
+  await searchConsoleWorker.close();
   await prisma.$disconnect();
   process.exit(0);
 };
