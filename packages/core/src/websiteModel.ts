@@ -439,6 +439,16 @@ export function websitePageCompositionPolicy(page: {
   const base = ["hero.local_service", "content.rich_text", "content.faq"] as const;
   const noFaqBase = ["hero.local_service", "content.rich_text"] as const;
 
+  if (["blog_article", "blog_post", "article", "post", "news"].includes(pageType)) return {
+    archetype: "supporting",
+    requiredComponentIds: noFaqBase,
+    recommendedComponentIds: ["content.rich_text", "media.image"],
+    minimumFaqs: 0,
+    minimumComponentCount: 2,
+    minimumWords: 400,
+    maximumWords: 3000,
+    guidance: "Use an editorial article layout. Preserve the source article's useful content and headings. Add FAQs or a call to action only when they serve the article; never pad an article with generic trust or sales blocks.",
+  };
   if (utility) return {
     archetype: "utility",
     requiredComponentIds: noFaqBase,
@@ -491,7 +501,7 @@ export function websitePageCompositionPolicy(page: {
   };
   if (caseStudy) return {
     archetype: "case_study",
-    requiredComponentIds: [...noFaqBase, "trust.proof", "conversion.cta"],
+    requiredComponentIds: [...noFaqBase, "conversion.cta"],
     recommendedComponentIds: ["content.process", "service.benefits"],
     minimumFaqs: 0,
     minimumComponentCount: 4,
@@ -501,7 +511,7 @@ export function websitePageCompositionPolicy(page: {
   };
   if (about) return {
     archetype: "about",
-    requiredComponentIds: [...noFaqBase, "trust.proof", "conversion.cta"],
+    requiredComponentIds: [...noFaqBase, "conversion.cta"],
     recommendedComponentIds: ["content.rich_text", "service.benefits"],
     minimumFaqs: 0,
     minimumComponentCount: 4,
@@ -511,7 +521,7 @@ export function websitePageCompositionPolicy(page: {
   };
   if (local && !blogIndex) return {
     archetype: "local_service",
-    requiredComponentIds: [...base, "trust.proof", "conversion.cta"],
+    requiredComponentIds: [...base, "conversion.cta"],
     recommendedComponentIds: ["service.grid", "content.process", "content.faq", "service.benefits"],
     minimumFaqs: 4,
     minimumComponentCount: 7,
@@ -615,7 +625,7 @@ export const SENUKE_COMPONENT_REGISTRY_V1: ComponentRegistry = {
       version: "1.0.0",
       category: "hero",
       lifecycleStatus: "active",
-      variants: ["split", "centered", "with_form"],
+      variants: ["split", "centered", "with_form", "document"],
       fields: {
         eyebrow: { type: "string", maxLength: 80 },
         headline: { type: "string", required: true, maxLength: 90 },

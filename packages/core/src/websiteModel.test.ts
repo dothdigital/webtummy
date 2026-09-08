@@ -293,7 +293,8 @@ describe("SENuke canonical Website Model", () => {
     expect(blogSection.minimumFaqs).toBe(0);
     expect(blogArticle.archetype).toBe("supporting");
     expect(blogArticle.requiredComponentIds).toContain("content.rich_text");
-    expect(blogArticle.minimumFaqs).toBe(4);
+    expect(blogArticle.minimumFaqs).toBe(0);
+    expect(blogArticle.requiredComponentIds).not.toContain("conversion.cta");
     expect(contact.minimumFaqs).toBe(0);
     expect(legal.requiredComponentIds).toEqual(["hero.local_service", "content.rich_text"]);
     expect(legal.minimumFaqs).toBe(0);

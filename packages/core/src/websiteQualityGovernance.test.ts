@@ -19,6 +19,14 @@ const model = (body: string, headline = "Super Visa Insurance in Brampton"): Web
 });
 
 describe("website quality governance", () => {
+  it("preserves ordinary service wording in legal documents while blocking actual editing prompts", () => {
+    const result = evaluateWebsiteQualityGovernance(model("If a third-party provider ceases to provide a service, some features may be affected."));
+    expect(result.issues.some(issue => issue.code === "editor_instruction")).toBe(false);
+    for (const body of ["Provide your business name.", "Provide a service description.", "Insert a testimonial here."]) {
+      expect(evaluateWebsiteQualityGovernance(model(body)).issues.some(issue => issue.code === "editor_instruction")).toBe(true);
+    }
+  });
+
   it("does not block advisory CTAs or best-fit comparison language during generation", () => {
     const components = model("Select a policy that best fits your needs and budget.").pages[0].sections;
     components[0].props.primaryCtaLabel = "Consult with an Expert";

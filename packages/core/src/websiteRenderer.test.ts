@@ -125,7 +125,7 @@ describe("Approved Release website renderer", () => {
     const css = String(createStaticWebsiteFiles(alignedModel).find((file) => file.path === "assets/senuke.css")?.content ?? "");
     expect(css).toContain(".senuke-align-center");
     expect(css).toContain(".senuke-card,.senuke-faq details,.senuke-contact-form form");
-    expect(css).toContain("color-mix(in srgb,var(--senuke-primary) 22%,var(--senuke-background))");
+    expect(css).toContain("color-mix(in srgb,var(--senuke-primary) 6%,var(--senuke-surface))");
   });
 
   it("renders nested section columns, colours, and a saved background image for static and WordPress output", () => {
@@ -602,7 +602,7 @@ describe("Approved Release website renderer", () => {
     const archive = files.find((file) => file.path === "blog/index.html")?.content || "";
     expect(archive).toContain("senuke-blog-grid");
     expect(archive).toContain("<h1>Blog Insights</h1>");
-    expect(archive).toContain("<p>Read practical articles created to help you make informed decisions.</p>");
+    expect(archive).toContain('class="senuke-lead">Read practical articles created to help you make informed decisions.</p>');
     expect((archive.match(/<h1>/g) || []).length).toBe(1);
     expect(archive).not.toContain("senuke-faq");
     expect(archive).toContain("How to compare coverage");
@@ -612,6 +612,31 @@ describe("Approved Release website renderer", () => {
     expect(articleHtml).toContain('type="application/rss+xml"');
     expect(files.find((file) => file.path === "sitemap.xml")?.content).toContain("https://example.com/blog/how-to-compare-coverage/");
     expect(files.find((file) => file.path === "rss.xml")?.content).toContain("<title>How to compare coverage</title>");
+  });
+
+  it("recovers an imported .html blog archive and retains its hero image without FAQ blocks", () => {
+    const hero = { ...model.pages[0].sections.find(section => section.componentId === "hero.local_service")!, props: { ...model.pages[0].sections.find(section => section.componentId === "hero.local_service")!.props, imageAssetId: "blog-hero" } };
+    const blog = { ...model.pages[0], pageId: "imported-blog", name: "Company Blog", slug: "/blog-html/", pageType: "service", sections: [hero, ...model.pages[0].sections.filter(section => section.componentId === "content.faq")], seo: { ...model.pages[0].seo, canonicalUrl: "https://example.com/blog.html" } };
+    const articles = Array.from({ length: 8 }, (_, i) => ({ ...model.pages[0], pageId: `imported-article-${i}`, name: `Imported article ${i}`, slug: `/blog/article-${i}-html/`, pageType: "supporting", parentPageId: undefined, seo: { ...model.pages[0].seo, canonicalUrl: "/" } }));
+    const imported = { ...model, pages: [blog, ...articles], mediaAssets: [{ assetId: "blog-hero", status: "approved" as const, altText: "Archive image", sourceUrl: "https://example.com/blog.jpg" }] };
+    const html = createStaticWebsiteFiles(imported).find(file => file.path === "blog-html/index.html")!.content;
+    expect(html.match(/class="senuke-blog-card"/g)).toHaveLength(8);
+    expect(html).toContain('class="senuke-hero-image"');
+    expect(html).toContain('src="https://example.com/blog.jpg"');
+    expect(html).not.toContain('class="senuke-faq');
+    expect(html.match(/<h1>/g)).toHaveLength(1);
+    expect(html).toContain('id="articles"');
+    const wordpress = renderWebsitePageWordPressBlocks(imported, blog, { mediaAssets: imported.mediaAssets });
+    expect(wordpress).toContain('"imageUrl":"https://example.com/blog.jpg"');
+    expect(wordpress.match(/class="senuke-blog-card"/g)).toHaveLength(8);
+    expect(wordpress).not.toContain('wp:senuke/faq');
+  });
+
+  it("renders document heroes without a sales button", () => {
+    const hero = model.pages[0].sections.find(section => section.componentId === "hero.local_service")!;
+    const html = renderWebsiteComponentHtml({ ...hero, variant: "document" });
+    expect(html).toContain("senuke-document");
+    expect(html).not.toContain('class="senuke-button"');
   });
 
   it("publishes the required root Home page as index.html", () => {

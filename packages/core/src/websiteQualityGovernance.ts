@@ -63,7 +63,7 @@ export type WebsiteQualityGovernanceResult = {
 
 const instructionLeakPatterns: Array<[string, RegExp]> = [
   ["placeholder_copy", /\b(?:lorem ipsum|placeholder(?: text| copy)?|content goes here|sample text)\b/i],
-  ["editor_instruction", /\b(?:insert|replace|add|provide|enter) (?:the |your |a )?(?:business name|company name|phone|email|address|city|service|proof|evidence|credential|testimonial)\b/i],
+  ["editor_instruction", /\b(?:insert|replace|add|provide(?! (?:a |the )?service\b(?! (?:name|description|details|summary)\b))|enter) (?:the |your |a )?(?:business name|company name|phone|email|address|city|service|proof|evidence|credential|testimonial)\b/i],
   ["unfinished_marker", /(?:\bTODO\b|\bTBD\b|\bTK\b|\[(?:business|company|city|location|service|phone|email|address)[^\]]*\]|\{\{?\s*(?:business|company|city|location|service|phone|email|address)[^}]*\}\}?)/i],
   ["internal_workflow_language", /\b(?:not approved|requires? confirmation|reload the approved|proof required|evidence (?:needed|required)|reviewer instruction|content brief|do not publish)\b/i],
   ["prompt_language", /\b(?:as an ai|generate (?:a|the|this) (?:page|section|website)|follow (?:these|the) instructions|return (?:valid )?json)\b/i],

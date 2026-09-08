@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
+import { createStaticWebsiteFiles } from "@webtummy/core/website-renderer";
+vi.mock("@webtummy/core/safe-public-fetch", () => ({ safePublicFetch: vi.fn() }));
+import { describe, expect, it, vi } from "vitest";
 import sharp from "sharp";
 import type { WebsiteModel } from "@webtummy/core/website-model";
 import { optimizeEmbeddedWebsiteMedia, optimizeWebsiteImage, websiteAssetRole } from "./website-media-optimization.js";
@@ -58,5 +61,26 @@ describe("website publication image optimization", () => {
     const result = await optimizeEmbeddedWebsiteMedia(original);
     expect(result.model.mediaAssets[0].sourceUrl).toBe("https://cdn.example.com/hero.webp");
     expect(result.optimizedCount).toBe(0);
+  });
+});
+
+
+describe("self-contained image exports", () => {
+  it("packages remote approved images as local optimized files without changing their approved source", async () => {
+    const png = await sharp({ create: { width: 320, height: 200, channels: 3, background: "#2563eb" } }).png().toBuffer();
+    vi.mocked(safePublicFetch).mockResolvedValueOnce(new Response(new Uint8Array(png), { headers: { "content-type": "image/png" } }));
+    const original = model("https://cdn.example.com/image?token=temporary");
+    const result = await optimizeEmbeddedWebsiteMedia(original, { downloadRemote: true });
+    const files = createStaticWebsiteFiles(result.model);
+    expect(files.some(file => file.path === "assets/media/hero-image.webp")).toBe(true);
+    expect(files.find(file => file.path === "index.html")!.content).toContain('src="assets/media/hero-image.webp"');
+    expect(files.find(file => file.path === "index.html")!.content).not.toContain("token=temporary");
+    expect(original.mediaAssets[0].sourceUrl).toContain("token=temporary");
+  });
+  it("stops on an unavailable image or excessive image size instead of shipping a broken link", async () => {
+    for (const response of [new Response("Missing", { status: 404 }), new Response("x", { headers: { "content-type": "image/png", "content-length": "999999999" } })]) {
+      vi.mocked(safePublicFetch).mockResolvedValueOnce(response);
+      await expect(optimizeEmbeddedWebsiteMedia(model("https://cdn.example.com/image"), { downloadRemote: true })).rejects.toThrow();
+    }
   });
 });

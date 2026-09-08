@@ -650,3 +650,14 @@ describe("Foundation company name in page schema", () => {
     expect(JSON.stringify(schema)).not.toContain("Old company");
   });
 });
+
+
+describe("imported blog classification", () => {
+  it("recognizes the index and articles before commercial or supporting intent", () => {
+    const input = { pageName: "Simahi Blog", primaryKeyword: "insurance CRM", searchIntent: "commercial" };
+    expect(importedWebsiteRouteAssignment({ ...input, targetUrl: "https://example.com/blog.html" }).pageType).toBe("blog_section");
+    expect(importedWebsiteRouteAssignment({ ...input, targetUrl: "https://example.com/blog/article.html" }).pageType).toBe("blog_article");
+    expect(wordpressPostTypeForPage({ pageType: "supporting", slug: "/blog/article-html/", seo: { canonicalUrl: "/" } })).toBe("post");
+    expect(wordpressPostTypeForPage({ pageType: "service", slug: "/blog-html/" })).toBe("page");
+  });
+});

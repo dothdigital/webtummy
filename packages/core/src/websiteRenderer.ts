@@ -137,13 +137,22 @@ const normalizedPath = (slug: string) => {
   return path ? `/${path}/` : "/";
 };
 
-export const isWebsiteBlogSectionPage = (page: Pick<WebsitePageModel, "pageType" | "name" | "slug">) =>
-  page.pageType.trim().toLowerCase() === "blog_section"
-  || (page.pageType.trim().toLowerCase() === "blog" && /^(?:blog|insights|resources)$/i.test(page.name.trim()))
-  || normalizedPath(page.slug) === "/blog/";
+type BlogPageIdentity = { pageType: string; name?: string; slug?: string; seo?: { canonicalUrl?: string } };
 
-export const isWebsiteBlogArticlePage = (page: Pick<WebsitePageModel, "pageType">) =>
-  /^(?:blog[_-]?article|blog[_-]?post|post|article|news)$/i.test(page.pageType.trim());
+const blogSourcePath = (page: BlogPageIdentity) => {
+  try { return new URL(page.seo?.canonicalUrl || page.slug || "/", "https://website.invalid").pathname.replace(/\/+$/, ""); }
+  catch { return ""; }
+};
+
+export const isWebsiteBlogSectionPage = (page: BlogPageIdentity) =>
+  page.pageType.trim().toLowerCase() === "blog_section"
+  || (page.pageType.trim().toLowerCase() === "blog" && /^(?:blog|insights|resources)$/i.test(page.name?.trim() || ""))
+  || /^\/blog(?:\.(?:html?|php|aspx?))?$/i.test(blogSourcePath(page))
+  || /^\/blog(?:-html)?\/?$/i.test(page.slug || "");
+
+export const isWebsiteBlogArticlePage = (page: BlogPageIdentity) =>
+  /^(?:blog[_-]?article|blog[_-]?post|post|article|news)$/i.test(page.pageType.trim())
+  || (/^(?:supporting|service|blog)$/i.test(page.pageType.trim()) && (/^\/blog\/[^/]+/i.test(blogSourcePath(page)) || /^\/blog\/[^/]+/i.test(page.slug || "")));
 
 /**
  * Keep article slugs simple in Site Architect while publishing them beneath
@@ -267,7 +276,7 @@ export function renderWebsiteComponentHtml(
         return `<section class="senuke-component senuke-layout-section senuke-layout-${escapeHtml(variant)} senuke-layout-bg-${escapeHtml(background)} senuke-layout-text-${escapeHtml(textColor)} senuke-layout-spacing-${escapeHtml(spacing)}">${image}${overlayHtml}<div class="senuke-layout-columns">${columns}</div></section>`;
       }
     case "global.header":
-      return `<header class="senuke-component senuke-header"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "primaryCtaLabel") ? `<a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a>` : ""}</header>`;
+      return `<header class="senuke-component senuke-header"><strong>${escapeHtml(propString(component, "businessName"))}</strong>${propString(component, "primaryCtaLabel") ? `${component.variant === "document" ? "" : `<a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a>`}` : ""}</header>`;
     case "hero.local_service":
       {
         const assetId = propString(component, "imageAssetId");
@@ -276,7 +285,7 @@ export function renderWebsiteComponentHtml(
         const image = assetId && renderableImageUrl(imageUrl)
           ? `<img class="senuke-hero-image" src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || propString(component, "headline"))}" width="1200" height="800" loading="eager" fetchpriority="high" decoding="async">`
           : "";
-        return `<section class="senuke-component senuke-hero senuke-${escapeHtml(component.variant)} ${alignmentClass}"><div>${propString(component, "eyebrow") ? `<p class="senuke-eyebrow">${escapeHtml(propString(component, "eyebrow"))}</p>` : ""}<h1>${escapeHtml(propString(component, "headline"))}</h1><p class="senuke-lead">${escapeHtml(propString(component, "summary"))}</p><a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a></div>${image}</section>`;
+        return `<section class="senuke-component senuke-hero senuke-${escapeHtml(component.variant)} ${alignmentClass}"><div>${propString(component, "eyebrow") ? `<p class="senuke-eyebrow">${escapeHtml(propString(component, "eyebrow"))}</p>` : ""}<h1>${escapeHtml(propString(component, "headline"))}</h1><p class="senuke-lead">${escapeHtml(propString(component, "summary"))}</p>${component.variant === "document" ? "" : `<a class="senuke-button" href="${escapeHtml(resolvedComponentUrl(propString(component, "primaryCtaUrl"), options))}">${escapeHtml(propString(component, "primaryCtaLabel"))}</a>`}</div>${image}</section>`;
       }
     case "content.rich_text":
       return `<section class="senuke-component senuke-rich-text ${alignmentClass}"><h2>${heading}</h2>${paragraphs(propString(component, "body"))}</section>`;
@@ -439,16 +448,22 @@ const renderWebsiteBlogIndexHtml = (
   const sections = model.pages.filter(isWebsiteBlogSectionPage);
   const articles = model.pages.filter((candidate) => isWebsiteBlogArticlePage(candidate)
     && (candidate.parentPageId === blogSection.pageId || (!candidate.parentPageId && sections.length === 1)));
+  // Keep the authored hero and its approved image instead of replacing it with
+  // an unrelated text-only archive heading. The grid supplies the archive body.
+  const heroHtml = hero ? renderWebsiteComponentHtml(hero, options) : "";
+  const archiveHeading = hero ? "" : `<div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Blog</p><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(introduction)}</p></div>`;
   if (!articles.length) {
-    return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Blog</p><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(introduction)}</p></div><p>New articles are being prepared.</p></section>`;
+    return `${heroHtml}<section id="articles" class="senuke-blog-index">${archiveHeading}<p>New articles are being prepared.</p></section>`;
   }
-  return `<section class="senuke-blog-index"><div class="senuke-blog-index-heading"><p class="senuke-eyebrow">Blog</p><h1>${escapeHtml(heading)}</h1><p>${escapeHtml(introduction)}</p></div><div class="senuke-blog-grid">${articles.map((article) => {
+  return `${heroHtml}<section id="articles" class="senuke-blog-index">${archiveHeading}<div class="senuke-blog-grid">${articles.map((article) => {
     const publicationPath = websitePagePublicationPath(model, article);
     const href = options.internalUrlMap?.[publicationPath] || publicationPath;
-    const heroAssetId = String(article.sections.find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
+    const heroAssetId = String(flattenWebsiteComponents(article.sections).find((section) => section.componentId === "hero.local_service")?.props.imageAssetId || "");
     const asset = model.mediaAssets.find((candidate) => candidate.assetId === heroAssetId);
     const imageUrl = options.assetUrls?.[heroAssetId] || asset?.sourceUrl || "";
-    return `<article class="senuke-blog-card">${imageUrl && renderableImageUrl(imageUrl) ? `<a class="senuke-blog-card-image" href="${escapeHtml(href)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || article.name)}" width="640" height="360" loading="lazy" decoding="async"></a>` : ""}<div><p class="senuke-blog-topic">${escapeHtml(article.seo.primaryKeyword || "Article")}</p><h3><a href="${escapeHtml(href)}">${escapeHtml(article.name)}</a></h3><p>${escapeHtml(article.seo.metaDescription)}</p><a class="senuke-blog-read-more" href="${escapeHtml(href)}">Read article <span aria-hidden="true">→</span></a></div></article>`;
+    const articleWords = flattenWebsiteComponents(article.sections).filter(section => section.componentId === "content.rich_text").map(section => propString(section, "body")).join(" ").trim().split(/\s+/).filter(Boolean).length;
+    const readingMinutes = Math.max(1, Math.ceil(articleWords / 200));
+    return `<article class="senuke-blog-card">${imageUrl && renderableImageUrl(imageUrl) ? `<a class="senuke-blog-card-image" href="${escapeHtml(href)}"><img src="${escapeHtml(imageUrl)}" alt="${escapeHtml(asset?.altText || article.name)}" width="640" height="360" loading="lazy" decoding="async"></a>` : ""}<div><p class="senuke-blog-topic">${readingMinutes} min read</p><h3><a href="${escapeHtml(href)}">${escapeHtml(article.name)}</a></h3><p>${escapeHtml(article.seo.metaDescription)}</p><a class="senuke-blog-read-more" href="${escapeHtml(href)}">Read article <span aria-hidden="true">→</span></a></div></article>`;
   }).join("")}</div></section>`;
 };
 
@@ -914,12 +929,12 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-layout-text-text{color:var(--senuke-text)}.senuke-layout-text-muted{color:var(--senuke-muted)}.senuke-layout-text-white{color:#fff}.senuke-layout-text-auto.senuke-layout-bg-primary,.senuke-layout-text-auto.senuke-layout-bg-secondary,.senuke-layout-text-auto.senuke-layout-bg-dark{color:#fff}
 .senuke-layout-text-white .senuke-layout-column h1,.senuke-layout-text-white .senuke-layout-column h2,.senuke-layout-text-white .senuke-layout-column h3,.senuke-layout-text-white .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-primary .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-secondary .senuke-layout-column p,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h1,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h2,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column h3,.senuke-layout-text-auto.senuke-layout-bg-dark .senuke-layout-column p{color:#fff}
 .senuke-layout-spacing-compact{padding-block:1.75rem}.senuke-layout-spacing-comfortable{padding-block:clamp(3rem,6vw,5rem)}.senuke-layout-spacing-spacious{padding-block:clamp(4.5rem,9vw,7.5rem)}
-.senuke-second-fold{text-align:center}
-.senuke-second-fold>h2,.senuke-second-fold>div>h2{max-width:30ch;margin:0 auto 1.15rem;text-align:center;text-wrap:balance}
-.senuke-second-fold>p,.senuke-second-fold>div>p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;text-align:center}
-.senuke-rich-text{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}
-.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}
-.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-second-fold{text-align:inherit}
+.senuke-second-fold>h2,.senuke-second-fold>div>h2{max-width:30ch;margin:0 0 1.15rem;text-align:inherit;text-wrap:balance}
+.senuke-second-fold>p,.senuke-second-fold>div>p{max-width:var(--senuke-reading-max,72ch);margin:.8rem 0 0;text-align:inherit}
+.senuke-rich-text{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:left}
+.senuke-rich-text h2{max-width:30ch;margin:0 0 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}
+.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem 0 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
 .senuke-internal-link-section{padding-block:clamp(3rem,6vw,5rem)}
 .senuke-internal-link-section h2{max-width:32ch;margin:0 0 1rem;font-size:clamp(1.75rem,3vw,2.5rem);letter-spacing:-.02em}
 .senuke-internal-link-introduction,.senuke-internal-link-closing{max-width:78ch;color:var(--senuke-muted);font-size:1rem;line-height:1.8}
@@ -935,7 +950,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-heading-regular h1,.senuke-heading-regular h2{font-weight:500}.senuke-heading-semibold h1,.senuke-heading-semibold h2{font-weight:650}.senuke-heading-bold h1,.senuke-heading-bold h2{font-weight:800}.senuke-heading-black h1,.senuke-heading-black h2{font-weight:950}
 .senuke-heading-color-primary h1,.senuke-heading-color-primary h2{color:var(--senuke-primary)}.senuke-heading-color-secondary h1,.senuke-heading-color-secondary h2{color:var(--senuke-secondary)}.senuke-heading-color-accent h1,.senuke-heading-color-accent h2{color:var(--senuke-accent)}.senuke-heading-color-text h1,.senuke-heading-color-text h2{color:var(--senuke-text)}
 .senuke-hero{min-height:64vh;display:grid;grid-template-columns:minmax(0,1fr) minmax(260px,.8fr);align-items:center;gap:clamp(2rem,6vw,5rem)}
-.senuke-hero-image{width:100%;max-height:620px;border-radius:1.25rem;object-fit:cover}
+.senuke-hero-image{width:100%;height:auto;max-height:620px;border-radius:1.25rem;object-fit:cover}
 .senuke-media{padding-block:clamp(1.5rem,4vw,3rem);text-align:center}
 .senuke-media img{display:block;width:100%;max-height:620px;object-fit:cover;border-radius:1.25rem}
 .senuke-media-wide{width:100%;max-width:none}
@@ -944,7 +959,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-media figcaption{margin-top:.75rem;color:var(--senuke-muted);font-size:.9rem}
 .senuke-eyebrow{font-weight:800;color:var(--senuke-primary);text-transform:uppercase;letter-spacing:.08em}
 .senuke-lead{font-size:1.2rem;max-width:62ch;color:var(--senuke-muted)}
-.senuke-button{display:inline-block;width:max-content;border:0;border-radius:.75rem;background:var(--senuke-primary);color:#fff!important;font-weight:800;padding:.85rem 1.2rem;text-decoration:none}
+.senuke-button{display:inline-block;width:fit-content;max-width:100%;white-space:normal;overflow-wrap:anywhere;border:0;border-radius:.75rem;background:var(--senuke-primary);color:#fff!important;font-weight:800;padding:.85rem 1.2rem;text-decoration:none}
 .senuke-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:1rem}
 .senuke-card,.senuke-faq details{border:1px solid color-mix(in srgb,var(--senuke-muted) 20%,transparent);border-radius:1rem;background:var(--senuke-surface);padding:1.25rem}
 .senuke-steps{display:grid;gap:1rem}
@@ -1053,16 +1068,16 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 `;
 
 const SENUKE_PROFESSIONAL_CSS = `
-body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-surface) 30%,var(--senuke-background))}
+body{background:var(--senuke-surface)}
 .senuke-site-header{position:sticky;top:0;z-index:50;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:color-mix(in srgb,var(--senuke-surface) 92%,transparent);border-bottom:1px solid color-mix(in srgb,var(--senuke-muted) 16%,transparent);backdrop-filter:blur(16px);box-shadow:0 10px 35px rgba(15,23,42,.06)}
 .senuke-site-header>nav>ul{align-items:center}.senuke-site-header a{text-decoration:none;font-weight:750}
-.senuke-hero{position:relative;isolation:isolate;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:radial-gradient(circle at 90% 10%,color-mix(in srgb,var(--senuke-accent) 25%,transparent),transparent 28%),linear-gradient(135deg,var(--senuke-background),color-mix(in srgb,var(--senuke-primary) 22%,var(--senuke-background)) 55%,color-mix(in srgb,var(--senuke-secondary) 16%,var(--senuke-background)))}
-.senuke-hero h1{letter-spacing:-.045em;text-wrap:balance}.senuke-hero-image{aspect-ratio:3/2;box-shadow:0 30px 80px rgba(15,23,42,.2)}
+.senuke-hero{position:relative;isolation:isolate;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:linear-gradient(120deg,color-mix(in srgb,var(--senuke-primary) 6%,var(--senuke-surface)),var(--senuke-surface))}
+.senuke-hero>div{min-width:0}.senuke-hero h1{margin:1rem 0 1.5rem;font-size:clamp(2.35rem,4.5vw,4.25rem);font-weight:750;line-height:1.08;letter-spacing:-.045em;text-wrap:balance}.senuke-hero-image{aspect-ratio:4/3;box-shadow:0 18px 48px rgba(15,23,42,.1)}
 .senuke-hero .senuke-lead,.senuke-rich-text>p,.senuke-internal-link-introduction,.senuke-internal-link-closing{color:color-mix(in srgb,var(--senuke-text) 78%,transparent)}
 .senuke-card,.senuke-faq details,.senuke-contact-form form,.senuke-site-header li ul,.senuke-mobile-menu-panel{color:#0f172a}
 .senuke-card p,.senuke-faq details p,.senuke-contact-form form p{color:#475569}
 .senuke-contact-form input,.senuke-contact-form textarea{color:var(--senuke-text)}
-.senuke-rich-text{display:block;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:center}.senuke-rich-text h2{max-width:30ch;margin:0 auto 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem auto 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
+.senuke-rich-text{display:block;width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));padding-block:clamp(3rem,5vw,4.5rem);text-align:left}.senuke-rich-text h2{max-width:30ch;margin:0 0 1.15rem;font-size:clamp(1.75rem,3vw,2.35rem);letter-spacing:-.02em;text-wrap:balance}.senuke-rich-text p{max-width:var(--senuke-reading-max,72ch);margin:.8rem 0 0;color:var(--senuke-muted);font-size:1rem;line-height:1.75}
 .senuke-internal-link-section{padding-block:clamp(3rem,6vw,5rem)}.senuke-internal-link-section h2{max-width:32ch;margin:0 0 1rem;font-size:clamp(1.75rem,3vw,2.5rem);letter-spacing:-.02em}.senuke-internal-link-introduction,.senuke-internal-link-closing{max-width:78ch;color:var(--senuke-muted);font-size:1rem;line-height:1.8}.senuke-internal-link-section ul{display:flex;flex-wrap:wrap;gap:.7rem 1.1rem;list-style:none;margin:1.5rem 0;padding:0}.senuke-internal-link-section a{color:var(--senuke-primary);font-weight:800;text-underline-offset:.2em}.senuke-internal-link-section-cards ul{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:1rem}.senuke-internal-link-section-cards a{display:flex;min-height:100%;align-items:center;justify-content:space-between;border:1px solid color-mix(in srgb,var(--senuke-primary) 18%,transparent);border-radius:1rem;background:var(--senuke-surface);padding:1rem 1.1rem;text-decoration:none;box-shadow:0 12px 35px rgba(15,23,42,.07)}
 .senuke-align-left{text-align:left}.senuke-align-center{text-align:center}.senuke-align-right{text-align:right}.senuke-align-left>h1,.senuke-align-left>h2,.senuke-align-left>p,.senuke-align-left>div>h1,.senuke-align-left>div>h2,.senuke-align-left>div>p{margin-left:0;margin-right:auto;text-align:left}.senuke-align-center>h1,.senuke-align-center>h2,.senuke-align-center>p,.senuke-align-center>div>h1,.senuke-align-center>div>h2,.senuke-align-center>div>p{margin-left:auto;margin-right:auto;text-align:center}.senuke-align-right>h1,.senuke-align-right>h2,.senuke-align-right>p,.senuke-align-right>div>h1,.senuke-align-right>div>h2,.senuke-align-right>div>p{margin-left:auto;margin-right:0;text-align:right}
 .senuke-heading-small h1,.senuke-heading-small h2{font-size:clamp(1.55rem,3vw,2.35rem)}.senuke-heading-medium h1,.senuke-heading-medium h2{font-size:clamp(2rem,4vw,3.15rem)}.senuke-heading-large h1,.senuke-heading-large h2{font-size:clamp(2.6rem,6vw,4.5rem)}.senuke-heading-regular h1,.senuke-heading-regular h2{font-weight:500}.senuke-heading-semibold h1,.senuke-heading-semibold h2{font-weight:650}.senuke-heading-bold h1,.senuke-heading-bold h2{font-weight:800}.senuke-heading-black h1,.senuke-heading-black h2{font-weight:950}.senuke-heading-color-primary h1,.senuke-heading-color-primary h2{color:var(--senuke-primary)}.senuke-heading-color-secondary h1,.senuke-heading-color-secondary h2{color:var(--senuke-secondary)}.senuke-heading-color-accent h1,.senuke-heading-color-accent h2{color:var(--senuke-accent)}.senuke-heading-color-text h1,.senuke-heading-color-text h2{color:var(--senuke-text)}
@@ -1075,9 +1090,20 @@ body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-sur
 .senuke-testimonial-card p{display:block;margin:0;font-size:1.08rem;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;max-height:none;-webkit-line-clamp:unset}.senuke-testimonial-card footer{overflow-wrap:anywhere}.senuke-testimonial-controls:not([hidden]){display:flex;align-items:center;justify-content:center;gap:1rem;margin-top:1rem}.senuke-testimonial-controls button{padding:.6rem 1rem;border:1px solid currentColor;border-radius:.5rem;background:var(--senuke-surface);color:var(--senuke-primary);font:inherit;cursor:pointer}.senuke-testimonial-controls button:disabled{opacity:.45;cursor:default}.senuke-testimonial-card footer{margin-top:1.5rem;color:var(--senuke-primary);font-weight:850}
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
-.senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card>div{padding:1.35rem}.senuke-blog-card h3{margin:.35rem 0 .65rem;font-size:1.35rem}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}
-.senuke-component h1,.senuke-component h2,.senuke-component h3,.senuke-component h4,.senuke-component h5,.senuke-component h6{margin-left:auto!important;margin-right:auto!important;text-align:center!important}
-.senuke-layout-column>.senuke-rich-text p{text-align:left}
+.senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card{display:flex;flex-direction:column;box-shadow:0 6px 22px rgba(15,23,42,.04);border-radius:.8rem}.senuke-blog-card>div{display:flex;flex-direction:column;flex:1;padding:1.5rem}.senuke-blog-read-more{margin-top:auto;padding-top:.75rem}.senuke-blog-grid{gap:1.75rem}.senuke-blog-card p{font-size:.94rem;line-height:1.7}.senuke-blog-card h3{margin:.65rem 0 .85rem;font-size:1.25rem;line-height:1.35;letter-spacing:-.015em}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}
+.senuke-layout-column>.senuke-rich-text p{text-align:inherit}
+.senuke-component{scroll-margin-top:7rem}
+.senuke-hero.senuke-document{display:block;min-height:0;padding-block:3.5rem 2.75rem;background:color-mix(in srgb,var(--senuke-primary) 4%,var(--senuke-surface));border-bottom:1px solid color-mix(in srgb,var(--senuke-muted) 16%,transparent)}
+.senuke-document>div{max-width:780px;margin-inline:auto}.senuke-document h1{max-width:100%;font-size:clamp(2rem,4vw,3.25rem)}.senuke-document .senuke-lead{max-width:68ch;font-size:1.05rem}
+:is(main,.entry-content):has(.senuke-document) .senuke-rich-text{width:min(780px,calc(100% - 3rem));padding-block:1.75rem}
+:is(main,.entry-content):has(.senuke-document) .senuke-rich-text h2{max-width:100%;font-size:1.4rem;line-height:1.35}
+:is(main,.entry-content):has(.senuke-document) .senuke-rich-text p{max-width:100%;font-size:1rem;line-height:1.85;color:var(--senuke-text)}
+:is(main,.entry-content):has(.senuke-document) .senuke-rich-text+.senuke-rich-text{border-top:1px solid color-mix(in srgb,var(--senuke-muted) 12%,transparent)}
+.senuke-rich-text.senuke-second-fold{box-shadow:none;border-radius:0;margin-top:0}
+.senuke-component>h2{line-height:1.2;letter-spacing:-.025em}.senuke-component>h2+p{max-width:72ch}
+.senuke-faq{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)))}
+.senuke-cta{padding:clamp(2rem,4vw,3.5rem);border-radius:1rem;box-shadow:none}.senuke-cta h2{max-width:26ch;font-size:clamp(1.8rem,3vw,2.6rem)}.senuke-cta p{max-width:62ch}
+@media(max-width:640px){.senuke-hero{gap:2rem}.senuke-hero h1{font-size:2.5rem}.senuke-hero-image{aspect-ratio:4/3;max-height:none}.senuke-blog-grid{grid-template-columns:1fr}.senuke-hero.senuke-document{padding-block:2.5rem 2rem}.senuke-document h1{font-size:2rem}}
 @media(max-width:860px){.senuke-rich-text{padding-block:2.75rem}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
 `;
 

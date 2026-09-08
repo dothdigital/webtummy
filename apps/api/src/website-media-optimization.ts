@@ -1,4 +1,5 @@
 import sharp from "sharp";
+import { safePublicFetch } from "@webtummy/core/safe-public-fetch";
 import type { WebsiteModel } from "@webtummy/core/website-model";
 
 type WebsiteImageRole = "hero" | "logo" | "favicon" | "background" | "content";
@@ -76,7 +77,33 @@ export function websiteAssetRole(model: WebsiteModel, assetId: string): WebsiteI
   return "content";
 }
 
-export async function optimizeEmbeddedWebsiteMedia(model: WebsiteModel): Promise<{
+async function downloadWebsiteImage(url: string, assetId: string) {
+  const response = await safePublicFetch(url, { signal: AbortSignal.timeout(20_000) });
+  const mimeType = (response.headers.get("content-type") || "").split(";")[0].toLowerCase();
+  if (!response.ok || !/^image\/(?:png|jpeg|webp|gif|svg\+xml)$/.test(mimeType) || !response.body) {
+    await response.body?.cancel();
+    throw new Error(`Cannot package approved image ${assetId}; the image source is unavailable or invalid.`);
+  }
+  const limit = 16 * 1024 * 1024;
+  if (Number(response.headers.get("content-length") || 0) > limit) {
+    await response.body.cancel();
+    throw new Error(`Approved image ${assetId} exceeds the 16 MB export limit.`);
+  }
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    while (true) {
+      const result = await reader.read();
+      if (result.done) break;
+      bytes += result.value.byteLength;
+      if (bytes > limit) throw new Error(`Approved image ${assetId} exceeds the 16 MB export limit.`);
+      chunks.push(result.value);
+    }
+  } finally { await reader.cancel().catch(() => {}); reader.releaseLock(); }
+  return { bytes: Buffer.concat(chunks), mimeType };
+}
+
+export async function optimizeEmbeddedWebsiteMedia(model: WebsiteModel, options: { downloadRemote?: boolean } = {}): Promise<{
   model: WebsiteModel;
   optimizedCount: number;
   originalBytes: number;
@@ -85,18 +112,24 @@ export async function optimizeEmbeddedWebsiteMedia(model: WebsiteModel): Promise
   let optimizedCount = 0;
   let originalBytes = 0;
   let publishedBytes = 0;
-  const mediaAssets = await Promise.all(model.mediaAssets.map(async (asset) => {
-    const match = asset.sourceUrl?.match(embeddedImagePattern);
-    if (!match) return asset;
-    const sourceBytes = Buffer.from(match[2].replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/"), "base64");
-    const optimized = await optimizeWebsiteImage(sourceBytes, match[1], websiteAssetRole(model, asset.assetId));
-    originalBytes += optimized.originalBytes;
-    publishedBytes += optimized.bytes.length;
-    if (optimized.optimized) optimizedCount += 1;
-    return {
-      ...asset,
-      sourceUrl: `data:${optimized.mimeType};base64,${optimized.bytes.toString("base64")}`,
-    };
-  }));
+  const mediaAssets: WebsiteModel["mediaAssets"] = [];
+  // Limit download/encoding concurrency so a large export does not monopolize
+  // the API's memory or CPU alongside ordinary registration requests.
+  for (let offset = 0; offset < model.mediaAssets.length; offset += 2) {
+    mediaAssets.push(...await Promise.all(model.mediaAssets.slice(offset, offset + 2).map(async (asset) => {
+      const match = asset.sourceUrl?.match(embeddedImagePattern);
+      const remote = options.downloadRemote && asset.sourceUrl?.startsWith("https://");
+      if (!match && !remote) return asset;
+      const source = match
+        ? { bytes: Buffer.from(match[2].replace(/\s+/g, "").replace(/-/g, "+").replace(/_/g, "/"), "base64"), mimeType: match[1] }
+        : await downloadWebsiteImage(asset.sourceUrl!, asset.assetId);
+      originalBytes += source.bytes.length;
+      if (options.downloadRemote && originalBytes > 128 * 1024 * 1024) throw new Error("Website images exceed the 128 MB export input limit.");
+      const optimized = await optimizeWebsiteImage(source.bytes, source.mimeType, websiteAssetRole(model, asset.assetId));
+      publishedBytes += optimized.bytes.length;
+      if (optimized.optimized) optimizedCount += 1;
+      return { ...asset, sourceUrl: `data:${optimized.mimeType};base64,${optimized.bytes.toString("base64")}` };
+    })));
+  }
   return { model: { ...model, mediaAssets }, optimizedCount, originalBytes, publishedBytes };
 }
