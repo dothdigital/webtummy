@@ -259,6 +259,6 @@ startLocalSeoAuditQueueWorker();
 startLocalGridScanQueueWorker();
 startJvZooQueueWorker();
 
-app.listen(config.port, () => {
+app.listen(config.port, config.host, () => {
   console.log(`[api] SEnuke AI - AI Growth Operating System API listening on http://localhost:${config.port}`);
 });

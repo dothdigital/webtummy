@@ -7,6 +7,7 @@ import { processStoredJvZooEvent, reconcileJvZooLifecycle } from "../commercial-
 import { activateJvZooPurchase, inspectJvZooActivation, requestJvZooActivation } from "../jvzoo-activation.js";
 import { jvZooProcessingQueue, queueConnection, type JvZooProcessingQueueJobData } from "../queue.js";
 import { acceptJvZooWebhook } from "../jvzoo-intake.js";
+import { authRateLimit } from "../auth-rate-limit.js";
 
 export const jvZooRouter = Router();
 const RECOVERY_WINDOW_SECONDS = 15 * 60;
@@ -57,8 +58,8 @@ jvZooRouter.post("/ipn", async (req, res) => {
   }
 });
 
-const tokenSchema = z.object({ token: z.string().min(32) });
-jvZooRouter.post("/activation/inspect", async (req, res) => {
+const tokenSchema = z.object({ token: z.string().min(32).max(256) });
+jvZooRouter.post("/activation/inspect", authRateLimit({ scope: "activation-inspect", limit: 60, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = tokenSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: "invalid activation token" });
   const activation = await inspectJvZooActivation(parsed.data.token);
@@ -75,9 +76,9 @@ jvZooRouter.post("/activation/request", async (req, res) => {
   res.json({ ok: true, message: "If an eligible JVZoo purchase exists, a secure activation link has been sent." });
 });
 
-jvZooRouter.post("/activation/complete", async (req, res) => {
+jvZooRouter.post("/activation/complete", authRateLimit({ scope: "activation-complete", limit: 20, windowSeconds: 15 * 60, identityFields: ["token"] }), async (req, res) => {
   const parsed = z.object({
-    token: z.string().min(32),
+    token: z.string().min(32).max(256),
     name: z.string().trim().min(1).max(180).optional(),
     password: z.string().min(8).max(128),
   }).safeParse(req.body);

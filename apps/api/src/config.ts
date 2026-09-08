@@ -41,6 +41,7 @@ const searchConsoleCredentials = process.env.GOOGLE_SEARCH_CONSOLE_CLIENT_ID || 
 export const config = {
   environment: process.env.APP_ENV ?? process.env.NODE_ENV ?? "development",
   port: apiPort,
+  host: process.env.API_HOST ?? "0.0.0.0",
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   jwtSecret: process.env.JWT_SECRET ?? "dev-only-change-me",
   appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
