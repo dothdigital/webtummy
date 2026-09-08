@@ -86,6 +86,7 @@ export const config = {
   googleBusinessProfileClientSecret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET ?? "",
   googleBusinessProfileWritesEnabled: process.env.GOOGLE_BUSINESS_PROFILE_WRITES_ENABLED?.toLowerCase() === "true",
   jvzooSecretKey: process.env.JVZOO_SECRET_KEY ?? "",
+  jvzooValidatePaymentTotal: process.env.JVZOO_VALIDATE_PAYMENT_TOTAL !== "false",
   jvzooPreviousSecretKey: process.env.JVZOO_PREVIOUS_SECRET_KEY ?? "",
   jvzooCustomerPortalUrl: process.env.JVZOO_CUSTOMER_PORTAL_URL ?? "https://customer.jvzoo.com/",
   // Legacy read-only adapter configuration. New commercial checkout and

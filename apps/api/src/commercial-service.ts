@@ -853,10 +853,12 @@ export function validateJvZooRenewalPayment(input: {
   currencyProvided: boolean;
   expectedAmountCents: number;
   expectedCurrency: string;
+  validatePaymentTotal?: boolean;
 }) {
   if (!["BILL", "REBILL"].includes(input.transactionType) || input.nextStatus !== "active") return null;
   const reportedAmountCents = amountCents(input.amount);
   if (reportedAmountCents === null) return "missing_required_provider_fields";
+  if (input.validatePaymentTotal === false) return null;
   if (reportedAmountCents !== input.expectedAmountCents) return "rebill_amount_mismatch";
   if (input.currencyProvided && input.currency.trim().toUpperCase() !== input.expectedCurrency.trim().toUpperCase()) return "currency_mismatch";
   return null;
@@ -874,6 +876,7 @@ type JvZooPriceCandidate = {
 export function selectJvZooPriceMapping<T extends JvZooPriceCandidate>(
   candidates: T[],
   input: { amount: string; currency: string; occurredAt: Date | null },
+  validatePaymentTotal = true,
 ): { price: T | null; error: string | null } {
   const at = input.occurredAt ?? new Date();
   const effective = candidates.filter((candidate) => (
@@ -882,6 +885,11 @@ export function selectJvZooPriceMapping<T extends JvZooPriceCandidate>(
     && (candidate.status === "active" || Boolean(candidate.effectiveTo))
   ));
   if (!effective.length) return { price: null, error: "product_not_mapped" };
+  if (!validatePaymentTotal) {
+    return effective.length === 1
+      ? { price: effective[0], error: null }
+      : { price: null, error: "price_mapping_ambiguous" };
+  }
   const currency = input.currency.trim().toUpperCase();
   const currencyMatches = effective.filter((candidate) => candidate.currency.toUpperCase() === currency);
   if (!currencyMatches.length) return { price: null, error: "currency_mismatch" };
@@ -908,7 +916,7 @@ async function mappedJvZooPrice(normalized: ReturnType<typeof normalizeJvZooIpn>
     include: { planVersion: { include: { billingPlan: true, policyVersion: true } } },
     orderBy: { effectiveFrom: "desc" },
   });
-  return selectJvZooPriceMapping(candidates, normalized);
+  return selectJvZooPriceMapping(candidates, normalized, config.jvzooValidatePaymentTotal);
 }
 
 async function mappedJvZooAddon(normalized: ReturnType<typeof normalizeJvZooIpn>) {
@@ -917,6 +925,11 @@ async function mappedJvZooAddon(normalized: ReturnType<typeof normalizeJvZooIpn>
     where: { provider: COMMERCIAL_PROVIDER, providerProductRef: normalized.productId, status: "active" },
   });
   if (!candidates.length) return { addon: null, error: "product_not_mapped" } as const;
+  if (!config.jvzooValidatePaymentTotal) {
+    return candidates.length === 1
+      ? { addon: candidates[0], error: null }
+      : { addon: null, error: "price_mapping_ambiguous" };
+  }
   const currencyMatches = candidates.filter((candidate) => candidate.currency.toUpperCase() === normalized.currency.toUpperCase());
   if (!currencyMatches.length) return { addon: null, error: "currency_mismatch" } as const;
   const cents = amountCents(normalized.amount);
@@ -1258,6 +1271,7 @@ export async function processStoredJvZooEvent(eventId: string) {
     currencyProvided: normalized.currencyProvided,
     expectedAmountCents: external.amountCents ?? price.amountCents,
     expectedCurrency: external.currency || price.currency,
+    validatePaymentTotal: config.jvzooValidatePaymentTotal,
   }) : null;
   if (renewalValidationError) {
     const unresolved = await prisma.commercialBillingEvent.update({

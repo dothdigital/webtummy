@@ -172,3 +172,25 @@ describe("JVZoo commercial adapter", () => {
     )).toThrow(/official JVZoo/i);
   });
 });
+
+
+describe("temporary provider product-only payment mapping", () => {
+  const price = { id: "founding", status: "active", currency: "USD", amountCents: 7900, effectiveFrom: new Date("2026-01-01"), effectiveTo: null };
+  const received = { amount: "90.85", currency: "CAD", occurredAt: new Date("2026-09-08") };
+  it("accepts a different reported total and currency only when explicitly disabled", () => {
+    expect(selectJvZooPriceMapping([price], received, false)).toEqual({ price, error: null });
+    expect(selectJvZooPriceMapping([price], received).error).toBe("currency_mismatch");
+  });
+  it("still rejects unmapped and ambiguous products", () => {
+    expect(selectJvZooPriceMapping([], received, false).error).toBe("product_not_mapped");
+    expect(selectJvZooPriceMapping([price, {...price,id:"second"}], received, false).error).toBe("price_mapping_ambiguous");
+  });
+  it("does not select a price outside its effective dates", () => {
+    expect(selectJvZooPriceMapping([{...price,effectiveTo:new Date("2026-09-01")}], received, false).error).toBe("product_not_mapped");
+  });
+  it("allows converted renewal totals but still requires a numeric payment amount", () => {
+    const renewal = { transactionType:"REBILL",nextStatus:"active",amount:"90.85",currency:"CAD",currencyProvided:true,expectedAmountCents:7900,expectedCurrency:"USD",validatePaymentTotal:false };
+    expect(validateJvZooRenewalPayment(renewal)).toBeNull();
+    expect(validateJvZooRenewalPayment({...renewal,amount:""})).toBe("missing_required_provider_fields");
+  });
+});
