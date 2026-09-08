@@ -608,17 +608,6 @@ const navigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {})
   return `<nav aria-label="Primary navigation"><ul>${items.map((item) => nested(item)).join("")}</ul></nav>`;
 };
 
-const utilityNavigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
-  const items = model.navigationModel?.utilityMenu ?? [];
-  if (!items.length) return "";
-  return `<nav class="senuke-utility-nav" aria-label="Utility navigation"><ul>${items.map((item) => {
-    const page = pageById(model, item.pageId);
-    const path = page ? websitePagePublicationPath(model, page) : item.url || "";
-    const href = page ? options.internalUrlMap?.[path] || path : resolvedComponentUrl(path, options);
-    return href ? `<li><a href="${escapeHtml(href)}">${escapeHtml(item.label)}</a></li>` : "";
-  }).join("")}</ul></nav>`;
-};
-
 export function curatedWebsiteFooterMenus(model: WebsiteModel) {
   const sourceGroups = model.navigationModel?.footerMenus ?? [];
   const configuredGroups = [...sourceGroups.reduce((groups, group) => {
@@ -836,7 +825,7 @@ ${googleAnalyticsScript}
 </head>
 <body>
 <div class="senuke-site-topbar"><div class="senuke-site-topbar-inner">${socialNavigationHtml(model, "header")}${headerContactHtml(model)}</div></div>
-<header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div></details></header>
+<header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${navigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${navigationHtml(model, options)}</div></details></header>
 <main>${renderWebsitePageBodyHtml(model, page, { ...options, mediaAssets: options.mediaAssets || model.mediaAssets })}</main>
 <footer class="senuke-site-footer"><div class="senuke-footer-main"><section class="senuke-footer-brand"><a class="senuke-footer-logo" href="${escapeHtml(homeHref)}">${brandMarkup}</a>${businessSummary ? `<p>${escapeHtml(businessSummary)}</p>` : ""}${socialNavigationHtml(model)}</section><div class="senuke-footer-navigation-column">${footerNavigationHtml(model, options)}</div><section class="senuke-footer-contact-column"><h2>Get in touch</h2>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("")}</div>` : ""}</section></div>${disclaimerText ? `<div class="senuke-footer-disclaimer">${escapeHtml(disclaimerText)}</div>` : ""}<div class="senuke-footer-bottom"><p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p>${footerLegalNavigationHtml(model, options)}</div></footer>
 ${recaptchaScript}
@@ -885,7 +874,6 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-site-header{display:flex;align-items:center;justify-content:space-between;gap:2rem;padding:1.25rem 0}
 .senuke-header-navigation{display:flex;align-items:center;justify-content:flex-end;gap:1rem}
 .senuke-mobile-menu{display:none}
-.senuke-utility-nav{font-size:.78rem;color:var(--senuke-muted)}
 .senuke-brand{display:flex;align-items:center;font-weight:900;color:var(--senuke-text);text-decoration:none}
 .senuke-brand-logo{display:block;width:auto;max-width:190px;height:52px;object-fit:contain}
 .senuke-site-header ul{display:flex;gap:1rem;list-style:none;margin:0;padding:0}
@@ -894,7 +882,10 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-site-header li:hover>ul,.senuke-site-header li:focus-within>ul{display:grid}
 .senuke-site-header a{color:inherit}
 .senuke-site-header span{font-weight:700}
-.senuke-header-navigation>.senuke-utility-nav a,.senuke-header-navigation>nav:first-child>ul>li:last-child>a{display:inline-flex;align-items:center;min-height:42px;border-radius:.15rem;background:var(--senuke-text);padding:.65rem 1rem;color:#fff;text-decoration:none;font-weight:850}
+/* Saved header entries are ordinary links; position never implies a CTA. */
+.senuke-header-navigation>nav>ul>li>a{display:inline-flex;align-items:center;min-height:42px;padding:.65rem 0;text-decoration:none;font-weight:750}
+/* Also override the positional CTA rule in previously installed WordPress themes. */
+.senuke-site-header .senuke-primary-nav>.senuke-menu>li.menu-item>a{margin-left:0;padding:.7rem .85rem;background:transparent;box-shadow:none;color:var(--senuke-text)}
 .senuke-breadcrumbs{padding-top:1rem}
 .senuke-breadcrumbs ol{display:flex;flex-wrap:wrap;gap:.45rem;list-style:none;padding:0;color:var(--senuke-muted);font-size:.86rem}
 .senuke-breadcrumbs li+li:before{content:"›";margin-right:.45rem}
@@ -1038,7 +1029,6 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
  .senuke-mobile-menu-panel li{width:100%}
  .senuke-mobile-menu-panel a,.senuke-mobile-menu-panel span{display:block;border-radius:.65rem;padding:.75rem .8rem;text-decoration:none}
  .senuke-mobile-menu-panel li ul{position:static;display:grid;min-width:0;margin:.1rem 0 .35rem .75rem;padding:.2rem 0 .2rem .65rem;border-left:2px solid color-mix(in srgb,var(--senuke-primary) 25%,transparent);box-shadow:none}
- .senuke-mobile-menu-panel .senuke-utility-nav{margin-bottom:.6rem;padding-bottom:.6rem;border-bottom:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent)}
  .senuke-brand{max-width:calc(100% - 64px)}
  .senuke-brand-logo{max-width:min(160px,100%);height:44px}
  .senuke-component,.senuke-breadcrumbs,.senuke-contextual-links,.senuke-related-pages,.senuke-link-cta{width:min(100% - 1.5rem,720px)}

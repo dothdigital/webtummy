@@ -4,7 +4,7 @@ Theme URI: https://senuke.ai/
 Author: SEnuke AI - AI Growth Operating System
 Author URI: https://senuke.ai/
 Description: A responsive, editable WordPress block theme for approved SEnuke AI - AI Growth Operating System website releases.
-Version: 1.2.0
+Version: 1.2.1
 Requires at least: 6.4
 Requires PHP: 8.0
 Text Domain: senuke-theme
@@ -60,7 +60,6 @@ h1, h2, h3, h4, h5, h6, .wp-block-site-title { font-family: var(--senuke-heading
 .senuke-primary-nav .menu-item { position: relative; margin: 0; list-style: none; }
 .senuke-primary-nav a { display: flex; align-items: center; min-height: 44px; padding: .7rem .85rem; border-radius: 999px; color: var(--senuke-text); font-size: .88rem; font-weight: 800; text-decoration: none; transition: background .18s ease, color .18s ease, transform .18s ease; }
 .senuke-primary-nav a:hover, .senuke-primary-nav a:focus-visible { background: color-mix(in srgb, var(--senuke-primary) 8%, transparent); color: var(--senuke-primary); transform: translateY(-1px); }
-.senuke-primary-nav > .senuke-menu > li:last-child > a { margin-left: .35rem; padding-inline: 1.15rem; background: var(--senuke-secondary); color: #111827; box-shadow: 0 10px 25px color-mix(in srgb, var(--senuke-secondary) 28%, transparent); }
 .senuke-primary-nav .sub-menu { position: absolute; top: calc(100% + 8px); left: 0; display: grid; min-width: 250px; margin: 0; padding: .65rem; visibility: hidden; opacity: 0; border: 1px solid var(--senuke-border); border-radius: 16px; background: #fff; box-shadow: var(--senuke-shadow); list-style: none; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease, visibility .18s ease; }
 .senuke-primary-nav .menu-item:hover > .sub-menu, .senuke-primary-nav .menu-item:focus-within > .sub-menu { visibility: visible; opacity: 1; transform: translateY(0); }
 .senuke-primary-nav .sub-menu .sub-menu { top: 0; left: calc(100% + 8px); }
