@@ -549,10 +549,35 @@ describe("website generation workflow contracts", () => {
     expect(websitePageHasCompleteContent({ content, status: "planned", pageType: "utility", title: "Privacy Policy" })).toBe(false);
     expect(websitePageHasCompleteContent({ content, status: "review", pageType: "utility", title: "Privacy Policy" })).toBe(true);
 
+    // A service page can retain every required section after optional proof
+    // filler is removed, even when it falls below the advisory section count.
+    const serviceContent = {
+      ...content,
+      components: [...content.components, {
+        instanceId: "service-cta",
+        componentId: "conversion.cta",
+        componentVersion: "1.0.0",
+        variant: "banner",
+        props: { heading: "Discuss your requirements", body: "Contact our team to discuss your requirements.", buttonLabel: "Contact us", buttonUrl: "/contact/" },
+      }],
+    };
+    const serviceInput = { content: serviceContent, status: "generated", pageType: "service", title: "Insurance CRM" };
+    expect(websitePageHasCompleteContent(serviceInput)).toBe(true);
+    expect(websitePageHasCompleteContent({ ...serviceInput, status: "planned" })).toBe(false);
+    for (const component of serviceContent.components) {
+      expect(websitePageHasCompleteContent({ ...serviceInput, content: {
+        ...serviceContent, components: serviceContent.components.filter(item => item !== component),
+      } })).toBe(false);
+    }
+    expect(websitePageHasCompleteContent({ ...serviceInput, content: {
+      ...serviceContent, components: serviceContent.components.map(component => ({ ...component, props: {} })),
+    } })).toBe(false);
+
     const completeSeo = {
       metaTitle: "Privacy Policy | Example Business",
       metaDescription: "Read how Example Business collects, uses, protects, and responds to questions about personal information submitted through this website.",
     };
+    expect(websitePageMissingContentKinds({ ...serviceInput, seo: completeSeo })).toEqual([]);
     expect(websitePageMissingContentKinds({ content, seo: completeSeo, status: "review", pageType: "utility", title: "Privacy Policy" })).toEqual([]);
     const twoFaqContent = {
       ...content,

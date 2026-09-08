@@ -312,7 +312,16 @@ export function renderWebsiteComponentHtml(
     case "content.process":
       return `<section class="senuke-component senuke-process senuke-process-${escapeHtml(component.variant)} ${alignmentClass}"><h2>${heading}</h2><ol class="senuke-steps">${propObjects(component, "steps").map((item) => `<li><h3>${escapeHtml(itemText(item, "title", "name"))}</h3><p>${escapeHtml(itemText(item, "description", "body", "text"))}</p></li>`).join("")}</ol></section>`;
     case "trust.proof":
-      if (component.variant === "review_summary") return `<section class="senuke-component senuke-proof senuke-testimonials ${alignmentClass}" aria-label="Testimonials"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-testimonial-slider" tabindex="0" role="region" aria-roledescription="carousel" aria-label="Client testimonials">${propObjects(component, "items").map((item, index, items) => `<blockquote class="senuke-testimonial-card" role="group" aria-roledescription="slide" aria-label="${index + 1} of ${items.length}"><p>“${escapeHtml(itemText(item, "description", "body", "text"))}”</p><footer>${escapeHtml(itemText(item, "title", "name", "label"))}</footer></blockquote>`).join("")}</div>${propObjects(component, "items").length > 1 ? `<div class="senuke-testimonial-controls" hidden><button type="button" data-testimonial-direction="-1" aria-label="Previous testimonial">← Previous</button><span class="senuke-testimonial-position" aria-live="polite" aria-atomic="true">1 of ${propObjects(component, "items").length}</span><button type="button" data-testimonial-direction="1" aria-label="Next testimonial">Next →</button></div>` : ""}</section>`;
+      if (component.variant === "review_summary") {
+        const items = propObjects(component, "items");
+        if (!items.length) return "";
+        const arrow = (direction: string) => `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="${direction === "left" ? "M19 12H5m6-6-6 6 6 6" : "M5 12h14m-6-6 6 6-6 6"}"/></svg>`;
+        return `<section class="senuke-component senuke-proof senuke-testimonials ${alignmentClass}" aria-label="Testimonials"><header class="senuke-testimonial-heading"><span class="senuke-testimonial-eyebrow">CLIENT EXPERIENCES</span><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}</header><div class="senuke-testimonial-slider" tabindex="0" role="region" aria-roledescription="carousel" aria-label="Client testimonials">${items.map((item, index) => {
+          const name = itemText(item, "title", "name", "label");
+          const initials = name.trim().split(/\s+/).slice(0, 2).map(part => Array.from(part)[0] || "").join("").toLocaleUpperCase();
+          return `<blockquote class="senuke-testimonial-card" role="group" aria-roledescription="slide" aria-label="${index + 1} of ${items.length}"><span class="senuke-testimonial-quote-mark" aria-hidden="true">“</span><p>${escapeHtml(itemText(item, "description", "body", "text"))}</p><footer><span class="senuke-testimonial-avatar" aria-hidden="true">${escapeHtml(initials)}</span><span class="senuke-testimonial-name">${escapeHtml(name)}</span></footer></blockquote>`;
+        }).join("")}</div>${items.length > 1 ? `<div class="senuke-testimonial-controls" hidden><span class="senuke-testimonial-position" aria-live="polite" aria-atomic="true">1 of ${items.length}</span><button type="button" data-testimonial-direction="-1" aria-label="Previous testimonial">${arrow("left")}</button><button type="button" data-testimonial-direction="1" aria-label="Next testimonial">${arrow("right")}</button></div>` : ""}</section>`;
+      }
       return `<section class="senuke-component senuke-proof ${alignmentClass}"><h2>${heading}</h2>${propString(component, "introduction") ? `<p>${escapeHtml(propString(component, "introduction"))}</p>` : ""}<div class="senuke-grid">${renderCardItems(component, "senuke-card")}</div></section>`;
     case "content.faq":
       return `<section class="senuke-component senuke-faq ${alignmentClass}"><h2>${heading}</h2>${propObjects(component, "items").map((item) => `<details><summary>${escapeHtml(itemText(item, "question", "title"))}</summary><p>${escapeHtml(itemText(item, "answer", "description", "body"))}</p></details>`).join("")}</section>`;
@@ -365,7 +374,7 @@ function withSideBySideContent(page: WebsitePageModel): WebsitePageModel {
     const copy = first.componentId === "content.rich_text" ? first : second?.componentId === "content.rich_text" ? second : undefined;
     if (image && copy) {
       sections.push({ instanceId: `${image.instanceId}-content-layout`, componentId: "layout.section", componentVersion: "1.0.0", variant: "two_equal",
-        props: { spacing: "comfortable", columnOne: [image] as unknown as JsonValue, columnTwo: [copy] as unknown as JsonValue } });
+        props: { spacing: "comfortable", columnOne: [copy] as unknown as JsonValue, columnTwo: [image] as unknown as JsonValue } });
       index++;
     } else sections.push(first);
   }
@@ -402,17 +411,7 @@ export function renderWebsitePageBodyHtml(
   const sections = renderedSections.length
     ? `${renderedSections[0]}${introLinks}${renderedSections.slice(1).join("")}`
     : introLinks;
-  const isHomePage = normalizedPath(page.slug) === "/" || page.pageType === "home";
-  // The homepage already carries its primary calls to action in the designed
-  // sections and global navigation. Appending an automatic page index and a
-  // second plain CTA immediately above the footer creates a duplicate,
-  // uncomposed strip that looks like broken navigation.
-  const relatedLinks = isHomePage
-    ? ""
-    : renderInternalLinkList(model, page, ["related_pages", "service_area", "faq", "card"], componentOptions, "senuke-related-pages", pageIsLocalRender(page) ? "Related service areas" : "Related pages");
-  const conversionLinks = isHomePage
-    ? ""
-    : renderInternalLinkList(model, page, ["cta"], componentOptions, "senuke-link-cta", "Next step");
+  // Related links and calls to action belong in authored sections, not detached strips before the footer.
   const form = model.forms[0];
   const hasRegisteredForm = flattenWebsiteComponents(page.sections).some((section) => section.componentId === "conversion.contact_form");
   const isContactPage = page.pageType === "contact"
@@ -434,7 +433,7 @@ export function renderWebsitePageBodyHtml(
   if (blogIndexHtml) {
     return blogIndexHtml;
   }
-  return `${breadcrumbHtml(model, page, componentOptions)}${sections}${blogIndexHtml}${relatedLinks}${conversionLinks}${formHtml}`;
+  return `${breadcrumbHtml(model, page, componentOptions)}${sections}${blogIndexHtml}${formHtml}`;
 }
 
 const renderWebsiteBlogIndexHtml = (
@@ -597,10 +596,6 @@ function enrichWordPressComponent(component: WebsiteComponentInstance, options: 
   if (component.componentId === "conversion.contact_form" && options.formShortcode && typeof props.submissionUrl !== "string") props.formShortcode = options.formShortcode;
   return { ...component, props };
 }
-
-const pageIsLocalRender = (page: WebsitePageModel) =>
-  Boolean(page.seo.location?.city || page.seo.location?.province || page.seo.location?.country || page.seo.location?.market)
-  || /(?:local|location|city|province|service.area)/i.test(`${page.pageType} ${page.seo.dominantIntent}`);
 
 const navigationHtml = (model: WebsiteModel, options: WebsiteRenderOptions = {}) => {
   const navigation = model.navigationModel?.primaryMenu ?? model.navigation;
@@ -850,7 +845,7 @@ ${testimonialSliderScript}
 </html>`;
 }
 
-const testimonialSliderScript = `<script>
+export const SENUKE_TESTIMONIAL_SCRIPT = `
 document.querySelectorAll(".senuke-testimonials").forEach(function(section){
   var slider=section.querySelector(".senuke-testimonial-slider");
   var controls=section.querySelector(".senuke-testimonial-controls");
@@ -860,7 +855,7 @@ document.querySelectorAll(".senuke-testimonials").forEach(function(section){
   var next=controls.querySelector('[data-testimonial-direction="1"]');
   var position=controls.querySelector(".senuke-testimonial-position");
   function current(){return Math.max(0,Math.min(slides.length-1,Math.round(slider.scrollLeft/(slider.clientWidth||1))));}
-  function update(){var index=current();previous.disabled=index===0;next.disabled=index===slides.length-1;position.textContent=(index+1)+" of "+slides.length;}
+  function update(){var index=current();slider.style.height=slides[index].offsetHeight+"px";previous.disabled=index===0;next.disabled=index===slides.length-1;position.textContent=(index+1)+" of "+slides.length;}
   controls.hidden=false;
   controls.querySelectorAll("button").forEach(function(button){button.addEventListener("click",function(){
     var index=Math.max(0,Math.min(slides.length-1,current()+Number(button.dataset.testimonialDirection)));
@@ -870,7 +865,8 @@ document.querySelectorAll(".senuke-testimonials").forEach(function(section){
   window.addEventListener("resize",update);
   update();
 });
-</script>`;
+`;
+const testimonialSliderScript = `<script>${SENUKE_TESTIMONIAL_SCRIPT}</script>`;
 
 export const SENUKE_STATIC_CSS = `
 *{box-sizing:border-box}
@@ -914,6 +910,7 @@ h1{max-width:18ch;font-size:clamp(2.2rem,6vw,4.8rem)}
 .senuke-layout-section{position:relative;isolation:isolate;overflow:hidden;width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2))}
 .senuke-layout-background-image{position:absolute;z-index:-2;inset:0;width:100%;height:100%;object-fit:cover}
 .senuke-layout-background-overlay{position:absolute;z-index:-1;inset:0;background:#020617}
+.senuke-layout-columns>.wp-block-columns{display:contents}
 .senuke-layout-columns{display:grid;gap:clamp(1.1rem,3vw,2.25rem);align-items:stretch}
 .senuke-layout-one_column .senuke-layout-columns{grid-template-columns:minmax(0,1fr)}
 .senuke-layout-two_equal .senuke-layout-columns{grid-template-columns:repeat(2,minmax(0,1fr))}
@@ -1085,9 +1082,14 @@ body{background:var(--senuke-surface)}
 .senuke-benefits{width:100%;max-width:none;padding-inline:max(var(--senuke-layout-gutter,1rem),calc((100% - var(--senuke-layout-max,1120px))/2));background:var(--senuke-secondary);color:#fff}.senuke-benefits .senuke-card{border-color:rgba(255,255,255,.16);background:rgba(255,255,255,.1)}.senuke-benefits .senuke-card p{color:rgba(255,255,255,.75)}
 .senuke-process .senuke-steps{grid-template-columns:repeat(auto-fit,minmax(220px,1fr));padding:0;list-style:none}.senuke-process .senuke-steps li{padding:1.5rem;border-radius:1rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}
 .senuke-proof{padding-inline:clamp(1.5rem,5vw,4rem);background:linear-gradient(135deg,color-mix(in srgb,var(--senuke-accent) 13%,white),var(--senuke-surface))}
-.senuke-testimonial-slider{display:grid;grid-auto-flow:column;grid-auto-columns:100%;gap:0;overflow-x:auto;padding:0;scroll-snap-type:x mandatory;scrollbar-width:thin;min-width:0;max-width:100%}
-.senuke-testimonial-card{display:flex;min-width:0;height:auto;max-height:none;min-height:220px;margin:0;padding:2rem;flex-direction:column;justify-content:space-between;scroll-snap-align:start;scroll-snap-stop:always;border:1px solid color-mix(in srgb,var(--senuke-primary) 18%,transparent);border-radius:1.25rem;background:var(--senuke-surface);box-shadow:0 16px 40px rgba(15,23,42,.09)}
-.senuke-testimonial-card p{display:block;margin:0;font-size:1.08rem;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;max-height:none;-webkit-line-clamp:unset}.senuke-testimonial-card footer{overflow-wrap:anywhere}.senuke-testimonial-controls:not([hidden]){display:flex;align-items:center;justify-content:center;gap:1rem;margin-top:1rem}.senuke-testimonial-controls button{padding:.6rem 1rem;border:1px solid currentColor;border-radius:.5rem;background:var(--senuke-surface);color:var(--senuke-primary);font:inherit;cursor:pointer}.senuke-testimonial-controls button:disabled{opacity:.45;cursor:default}.senuke-testimonial-card footer{margin-top:1.5rem;color:var(--senuke-primary);font-weight:850}
+.senuke-testimonials{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,2fr);column-gap:clamp(2rem,5vw,5rem);row-gap:1.5rem;padding:clamp(1.5rem,5vw,4.5rem);background:color-mix(in srgb,var(--senuke-primary) 4%,var(--senuke-surface));border:1px solid color-mix(in srgb,var(--senuke-primary) 10%,transparent);border-radius:1.5rem;text-align:left}
+.senuke-testimonial-heading{align-self:start;padding-top:.5rem}.senuke-testimonial-eyebrow{display:block;margin-bottom:1.25rem;color:var(--senuke-primary);font-size:.68rem;font-weight:750;letter-spacing:.18em}.senuke-testimonial-heading h2{margin:0 0 1rem;font-size:clamp(1.8rem,3vw,2.7rem);line-height:1.12;letter-spacing:-.04em;overflow-wrap:anywhere}.senuke-testimonial-heading p{margin:0;max-width:28ch;font-size:.95rem;line-height:1.7;opacity:.72}
+.senuke-testimonial-slider{display:grid;grid-auto-flow:column;grid-auto-columns:100%;gap:0;align-items:start;overflow-x:auto;padding:0;scroll-snap-type:x mandatory;scrollbar-width:none;min-width:0;max-width:100%;border-radius:1rem;background:var(--senuke-surface);box-shadow:0 8px 28px rgba(15,23,42,.04)}.senuke-testimonial-slider::-webkit-scrollbar{display:none}
+.senuke-testimonial-card{display:flex;min-width:0;height:auto;max-height:none;min-height:260px;margin:0;padding:clamp(1.5rem,2.5vw,2rem);flex-direction:column;scroll-snap-align:start;scroll-snap-stop:always;background:var(--senuke-surface)}
+.senuke-testimonial-quote-mark{display:block;height:3rem;color:var(--senuke-primary);font-family:Georgia,serif;font-size:5.5rem;line-height:1;opacity:.7;user-select:none}.senuke-testimonial-card p{display:block;margin:.75rem 0 1.5rem;font-size:clamp(1rem,1.35vw,1.125rem);font-weight:400;line-height:1.65;letter-spacing:-.012em;white-space:pre-wrap;overflow-wrap:anywhere;overflow:visible;max-height:none;-webkit-line-clamp:unset}.senuke-testimonial-card footer{display:flex;align-items:center;gap:.85rem;margin-top:auto;padding-top:1.25rem;border-top:1px solid color-mix(in srgb,var(--senuke-primary) 12%,transparent);overflow-wrap:anywhere}.senuke-testimonial-avatar{display:grid;place-items:center;flex:0 0 2.6rem;height:2.6rem;border-radius:50%;background:color-mix(in srgb,var(--senuke-primary) 9%,var(--senuke-surface));color:var(--senuke-primary);font-size:.8rem;font-weight:750}.senuke-testimonial-name{font-size:.9rem;font-weight:750;line-height:1.4}.senuke-testimonial-controls:not([hidden]){display:flex;grid-column:2;align-items:center;justify-content:flex-end;gap:.65rem}.senuke-testimonial-position{margin-right:.75rem;font-size:.75rem;font-variant-numeric:tabular-nums;letter-spacing:.05em;opacity:.65}.senuke-testimonial-controls button{display:grid;place-items:center;width:2.8rem;height:2.8rem;padding:0;border:1px solid color-mix(in srgb,var(--senuke-primary) 20%,transparent);border-radius:50%;background:var(--senuke-surface);color:var(--senuke-primary);cursor:pointer;transition:background .15s,color .15s}.senuke-testimonial-controls button:hover:not(:disabled){background:var(--senuke-primary);color:var(--senuke-surface)}.senuke-testimonial-controls button:disabled{opacity:.3;cursor:default}.senuke-testimonial-controls button:focus-visible,.senuke-testimonial-slider:focus-visible{outline:2px solid var(--senuke-primary);outline-offset:4px}
+@media(max-width:760px){.senuke-testimonials{grid-template-columns:minmax(0,1fr);gap:1.5rem;padding:1.5rem;border-radius:1.1rem}.senuke-testimonial-heading p{max-width:42ch}.senuke-testimonial-heading h2{margin-bottom:.6rem}.senuke-testimonial-eyebrow{margin-bottom:.75rem}.senuke-testimonial-controls:not([hidden]){grid-column:1}.senuke-testimonial-card{min-height:240px}}
+@media(prefers-reduced-motion:reduce){.senuke-testimonial-controls button{transition:none}}
+
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
 .senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card{display:flex;flex-direction:column;box-shadow:0 6px 22px rgba(15,23,42,.04);border-radius:.8rem}.senuke-blog-card>div{display:flex;flex-direction:column;flex:1;padding:1.5rem}.senuke-blog-read-more{margin-top:auto;padding-top:.75rem}.senuke-blog-grid{gap:1.75rem}.senuke-blog-card p{font-size:.94rem;line-height:1.7}.senuke-blog-card h3{margin:.65rem 0 .85rem;font-size:1.25rem;line-height:1.35;letter-spacing:-.015em}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}
@@ -1103,6 +1105,13 @@ body{background:var(--senuke-surface)}
 .senuke-component>h2{line-height:1.2;letter-spacing:-.025em}.senuke-component>h2+p{max-width:72ch}
 .senuke-faq{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)))}
 .senuke-cta{padding:clamp(2rem,4vw,3.5rem);border-radius:1rem;box-shadow:none}.senuke-cta h2{max-width:26ch;font-size:clamp(1.8rem,3vw,2.6rem)}.senuke-cta p{max-width:62ch}
+/* Section titles share one type scale and one content edge throughout the page. */
+.senuke-component:has(h2){width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin-inline:auto;margin-block:0;padding:clamp(3rem,5vw,4.5rem) clamp(1.5rem,4vw,3.5rem);text-align:left}
+.senuke-component.senuke-component h2{font-family:var(--senuke-heading),system-ui,sans-serif;font-size:clamp(1.8rem,3vw,2.6rem);font-weight:700;line-height:1.2;letter-spacing:-.025em;text-transform:none;max-width:28ch;margin:0 0 1.25rem;text-align:left;text-wrap:balance}
+.senuke-testimonial-heading{padding-top:0}
+.senuke-testimonials.senuke-component{border:0;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--senuke-primary) 10%,transparent)}
+.senuke-layout-column>.senuke-component:has(h2),.senuke-layout-column>.senuke-gutenberg-block>.senuke-component:has(h2),.senuke-layout-columns>.wp-block-column>.senuke-gutenberg-block>.senuke-component:has(h2){width:100%;margin:0;padding:0}
+
 @media(max-width:640px){.senuke-hero{gap:2rem}.senuke-hero h1{font-size:2.5rem}.senuke-hero-image{aspect-ratio:4/3;max-height:none}.senuke-blog-grid{grid-template-columns:1fr}.senuke-hero.senuke-document{padding-block:2.5rem 2rem}.senuke-document h1{font-size:2rem}}
 @media(max-width:860px){.senuke-rich-text{padding-block:2.75rem}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
 `;

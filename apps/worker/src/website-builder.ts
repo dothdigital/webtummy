@@ -39,7 +39,7 @@ import {
 import { config, WEBSITE_BUILDER_QUEUE } from "./config.js";
 import { actionEmail, sendMail } from "./email.js";
 import { connection, websiteBuilderQueue, type WebsiteBuilderJobData } from "./queue.js";
-import { websiteJobShouldPlanVisuals } from "./website-builder-policy.js";
+import { websiteJobShouldPlanVisuals, websiteJobFailureState } from "./website-builder-policy.js";
 
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 const websiteMediaDeliveryUrl = (assetId: string) => {
@@ -1035,17 +1035,6 @@ function fallbackComponents(page: { title: string; primaryKeyword: string; targe
       },
     },
     {
-      instanceId: `${page.title}-proof`,
-      componentId: "trust.proof",
-      componentVersion: "1.0.0",
-      variant: "credentials",
-      props: {
-        heading: "What you can review",
-        introduction: "Review the business information available on this website and ask questions about anything that affects your decision.",
-        items: [{ title: "Clear next steps", description: "Use the available contact options to discuss your requirements and confirm the information relevant to your decision." }],
-      },
-    },
-    {
       instanceId: `${page.title}-faq`,
       componentId: "content.faq",
       componentVersion: "1.0.0",
@@ -1128,10 +1117,7 @@ function repairApprovedPageComponents(
   };
 
   for (const componentId of policy.requiredComponentIds) insert(componentId);
-  for (const optional of policy.recommendedComponentIds) {
-    if (next.length >= policy.minimumComponentCount) break;
-    insert(optional);
-  }
+  // Optional section targets are advisory; preserve the approved composition.
   return { components: next, inserted, policy };
 }
 
@@ -1357,14 +1343,13 @@ const AI_COMPOSITION_COMPONENTS = [
   "service.grid",
   "service.benefits",
   "content.process",
-  "trust.proof",
   "content.faq",
   "conversion.cta",
 ] as const;
 
 function defaultCompositionIds(page: { title: string; pageType?: string; searchIntent: string }) {
   const policy = compositionForPage(page);
-  const ids = [...policy.requiredComponentIds, ...policy.recommendedComponentIds];
+  const ids = [...policy.requiredComponentIds, ...policy.recommendedComponentIds].filter((id) => id !== "trust.proof");
   if (["home", "about", "supporting"].includes(policy.archetype)) ids.splice(Math.min(2, ids.length), 0, "content.rich_text");
   const uniqueExceptRichText: string[] = [];
   let richTextCount = 0;
@@ -1421,7 +1406,7 @@ async function planPageComposition(
   if (checkpoint) {
     const saved = await loadPageCheckpoint(checkpoint, "content:composition");
     const savedPayload = record(saved?.payloadJson);
-    const savedComponents = componentRows(savedPayload.components).map((component) => normalizeAiComponentInstance(component));
+    const savedComponents = componentRows(savedPayload.components).filter((component) => component.componentId !== "trust.proof").map((component) => normalizeAiComponentInstance(component));
     const savedIds = new Set(savedComponents.map((component) => component.componentId));
     if (
       savedComponents.length >= policy.minimumComponentCount
@@ -1908,7 +1893,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
       const minimumWords = minimumWordsForPage(page);
       const maximumWords = maximumWordsForPage(page);
       let generatedComponents = fitWebsiteComponentsToWordBudget(
-        componentRows(proposedContent.components).map((component) => normalizeAiComponentInstance(component)),
+        componentRows(proposedContent.components).filter((component) => component.componentId !== "trust.proof").map((component) => normalizeAiComponentInstance(component)),
         maximumWords,
       );
       generatedComponents = requiredRegisteredComponents(
@@ -2694,7 +2679,7 @@ function importStoredComponents(
   return imported.length ? imported : fallbackComponents(page, business);
 }
 
-export async function executeWebsiteBuildJob(jobId: string) {
+export async function executeWebsiteBuildJob(jobId: string, attempt = 1, maxAttempts = 1) {
   const job = await prisma.websiteBuildJob.findUnique({ where: { id: jobId }, include: { build: { include: { pages: { orderBy: { sortOrder: "asc" }, include: { mediaAssets: true } }, project: { include: { businessProfile: true, agencyClient: true } } } } } });
   if (!job || ["completed", "cancelled"].includes(job.status)) return;
   const build = job.build, project = { ...build.project, imagePreferences: record(build.settingsJson).imagePreferences, businessName: String(record(build.brandJson).businessName || build.project.businessName || "").trim() || null, websiteBusinessName: String(record(build.brandJson).businessName || "").trim() }, input = record(job.inputJson), instructions = String(input.instructions || ""), seoPlan = input.seoPlan || record(build.settingsJson).seoPlan || {};
@@ -2982,13 +2967,13 @@ export async function executeWebsiteBuildJob(jobId: string) {
           // the Quality step reports depth as a revision recommendation.
           0,
           repaired.policy.requiredComponentIds,
-          repaired.policy.minimumComponentCount,
+          0,
         );
         const shouldPlanVisuals = websiteJobShouldPlanVisuals(mode);
         const savedVisualPlan = shouldPlanVisuals ? await loadPageCheckpoint(checkpoint, "image:plan") : null;
         const savedVisualPayload = record(savedVisualPlan?.payloadJson);
         const savedPlacement = String(savedVisualPayload.placement || "");
-        const proposedDesignPlan = !shouldPlanVisuals
+        const proposedDesignPlan = !websiteJobShouldPlanVisuals(mode, input.generateImages !== false)
           ? { placement: "none" as const, prompt: "", altText: "", rationale: "Visuals are prepared in the Design & Images step.", componentVariants: [] }
           : ["hero", "banner", "inline", "library", "none"].includes(savedPlacement)
           ? {
@@ -3405,11 +3390,12 @@ export async function executeWebsiteBuildJob(jobId: string) {
     await notify(job, "completed", `${build.name} has ${assembledPages.length} assembled page${assembledPages.length === 1 ? "" : "s"} with content, navigation, brand, and image placement ready for responsive review.`);
   } catch (error) {
     const message = error instanceof Error ? error.message : "Website development failed.";
+    const failureState = websiteJobFailureState(attempt, maxAttempts, message, new Date());
     const persisted = await prisma.websiteBuildJob.updateMany({
       where: { id: job.id, status: { not: "cancelled" } },
-      data: { status: "failed", stage: "failed", errorMessage: message, completedAt: new Date() },
+      data: failureState,
     });
-    if (persisted.count) await notify(job, "failed", `${build.name} could not be generated: ${message}`);
+    if (persisted.count && failureState.status === "failed") await notify(job, "failed", `${build.name} needs attention after automatic retries. Completed work has been saved. Open the project to review and retry the remaining work.`);
     if (persisted.count) queueWebsiteWorkerErrorReport(job, error);
     throw error;
   } finally {
@@ -3451,7 +3437,7 @@ async function expireStaleWebsiteJobs() {
 export function startWebsiteBuilderWorker() {
   const worker = new Worker<WebsiteBuilderJobData>(
     WEBSITE_BUILDER_QUEUE,
-    async (queueJob) => executeWebsiteBuildJob(queueJob.data.jobId),
+    async (queueJob) => executeWebsiteBuildJob(queueJob.data.jobId, queueJob.attemptsMade + 1, queueJob.opts.attempts ?? 1),
     {
       connection,
       concurrency: config.websiteBuilderConcurrency,

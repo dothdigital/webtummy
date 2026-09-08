@@ -620,7 +620,8 @@ export function websitePageHasCompleteContent(input: {
         Boolean(component && typeof component === "object" && !Array.isArray(component)))
     : [];
   const policy = websitePageCompositionPolicy(input);
-  if (components.length < policy.minimumComponentCount) return false;
+  // Section-count targets are advisory quality findings, not missing content.
+  // Removing optional filler must not queue an otherwise valid page for regeneration.
   const componentIds = new Set(components.map((component) => component.componentId));
   if (policy.requiredComponentIds.some((componentId) => !componentIds.has(componentId))) return false;
   if (components.filter((component) => component.componentId === "hero.local_service").length !== 1) return false;

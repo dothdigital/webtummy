@@ -1,3 +1,5 @@
+import { publicErrorMessage } from "./public-error-message.js";
+export { publicErrorMessage } from "./public-error-message.js";
 // Thin API client. Browser authentication uses an HttpOnly session cookie. A
 // legacy local token is accepted once so existing sessions migrate cleanly.
 let token: string | null = localStorage.getItem("wt_token");
@@ -43,19 +45,6 @@ async function readJson(res: Response) {
 
 type ApiErrorEnvelope = { error?: unknown; message?: unknown; missingRequirement?: unknown; errorCode?: unknown };
 
-export function publicErrorMessage(value: unknown, fallback = "This action could not be completed. Please try again.") {
-  const raw = typeof value === "string" ? value.trim() : "";
-  if (!raw) return fallback;
-  if (/safety[_ ]violations?|request was rejected by the safety system|\bsexual\b/i.test(raw)) {
-    return "The content service could not process this page because its topic was interpreted without enough context. Confirm the page describes a legitimate professional service, then retry it; completed pages remain preserved.";
-  }
-  return raw
-    .replace(/openai/gi, "the AI service")
-    .replace(/\breq_[a-z0-9]+\b/gi, "")
-    .replace(/contact us at help\.[^\s]+[^.]*\.?/gi, "")
-    .replace(/\s{2,}/g, " ")
-    .trim() || fallback;
-}
 
 function firstErrorText(value: unknown, depth = 0): string | null {
   if (typeof value === "string" && value.trim()) return value;

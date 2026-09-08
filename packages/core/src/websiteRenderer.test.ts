@@ -203,7 +203,7 @@ describe("Approved Release website renderer", () => {
     expect(content).not.toContain('<!-- wp:html -->\n<section class="senuke-component senuke-hero');
   });
 
-  it("does not append automatic related-page and CTA navigation to the homepage", () => {
+  it.each(["home", "service"])("does not append detached related-page and CTA strips to %s pages", (pageType) => {
     const destination = {
       ...model.pages[0],
       pageId: "page-2",
@@ -216,9 +216,9 @@ describe("Approved Release website renderer", () => {
       ...model,
       pages: [{
         ...model.pages[0],
-        name: "Home",
-        slug: "/",
-        pageType: "home",
+        name: pageType === "home" ? "Home" : "Service",
+        slug: pageType === "home" ? "/" : "/service/",
+        pageType,
         seo: {
           ...model.pages[0].seo,
           internalLinks: [
@@ -228,10 +228,11 @@ describe("Approved Release website renderer", () => {
         },
       }, destination],
     };
-    const content = renderWebsitePageWordPressBlocks(homeModel, homeModel.pages[0]);
-    expect(content).not.toContain("senuke-related-pages");
-    expect(content).not.toContain("senuke-link-cta");
-    expect(content).not.toContain("Contact us today");
+    for (const content of [renderWebsitePageWordPressBlocks(homeModel, homeModel.pages[0]), renderWebsitePageDocument(homeModel, homeModel.pages[0])]) {
+      expect(content).not.toContain('class="senuke-related-pages"');
+      expect(content).not.toContain('class="senuke-link-cta"');
+      expect(content).not.toContain("Contact us today");
+    }
   });
 
   it("adds the approved favicon to every rendered page document", () => {
@@ -802,15 +803,15 @@ it('includes v2 protection and response handling in production managed forms, wi
 describe("side-by-side editorial content", () => {
   const picture: WebsiteComponentInstance = { instanceId: "editorial-photo", componentId: "media.image", componentVersion: "1.0.0", variant: "wide", props: { imageAssetId: "photo-1", altText: "Our team" } };
   const copy: WebsiteComponentInstance = { instanceId: "editorial-copy", componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: "Meet our team", body: "Friendly help for your business." } };
-  it.each([false, true])("places the image left and copy right, including text-first source order (%s)", (textFirst) => {
+  it.each([false, true])("keeps section headings left with the image right, including text-first source order (%s)", (textFirst) => {
     const page = { ...model.pages[0], sections: [hero, ...(textFirst ? [copy, picture] : [picture, copy])] };
     const html = renderWebsitePageDocument({ ...model, pages: [page] }, page);
     expect(html).toContain("senuke-layout-two_equal");
-    expect(html).toMatch(/data-column="1"><figure[\s\S]*data-column="2"><section[^>]*senuke-rich-text/);
+    expect(html).toMatch(/data-column="1"><section[^>]*senuke-rich-text[\s\S]*data-column="2"><figure/);
     expect(html.match(/Meet our team/g)).toHaveLength(1);
     const blocks = renderWebsitePageWordPressBlocks({ ...model, pages: [page] }, page);
     expect(blocks).toContain("wp:column");
-    expect(blocks.indexOf('"instanceId":"editorial-photo"')).toBeLessThan(blocks.indexOf('"instanceId":"editorial-copy"'));
+    expect(blocks.indexOf('"instanceId":"editorial-copy"')).toBeLessThan(blocks.indexOf('"instanceId":"editorial-photo"'));
     expect(page.sections).toHaveLength(3);
   });
   it("keeps unpaired copy as a normal section", () => {

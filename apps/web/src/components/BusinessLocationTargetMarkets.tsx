@@ -27,8 +27,8 @@ export default function BusinessLocationTargetMarkets({ value, onChange, inherit
     }) });
     setDraft("");
   };
-  const override = Boolean(inheritedLocation);
-  const showInheritedOption = showSameAsClientLocation || override;
+  const override = showSameAsClientLocation && Boolean(inheritedLocation);
+  const showInheritedOption = showSameAsClientLocation;
   useEffect(() => {
     if (!inheritedLocation) { setOverrideEnabled(true); return; }
     const hasEnteredLocation = Boolean(value.country || value.stateProvince || value.city || value.streetAddress || value.postalCode);

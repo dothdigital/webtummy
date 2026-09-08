@@ -38,6 +38,7 @@ import {
 } from "@webtummy/core/website-model";
 import {
   createStaticWebsiteFiles,
+  SENUKE_TESTIMONIAL_SCRIPT,
   curatedWebsiteFooterMenus,
   isWebsiteBlogSectionPage,
   isWebsiteBlogArticlePage,
@@ -5806,7 +5807,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/validate", async
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(404).json({ error: "Website build not found." });
-  const checked = await validateAndPersistWebsiteModel(project, build, context.membership.userId);
+  // Validate the full media sources used by exports, not the lightweight review projection.
+  const fresh = await canonicalWebsiteInputs(project.id, build.id);
+  const checked = await validateAndPersistWebsiteModel(fresh.project, fresh.build, context.membership.userId);
   const settings = jsonRecord(build.settingsJson);
   const pendingChange = jsonRecord(settings.pendingWebsiteChange);
   await prisma.websiteBuild.update({
@@ -8942,6 +8945,7 @@ websiteBuilderRouter.get("/projects/:projectId/website-builder/wordpress/connect
   zip.file("senuke-ai-connector/senuke-ai-connector.php", source);
   zip.file("senuke-ai-connector/senuke-blocks.js", blocksScript);
   zip.file("senuke-ai-connector/senuke-blocks.css", blocksStyle);
+  zip.file("senuke-ai-connector/senuke-testimonials.js", SENUKE_TESTIMONIAL_SCRIPT);
   await addDirectoryToZip(zip, WORDPRESS_THEME_DIRECTORY, "senuke-ai-connector/theme/senuke-theme");
   const archive = await zip.generateAsync({
     type: "nodebuffer",
@@ -10849,7 +10853,8 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/quality-export",
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Website review permission is required." });
   const build = project.websiteBuilds[0];
   if (!build) return res.status(409).json({ error: "Create the website build first." });
-  const canonical = await persistCanonicalWebsiteModel(project, build, context.membership.userId);
+  const fresh = await canonicalWebsiteInputs(project.id, build.id);
+  const canonical = await persistCanonicalWebsiteModel(fresh.project, fresh.build, context.membership.userId);
   const validation = await prisma.websiteValidationResult.findFirst({
     where: {
       modelVersionId: canonical.record.id,

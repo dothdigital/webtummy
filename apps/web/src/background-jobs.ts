@@ -21,6 +21,7 @@ export type BackgroundJob = {
   title: string;
   subject: string;
   status: string;
+  stage?: string;
   statusUrl: string;
   resultUrl: string;
   startedAt: string;

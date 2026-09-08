@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
-import { api } from "../api.js";
+import { api, publicErrorMessage } from "../api.js";
 import { BACKGROUND_JOBS_EVENT, dismissBackgroundJob, dismissBackgroundJobs, isBackgroundJobFinished, normalizeBackgroundJobResponse, readBackgroundJobs, updateBackgroundJob, type BackgroundJob } from "../background-jobs.js";
 
 export default function BackgroundJobCenter({ enabled }: { enabled: boolean }) {
@@ -18,7 +18,7 @@ export default function BackgroundJobCenter({ enabled }: { enabled: boolean }) {
       const result = normalizeBackgroundJobResponse(raw);
       const status = typeof result.status === "string" ? result.status : job.status;
       const metric = job.resultMetricKey && typeof result[job.resultMetricKey] === "number" ? Number(result[job.resultMetricKey]) : job.resultMetric;
-      updateBackgroundJob(job.id, { status, resultMetric: metric, error: typeof result.error === "string" ? result.error : typeof result.errorMessage === "string" ? result.errorMessage : null });
+      updateBackgroundJob(job.id, { status, stage: typeof result.stage === "string" ? result.stage : undefined, resultMetric: metric, error: typeof result.error === "string" ? result.error : typeof result.errorMessage === "string" ? result.errorMessage : null });
       setRefreshNotices((current) => ({ ...current, [job.id]: `Status refreshed: ${status.replaceAll("_", " ")}.` }));
     } catch (error) {
       if (job.type === "website-builder" && error instanceof Error && /job not found/i.test(error.message)) {
@@ -60,7 +60,7 @@ export default function BackgroundJobCenter({ enabled }: { enabled: boolean }) {
               if (cancelled) return;
               const status = typeof result.status === "string" ? result.status : job.status;
               const metric = job.resultMetricKey && typeof result[job.resultMetricKey] === "number" ? Number(result[job.resultMetricKey]) : job.resultMetric;
-              updateBackgroundJob(job.id, { status, resultMetric: metric, error: typeof result.error === "string" ? result.error : typeof result.errorMessage === "string" ? result.errorMessage : null });
+              updateBackgroundJob(job.id, { status, stage: typeof result.stage === "string" ? result.stage : undefined, resultMetric: metric, error: typeof result.error === "string" ? result.error : typeof result.errorMessage === "string" ? result.errorMessage : null });
               if (isBackgroundJobFinished(status) && document.hidden && "Notification" in window && Notification.permission === "granted") {
                 new Notification(status === "completed" ? `${job.title} completed` : `${job.title} failed`, { body: status === "completed" ? `${job.subject} is ready to review.` : `${job.subject} needs attention.` });
               }
@@ -191,9 +191,10 @@ export default function BackgroundJobCenter({ enabled }: { enabled: boolean }) {
     const completed = job.status === "completed";
     const waitingApproval = ["waiting_approval", "waiting_for_approval", "needs_approval"].includes(job.status);
     const activelyWorking = ["queued", "running", "processing", "in_progress"].includes(job.status);
-    const stage = completed ? "Finished" : waitingApproval ? "Awaiting approval" : job.status === "queued" ? "Queued" : activelyWorking ? "In process" : failed ? "Failed" : "Pending";
-    const message = completed ? `${job.completedMessage}${job.resultMetric != null && job.resultMetricLabel ? ` · ${job.resultMetric} ${job.resultMetricLabel}` : ""}` : failed ? (job.error || job.failedMessage) : waitingApproval ? "Development has not started. The website specification is waiting for an approver." : job.type === "local-seo-audit" && job.resultMetric != null ? `${job.resultMetric} of ${job.resultMetricTotal ?? "?"} keyword-location checks completed. You can continue working anywhere.` : job.progressMessage;
-    const websiteCreationFailure = failed && job.type === "website-builder" && /website (?:creation|design)/i.test(job.title);
+    const automaticRetry = job.status === "queued" && job.stage === "retrying_automatically";
+    const stage = automaticRetry ? "Retrying automatically" : completed ? "Finished" : waitingApproval ? "Awaiting approval" : job.status === "queued" ? "Queued" : activelyWorking ? "In process" : failed ? "Needs attention" : "Pending";
+    const message = completed ? `${job.completedMessage}${job.resultMetric != null && job.resultMetricLabel ? ` · ${job.resultMetric} ${job.resultMetricLabel}` : ""}` : automaticRetry ? "The service had a temporary problem. We’re retrying automatically; your completed work is saved." : failed ? publicErrorMessage(job.error || job.failedMessage) : waitingApproval ? "Development has not started. The website specification is waiting for an approver." : job.type === "local-seo-audit" && job.resultMetric != null ? `${job.resultMetric} of ${job.resultMetricTotal ?? "?"} keyword-location checks completed. You can continue working anywhere.` : job.progressMessage;
+    const websiteCreationFailure = failed && job.type === "website-builder" && /website (?:creation|design|image)|images and placement/i.test(job.title);
     const resultUrl = websiteCreationFailure && !/[?&]step=/.test(job.resultUrl) ? `${job.resultUrl}${job.resultUrl.includes("?") ? "&" : "?"}step=media` : job.resultUrl;
     return <div key={job.id} className={`border-b px-4 py-3 text-sm lg:px-8 ${completed ? "border-emerald-200 bg-emerald-50 text-emerald-950" : failed ? "border-red-200 bg-red-50 text-red-950" : waitingApproval ? "border-violet-200 bg-violet-50 text-violet-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
