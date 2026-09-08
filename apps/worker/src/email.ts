@@ -1,3 +1,4 @@
+import { formatDisplayDate, formatTimestampValue } from "@webtummy/core/display-date";
 import { createHmac, createHash } from "node:crypto";
 import { defaultProvider } from "@aws-sdk/credential-provider-node";
 import { config } from "./config.js";
@@ -18,6 +19,7 @@ function htmlParagraphs(value: string) {
 }
 
 export function notificationPresentation(type: string) {
+  if (/^billing_subscription_(cancellation|ended)$/.test(type)) return { ctaLabel: "Review billing", previewText: "Review your subscription status and paid-through date." };
   const normalized = type.toLowerCase();
   if (/publishing_failed|integration.*(failed|disconnected)|esp_connection_failed/.test(normalized)) return { ctaLabel: "Fix issue", previewText: "Review the issue and take the required corrective action in SEnuke AI." };
   if (/strategy/.test(normalized)) return { ctaLabel: "Review strategy", previewText: "Review the strategy direction and approve it before execution begins." };
@@ -27,10 +29,12 @@ export function notificationPresentation(type: string) {
   if (/site_architecture/.test(normalized)) return { ctaLabel: "Review architecture", previewText: "Review the recommended pages and internal links before content generation." };
   if (/website_(build|content|images)/.test(normalized)) return { ctaLabel: "Review website", previewText: "Review the generated website work before approving publication." };
   if (/social/.test(normalized)) return { ctaLabel: "Review campaign assets", previewText: "Review the content, CTAs, hashtags and visuals before scheduling." };
+  if (type === "growth_lead_magnet_due") return { ctaLabel: "Open monthly lead magnet", previewText: "Prepare or review your monthly download and check its sign-up tracking." };
   if (/lead_magnet|funnel/.test(normalized)) return { ctaLabel: "Review lead magnet", previewText: "Review the funnel content, form flow, delivery settings and CTA." };
   if (/report_sent/.test(normalized)) return { ctaLabel: "View report", previewText: "A new report is ready to view." };
   if (/report/.test(normalized)) return { ctaLabel: "View report", previewText: "Your report is ready to review, download or share." };
   if (/growth-weekly/.test(normalized)) return { ctaLabel: "View summary", previewText: "Automatic monitoring completed and the weekly summary is ready." };
+  if (type === "growth_content_due") return { ctaLabel: "Open article task", previewText: "Your article is due soon. Prepare the draft, review it or publish the approved article." };
   if (/growth|next_best_action/.test(normalized)) return { ctaLabel: "Review evidence", previewText: "Review the saved evidence and recommended next action." };
   if (/local_grid/.test(normalized)) return { ctaLabel: "View local grid", previewText: "Review the measured local visibility movement." };
   if (/local_seo|local_growth/.test(normalized)) return { ctaLabel: "Review Local SEO", previewText: "Review the saved Local SEO evidence and recommended actions." };
@@ -82,20 +86,21 @@ export function actionEmail(input: {
   const greeting = input.greeting?.trim() || "Hello,";
   const signature = "The SEnuke AI Team";
   const updates = input.updates?.length ? input.updates : [{ title: input.title, message: input.message, notificationType: input.notificationType, occurredAt: input.occurredAt ?? input.completedAt, ctaLabel: input.ctaLabel, ctaUrl: input.ctaUrl, tables: input.tables }];
+  const displayUpdates = updates.map(update => ({ ...update, tables: update.tables?.map(table => ({ ...table, rows: table.rows.map(row => row.map(formatTimestampValue)) })) }));
   const dateText = (value?: Date | string) => {
     if (!value) return "";
     const date = new Date(value);
-    return Number.isFinite(date.getTime()) ? date.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC") : "";
+    return formatDisplayDate(date, { fallback: "" });
   };
   const footer = [input.reason, !input.transactional && input.preferencesUrl ? `Manage notification preferences: ${safeEmailUrl(input.preferencesUrl)}` : "", input.supportEmail ? `Support: ${input.supportEmail}` : ""].filter(Boolean).join("\n");
-  const cards = updates.map(update => {
+  const cards = displayUpdates.map(update => {
     const status = notificationStatus(update.notificationType);
     const time = dateText(update.occurredAt);
     const url = escapeHtml(safeEmailUrl(update.ctaUrl));
     return `<tr><td style="padding:0 28px 24px"><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:12px"><tr><td style="padding:22px"><span style="display:inline-block;padding:6px 10px;border-radius:6px;font-size:12px;font-weight:700;color:${status.color};background:${status.background}">${status.label}</span><h2 style="font-size:19px;line-height:1.4;margin:16px 0 12px">${escapeHtml(update.title)}</h2>${time ? `<p style="font-size:12px;color:#64748b;margin:0 0 18px">Update recorded: ${time}</p>` : ""}<div style="font-size:11px;letter-spacing:1px;font-weight:700;color:#64748b">WHAT HAPPENED</div><div style="font-size:14px;line-height:1.7;overflow-wrap:anywhere">${htmlParagraphs(update.message)}</div>${renderEmailTables(update.tables ?? [])}<div style="border-top:1px solid #e2e8f0;margin-top:18px;padding-top:18px"><div style="font-size:11px;letter-spacing:1px;font-weight:700;color:#64748b;margin-bottom:12px">NEXT ACTION</div><a href="${url}" style="display:inline-block;background:#4338ca;color:#ffffff;border:12px solid #4338ca;border-radius:7px;font-size:14px;font-weight:700;text-decoration:none">${escapeHtml(update.ctaLabel)}</a></div></td></tr></table></td></tr>`;
   }).join("");
   return {
-    text: `${greeting}\n\n${input.title}\n\n${updates.map(update => `${notificationStatus(update.notificationType).label}: ${update.title}\n${dateText(update.occurredAt) ? `Update recorded: ${dateText(update.occurredAt)}\n` : ""}\nWhat happened\n${update.message}${(update.tables ?? []).map(table => `\n\n${table.title}\n${table.columns.join(" | ")}\n${table.rows.map(row => row.join(" | ")).join("\n")}\n${table.note ?? ""}`).join("")}\n\nNext action\n${update.ctaLabel}: ${safeEmailUrl(update.ctaUrl)}`).join("\n\n---\n\n")}\n\nThank you,\n${signature}\n\n${footer}`,
+    text: `${greeting}\n\n${input.title}\n\n${displayUpdates.map(update => `${notificationStatus(update.notificationType).label}: ${update.title}\n${dateText(update.occurredAt) ? `Update recorded: ${dateText(update.occurredAt)}\n` : ""}\nWhat happened\n${update.message}${(update.tables ?? []).map(table => `\n\n${table.title}\n${table.columns.join(" | ")}\n${table.rows.map(row => row.join(" | ")).join("\n")}\n${table.note ?? ""}`).join("")}\n\nNext action\n${update.ctaLabel}: ${safeEmailUrl(update.ctaUrl)}`).join("\n\n---\n\n")}\n\nThank you,\n${signature}\n\n${footer}`,
     html: `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(input.title)}</title></head><body style="margin:0;padding:0;background:#f1f5f9;color:#0f172a;font-family:Arial,Helvetica,sans-serif"><div style="display:none;max-height:0;overflow:hidden;opacity:0">${escapeHtml(input.previewText || input.title)}</div><table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9"><tr><td align="center" style="padding:24px 8px"><table role="presentation" width="640" cellpadding="0" cellspacing="0" style="width:100%;max-width:640px;background:#ffffff;border:1px solid #e2e8f0;border-radius:14px"><tr><td style="padding:26px 28px;background:#0f172a;color:#ffffff;border-radius:14px 14px 0 0"><div style="font-size:24px;font-weight:800">SEnuke AI</div><div style="margin-top:6px;font-size:12px;color:#cbd5e1">YOUR GROWTH WORKSPACE</div></td></tr><tr><td style="padding:24px 28px"><p style="font-size:14px;margin:0 0 12px">${escapeHtml(greeting)}</p><h1 style="font-size:25px;line-height:1.3;margin:0">${escapeHtml(input.updates?.length ? input.title : "Your project update")}</h1>${input.updates?.length ? `<p style="font-size:14px;color:#64748b">${updates.length} updates · Each item includes its recorded status and next action.</p>` : ""}</td></tr>${cards}<tr><td style="padding:0 28px 24px;font-size:14px;line-height:1.6">Thank you,<br><strong>${signature}</strong></td></tr><tr><td style="padding:20px 28px;border-top:1px solid #e2e8f0;background:#f8fafc;font-size:12px;line-height:1.7;color:#64748b">${escapeHtml(footer).replaceAll("\n", "<br>")}</td></tr></table></td></tr></table></body></html>`,
   };
 }

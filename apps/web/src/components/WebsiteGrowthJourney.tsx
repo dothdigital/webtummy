@@ -21,7 +21,7 @@ export default function WebsiteGrowthJourney({ journey, baseline, trackingVerifi
 }) {
   const next = journey.nextActivity;
   const [reviewConfirmed, setReviewConfirmed] = useState(false);
-  return <section id="next-best-action" className="scroll-mt-6 overflow-hidden rounded-2xl border border-indigo-200 bg-white shadow-sm">
+  return <section id="growth-plan" className="scroll-mt-6 overflow-hidden rounded-2xl border border-indigo-200 bg-white shadow-sm">
     <div className="bg-gradient-to-br from-indigo-950 via-slate-950 to-cyan-950 p-6 text-white">
       <div className="flex flex-wrap gap-2 text-[10px] font-bold uppercase tracking-wide">
         <span className="rounded-full bg-emerald-400/15 px-3 py-1 text-emerald-200">{journey.websiteLive ? "Website published" : "Website launch pending"}</span>

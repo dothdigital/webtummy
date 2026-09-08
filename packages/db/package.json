@@ -5,7 +5,9 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./planning-reconciliation": "./src/planning-reconciliation.ts",
+    "./growth-execution": "./src/growth-execution.ts"
   },
   "scripts": {
     "generate": "prisma generate",

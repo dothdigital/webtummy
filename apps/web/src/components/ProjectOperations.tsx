@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import { Card } from "./ui.js";
@@ -76,7 +77,7 @@ export default function ProjectOperations({ projectId }: { projectId: string }) 
     <div className="space-y-5 p-5">
       <div className="grid gap-4 lg:grid-cols-2"><div><div className="text-xs font-bold uppercase text-slate-500">Assigned people</div><div className="mt-2 flex flex-wrap gap-2">{data.project.memberAssignments.map((item) => <span key={item.membershipId} className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{item.membership.user.name || item.membership.user.email}</span>)}{!data.project.memberAssignments.length && <span className="text-sm text-slate-500">No project users assigned.</span>}</div></div><div><div className="text-xs font-bold uppercase text-slate-500">Assigned teams</div><div className="mt-2 flex flex-wrap gap-2">{data.project.teamAssignments.map((item) => <span key={item.teamId} className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold">{item.team.name}</span>)}{!data.project.teamAssignments.length && <span className="text-sm text-slate-500">No project teams assigned.</span>}</div></div></div>
       <div><div className="text-xs font-bold uppercase text-slate-500">Task flow</div><div className="mt-3 space-y-3">{openTasks.slice(0, 20).map((task) => <TaskControl key={task.id} task={task} data={data} refresh={load} />)}{!openTasks.length && <p className="text-sm text-slate-500">No open agency tasks.</p>}</div></div>
-      <div><div className="text-xs font-bold uppercase text-slate-500">Recent project activity</div><div className="mt-3 grid gap-2 md:grid-cols-2">{data.activity.slice(0, 8).map((item) => <div key={item.id} className="rounded-lg bg-slate-50 p-3 text-sm"><b>{label(item.action)}</b><span className="ml-2 text-xs text-slate-500">{item.actor?.name || item.actor?.email || "System"} · {new Date(item.createdAt).toLocaleString()}</span></div>)}</div></div>
+      <div><div className="text-xs font-bold uppercase text-slate-500">Recent project activity</div><div className="mt-3 grid gap-2 md:grid-cols-2">{data.activity.slice(0, 8).map((item) => <div key={item.id} className="rounded-lg bg-slate-50 p-3 text-sm"><b>{label(item.action)}</b><span className="ml-2 text-xs text-slate-500">{item.actor?.name || item.actor?.email || "System"} · {formatDisplayDate(item.createdAt)}</span></div>)}</div></div>
     </div>
   </Card>;
 }

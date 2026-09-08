@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api.js";
 import type { GoogleBusinessCapability, GoogleBusinessProfileAction, GoogleBusinessProfileDraft, GoogleBusinessProfileResponse, LocalBusinessProfile } from "../types.js";
@@ -28,7 +29,7 @@ function list(value: unknown): Record<string, unknown>[] {
 
 function formatDate(value: string | null | undefined) {
   if (!value) return "Not yet";
-  return new Date(value).toLocaleString();
+  return formatDisplayDate(value);
 }
 
 function titleCase(value: string) {

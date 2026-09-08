@@ -1,3 +1,6 @@
+import { DownloadEmailSetupInstructions } from "./WebsiteEmailSetupInstructions";
+import { formatDisplayDate } from "@webtummy/core/display-date";
+import WebsiteTrackingHandoff from "./WebsiteTrackingHandoff.js";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   emptyHostingHandoff,
@@ -60,7 +63,7 @@ const choices: Array<{ value: HostingDestination; title: string; detail: string 
   {
     value: "developer_handoff",
     title: "Client or developer handoff",
-    detail: "Download the approved package and record who will receive it. They handle the upload outside SENuke.",
+    detail: "Download the approved ZIP yourself or email a secure link. The client or developer uploads it; SEnuke publishing and live verification are not required.",
   },
 ];
 
@@ -70,12 +73,14 @@ export default function HostingHandoffPanel({
   onSave,
   onSendDeveloperHandoff,
   deliveryBusy = false,
+  websiteId,
 }: {
   saved: Record<string, unknown>;
   busy: boolean;
   onSave: (draft: HostingHandoffDraft) => Promise<void>;
   onSendDeveloperHandoff?: () => void;
   deliveryBusy?: boolean;
+  websiteId?: string;
 }) {
   const [draft, setDraft] = useState<HostingHandoffDraft>(() => draftFromSaved(saved));
   const [editing, setEditing] = useState(() => !text(saved.savedAt));
@@ -93,7 +98,7 @@ export default function HostingHandoffPanel({
     setDraft({
       ...draft,
       destination,
-      accessMethod: destination === "wordpress" ? "wordpress" : destination === "developer_handoff" ? "developer" : "sftp",
+      accessMethod: destination === "wordpress" ? "wordpress" : destination === "developer_handoff" ? "manual" : "sftp",
       migrationMode: "new_site",
       backupConfirmed: false,
     });
@@ -103,11 +108,12 @@ export default function HostingHandoffPanel({
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex min-w-0 items-center gap-3">
         <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full bg-emerald-600 text-sm font-black text-white">✓</span>
-        <div className="min-w-0"><div className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Deployment destination</div><b className="block truncate text-sm text-emerald-950">{draft.destination === "wordpress" ? "WordPress" : draft.destination === "developer_handoff" ? "Developer handoff" : `Static server · ${draft.sftp.host || draft.domain}`}</b></div>
+        <div className="min-w-0"><div className="text-[9px] font-black uppercase tracking-wide text-emerald-700">Deployment destination</div><b className="block truncate text-sm text-emerald-950">{draft.destination === "wordpress" ? "WordPress" : draft.destination === "developer_handoff" ? (draft.accessMethod === "manual" ? "Client handoff · Download ZIP" : "Developer handoff · Email link") : `Static server · ${draft.sftp.host || draft.domain}`}</b></div>
       </div>
-      <div className="flex flex-wrap gap-2">{draft.destination === "developer_handoff"&&(onSendDeveloperHandoff?<button type="button" disabled={deliveryBusy} onClick={onSendDeveloperHandoff} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{deliveryBusy?"Sending…":record(saved.lastDelivery).sentAt?"Resend Secure Link":"Send Secure Link"}</button>:<a href="#builder-step-work" className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white">{record(saved.lastDelivery).sentAt?"Resend Secure Link":"Send Secure Link"}</a>)}<button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-black text-emerald-800">Change</button></div>
+      <div className="flex flex-wrap gap-2">{draft.destination === "developer_handoff"&&draft.accessMethod !== "manual"&&(onSendDeveloperHandoff?<button type="button" disabled={deliveryBusy} onClick={onSendDeveloperHandoff} className="rounded-lg bg-emerald-700 px-3 py-2 text-xs font-black text-white disabled:opacity-50">{deliveryBusy?"Sending…":record(saved.lastDelivery).sentAt?"Resend Secure Link":"Send Secure Link"}</button>:<span className="text-xs font-semibold text-emerald-800">Continue to Download &amp; Handoff to send the link.</span>)}<button type="button" onClick={() => setEditing(true)} className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-black text-emerald-800">Change</button></div>
     </div>
-    {draft.destination === "developer_handoff"&&<p className="mt-2 text-[10px] font-semibold text-emerald-800">Recipient: {draft.technicalContactEmail}{record(saved.lastDelivery).sentAt?` · Last sent ${new Date(text(record(saved.lastDelivery).sentAt)).toLocaleString()}`:" · Not sent yet"}</p>}
+    {draft.destination === "developer_handoff"&&<><DownloadEmailSetupInstructions/><WebsiteTrackingHandoff websiteId={websiteId}/></>}
+    {draft.destination === "developer_handoff"&&draft.accessMethod !== "manual"&&<p className="mt-2 text-[10px] font-semibold text-emerald-800">Recipient: {draft.technicalContactEmail}{record(saved.lastDelivery).sentAt?` · Last sent ${formatDisplayDate(text(record(saved.lastDelivery).sentAt))}`:" · Not sent yet"}</p>}
   </section>;
 
   return <section id="hosting-handoff" className="scroll-mt-6 rounded-xl border border-indigo-200 bg-white p-5">
@@ -168,10 +174,15 @@ export default function HostingHandoffPanel({
     </div>}
 
     {draft.destination === "developer_handoff" && <div className="mt-5 rounded-xl border border-slate-200 bg-slate-50 p-4">
-      <div className="grid gap-4 md:grid-cols-2">
+      <fieldset className="mb-4 flex flex-wrap gap-4 text-sm"><legend className="mb-2 font-bold">How would you like to receive the website?</legend><label className="flex items-center gap-2"><input type="radio" name="handoff-method" checked={draft.accessMethod === "manual"} onChange={() => setDraft({ ...draft, accessMethod: "manual", technicalContactName: "", technicalContactEmail: "" })}/>Download ZIP myself</label><label className="flex items-center gap-2"><input type="radio" name="handoff-method" checked={draft.accessMethod !== "manual"} onChange={() => setDraft({ ...draft, accessMethod: "developer" })}/>Email a secure link</label></fieldset>
+      <p className="mb-4 text-xs leading-5 text-slate-600">After approval and Launch Check, download or send the package to finish this workflow. Hosting access and live verification are not needed. Tracking is included and can be checked separately after the client uploads the website to the saved domain.</p>
+      <DownloadEmailSetupInstructions/>
+      <WebsiteTrackingHandoff websiteId={websiteId}/>
+
+      {draft.accessMethod !== "manual" && <div className="grid gap-4 md:grid-cols-2">
         <Field label="Receiving person or team"><input value={draft.technicalContactName} onChange={event => setDraft({ ...draft, technicalContactName: event.target.value })} placeholder="Client developer or agency" className="input"/></Field>
         <Field label="Receiving email"><input type="email" value={draft.technicalContactEmail} onChange={event => setDraft({ ...draft, technicalContactEmail: event.target.value })} placeholder="developer@example.com" className="input"/></Field>
-      </div>
+      </div>}
       <div className="mt-4"><Field label="Optional handoff note"><textarea rows={3} value={draft.notes} onChange={event => setDraft({ ...draft, notes: event.target.value })} placeholder="Upload instructions or delivery notes." className="input"/></Field></div>
     </div>}
 

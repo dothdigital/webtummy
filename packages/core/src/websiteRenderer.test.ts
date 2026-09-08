@@ -491,6 +491,14 @@ describe("Approved Release website renderer", () => {
     expect(html).toContain("<textarea");
     expect(html).toContain('data-senuke-managed-form');
     expect(html).toContain('document.querySelectorAll("[data-senuke-managed-form]")');
+    const files = createStaticWebsiteFiles(contactModel, { phpForms: true, environmentType: "production" });
+    const exported = files.find(file => file.path === "contact-us/index.html")!.content;
+    expect(exported).toContain('action="../senuke-contact.php"');
+    expect(exported).toContain('payload._senuke_form_id=form.dataset.senukeFormId');
+    expect(files.some(file => file.path === "senuke-contact.php")).toBe(true);
+    expect(files.some(file => file.path === "CONTACT-FORM-SETUP.md")).toBe(true);
+    expect(exported).not.toContain("/api/public/website-forms/");
+
   });
 
   it("routes the standard contact CTA to the generated Contact page slug", () => {
@@ -754,5 +762,34 @@ describe("testimonial slider", () => {
     const html = renderWebsiteComponentHtml({ ...testimonials, props: { heading: "Testimonials", items: [{ title: "Client", description: quote }] } });
     expect(html).toContain(quote);
     expect(html).not.toContain('data-testimonial-direction');
+  });
+});
+
+it('includes v2 protection and response handling in production managed forms, without a secret',()=>{
+ const protectedModel={...model,recaptcha:{credentialId:'credential-id',siteKey:'public-site-key',hostname:'example.com'}};
+ const html=renderWebsitePageDocument(protectedModel,model.pages[0],{environmentType:'production',formAction:'https://app.example.com/api/public/website-forms/release/token'});
+ expect(html).toContain('recaptcha/api.js?onload=senukeRecaptchaReady');expect(html).toContain('public-site-key');expect(html).toContain('g-recaptcha-response');expect(html).toContain('grecaptcha.reset');expect(html).not.toContain('secretCiphertext');
+ const preview=renderWebsitePageDocument(protectedModel,model.pages[0],{environmentType:'preview'});expect(preview).not.toContain('recaptcha/api.js');
+ const plain=renderWebsitePageDocument(model,model.pages[0],{environmentType:'production'});expect(plain).not.toContain('recaptcha/api.js');
+});
+
+
+describe("side-by-side editorial content", () => {
+  const picture: WebsiteComponentInstance = { instanceId: "editorial-photo", componentId: "media.image", componentVersion: "1.0.0", variant: "wide", props: { imageAssetId: "photo-1", altText: "Our team" } };
+  const copy: WebsiteComponentInstance = { instanceId: "editorial-copy", componentId: "content.rich_text", componentVersion: "1.0.0", variant: "answer_first", props: { heading: "Meet our team", body: "Friendly help for your business." } };
+  it.each([false, true])("places the image left and copy right, including text-first source order (%s)", (textFirst) => {
+    const page = { ...model.pages[0], sections: [hero, ...(textFirst ? [copy, picture] : [picture, copy])] };
+    const html = renderWebsitePageDocument({ ...model, pages: [page] }, page);
+    expect(html).toContain("senuke-layout-two_equal");
+    expect(html).toMatch(/data-column="1"><figure[\s\S]*data-column="2"><section[^>]*senuke-rich-text/);
+    expect(html.match(/Meet our team/g)).toHaveLength(1);
+    const blocks = renderWebsitePageWordPressBlocks({ ...model, pages: [page] }, page);
+    expect(blocks).toContain("wp:column");
+    expect(blocks.indexOf('"instanceId":"editorial-photo"')).toBeLessThan(blocks.indexOf('"instanceId":"editorial-copy"'));
+    expect(page.sections).toHaveLength(3);
+  });
+  it("keeps unpaired copy as a normal section", () => {
+    const page = { ...model.pages[0], sections: [hero, copy] };
+    expect(renderWebsitePageDocument({ ...model, pages: [page] }, page)).not.toContain('class="senuke-component senuke-layout-section');
   });
 });

@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { captureWebsiteTracking, websiteTrackingMetrics } from "../website-tracking.js";
 import { config } from "../config.js";
+import { websiteVisitorSummary } from "../website-visitor-summary.js";
 
 export const websitesRouter = Router();
 websitesRouter.use(requireAuth);
@@ -249,6 +250,16 @@ websitesRouter.get("/", async (req, res) => {
     : [];
   const completedWebsiteIds = new Set(completedCrawls.map((crawl) => crawl.websiteId));
   res.json({ websites: websites.map((website) => ({ ...website, trackingPlan: website.measurementPlans[0] ?? null, measurementPlans: undefined, hasCompletedCrawl: completedWebsiteIds.has(website.id) })) });
+});
+
+websitesRouter.get("/:id/visitor-summary", async (req, res) => {
+  const clientId = await projectClientIdForRequest(req);
+  const website = await prisma.website.findFirst({
+    where: { id: req.params.id, ...(clientId ? { clientId } : {}) },
+    select: { id: true, trackingSite: { select: { lastVerifiedAt: true, lastEventAt: true } } },
+  });
+  if (!website) return res.status(404).json({ error: "website not found" });
+  res.json({ ...await websiteVisitorSummary(website.id), trackingVerified: Boolean(website.trackingSite?.lastVerifiedAt), lastEventAt: website.trackingSite?.lastEventAt ?? null });
 });
 
 websitesRouter.get("/:id/tracking", async (req, res) => {

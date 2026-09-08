@@ -1,3 +1,4 @@
+import { getWebsiteHandoffReview } from "../website-handoff-review.js";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { Prisma, prisma, type Role } from "@webtummy/db";
@@ -209,6 +210,7 @@ const leadMagnetResearchOutputSchema = z.object({
   recommendations: z.array(leadRecommendationValueSchema.extend({ actionLabel: z.literal("Generate with AI") })).min(2).max(5),
 });
 const leadMagnetGenerateSchema = z.object({
+  executionTaskId: z.string().min(1).optional().nullable(),
   researchRunId: z.string().trim().min(1),
   seriesId: z.string().trim().min(1).optional().nullable(),
   selectedIdea: z.string().trim().min(3).max(240).optional().nullable(),
@@ -2765,7 +2767,7 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
     where: { clientId, ...assignmentFilter },
     orderBy: { createdAt: "desc" },
     include: {
-      website: { select: { id: true, domain: true, rootUrl: true, status: true } },
+      website: { select: { id: true, domain: true, rootUrl: true, status: true, crawlJobs: { where: { status: "completed", pagesCrawled: { gt: 0 } }, select: { id: true }, take: 1 } } },
       agencyClient: { select: { id: true, name: true, contactPhone: true, businessLocations: true, targetMarkets: true, defaultSettings: true } },
       businessProfile: true,
       keywordGroups: { orderBy: { createdAt: "asc" } },
@@ -2786,7 +2788,14 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
           },
         },
       },
-      _count: { select: { intakeAnswers: true, strategyPlans: true, opportunities: true } },
+      _count: { select: {
+        intakeAnswers: true, strategyPlans: true, opportunities: true,
+        websitePublications: { where: {
+          mode: { notIn: ["draft", "download", "developer_handoff"] },
+          OR: [{ status: "published" }, { target: "static_html", mode: "sftp", status: "completed" }],
+        } },
+        websiteDeployments: { where: { mode: "publish", status: { in: ["completed", "success", "success_with_warnings"] } } },
+      } },
     },
   }) : [];
   const projectLaunchAnalyses = projects.length ? await prisma.workspaceAiIntakeSession.findMany({
@@ -2822,6 +2831,8 @@ guidedProjectsRouter.get("/projects-v2", async (req, res) => {
   ] as const)));
   res.json({ projects: projects.map((project) => ({
     ...project,
+    // A persistent destination based on live-site evidence, independent of the next action or tracking readiness.
+    performanceAvailable: Boolean(project.website && (project.website.crawlJobs.length || project._count.websitePublications || project._count.websiteDeployments)),
     projectLaunchAnalysis: latestLaunchAnalysisByProject.get(project.id) ?? null,
     workflowController: workflowControllers.get(project.id) ?? null,
     executionProgress: executionByProject.get(project.id) ?? { total: 0, completed: 0 },
@@ -3212,6 +3223,31 @@ guidedProjectsRouter.get("/projects-v2/:projectId", async (req, res) => {
     }),
   ]);
   res.json({ project: { ...project, sourceActivitySummaries, projectLaunchAnalysis } });
+});
+
+guidedProjectsRouter.get("/projects-v2/:projectId/website-handoff-review", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  res.json({ review: await getWebsiteHandoffReview(project.id) });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/website-handoff-review", async (req, res) => {
+  const context = await requireRequestPermission(req, "run_ai_analysis");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const parsed = z.object({ action: z.enum(["confirm_applied", "complete_review"]), releaseId: z.string().min(1), confirmed: z.literal(true), crawlId: z.string().optional() }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Confirm the action and current delivered release." });
+  const review = await getWebsiteHandoffReview(project.id);
+  if (!review || review.releaseId !== parsed.data.releaseId) return res.status(409).json({ error: "The delivered release changed. Reload its handoff review." });
+  if (!review.websiteId) return res.status(409).json({ error: "Connect the live website before confirming the handoff." });
+  const applied = parsed.data.action === "confirm_applied";
+  if (!applied && (!review.assessment || review.assessment.id !== parsed.data.crawlId || !review.appliedAt)) return res.status(409).json({ error: "Confirm application, then complete a fresh assessment before reviewing this release." });
+  const eventType = applied ? "website.handoff_applied" : "website.handoff_reviewed";
+  await publishProjectWorkflowEvent({ projectId: project.id, eventType, sourceModule: "website_handoff_review", sourceId: review.releaseId,
+    idempotencyKey: `${eventType}:${project.id}:${review.releaseId}:${review.websiteId}`,
+    payload: { websiteId: review.websiteId, releaseId: review.releaseId, actorUserId: context.membership.userId, confirmed: true, ...(!applied ? { crawlId: review.assessment!.id, assessmentCompletedAt: review.assessment!.completedAt?.toISOString() } : {}) },
+  });
+  res.json({ review: await getWebsiteHandoffReview(project.id) });
 });
 
 guidedProjectsRouter.get("/projects-v2/:projectId/workflow-controller", async (req, res) => {
@@ -5475,6 +5511,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
   const parsed = leadMagnetGenerateSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
+  const requestedGrowthTask = parsed.data.executionTaskId ? await prisma.executionTask.findFirst({ where: { id: parsed.data.executionTaskId, projectId: project.id, sourceType: "growth_content_opportunity", moduleName: "lead_magnet", status: { notIn: ["completed", "published", "cancelled", "skipped"] } } }) : null;
+  if (parsed.data.executionTaskId && !requestedGrowthTask) return res.status(409).json({ error: "The monthly lead-magnet task is not available. Open its current status in Growth Execution." });
   const researchRun = await prisma.aiRun.findFirst({ where: { id: parsed.data.researchRunId, projectId: project.id, moduleName: "lead_magnet_research", status: "completed" } });
   if (!researchRun) return res.status(409).json({ error: "Run the AI lead-magnet research step before choosing a format and generating the funnel." });
   const sourceSeries = parsed.data.seriesId ? await prisma.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: parsed.data.seriesId }, orderBy: { version: "desc" }, select: { seriesId: true } }) : null;
@@ -5651,7 +5689,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           decisions: { create: { actorUserId: context.membership.userId, decision: "generated", snapshotJson: { version, title, magnetType: assetType, recommendation: parsed.data.recommendation ?? null } } },
         },
       });
-      const leadMagnetTask = await ensureNextTask(tx, {
+      const leadMagnetTask = requestedGrowthTask ?? await ensureNextTask(tx, {
         clientId: project.clientId,
         websiteId: project.websiteId,
         projectId: project.id,

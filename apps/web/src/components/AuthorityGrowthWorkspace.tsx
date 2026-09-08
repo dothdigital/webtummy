@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api.js";
 import type { DomainBacklinkLinks, DomainBacklinkSummary } from "../types.js";
@@ -128,6 +129,7 @@ type AuthorityWorkspace = {
   capabilities: CapabilitySet;
   snapshots: Snapshot[];
   backlinks: StoredBacklink[];
+  savedBacklinks: (StoredBacklink & { snapshot: { profileType: string; target: string; capturedAt: string } })[];
   riskFindings: RiskFinding[];
   opportunities: AuthorityOpportunity[];
   assets: AuthorityAsset[];
@@ -141,12 +143,9 @@ type AuthorityWorkspace = {
 type Tab = "overview" | "profile" | "opportunities" | "assets" | "outreach" | "outcomes";
 
 const tabs: { key: Tab; label: string }[] = [
-  { key: "overview", label: "Overview" },
-  { key: "profile", label: "Profile & risk review" },
-  { key: "opportunities", label: "Opportunities" },
-  { key: "assets", label: "Authority assets" },
-  { key: "outreach", label: "Outreach" },
-  { key: "outcomes", label: "Outcomes" },
+  { key: "overview", label: "Summary" },
+  { key: "profile", label: "All backlinks" },
+  { key: "opportunities", label: "Choose link opportunities" },
 ];
 
 const label = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
@@ -156,7 +155,7 @@ const userFacingEvidenceText = (value: unknown) => String(value ?? "").replace(n
 const number = (value: number | null | undefined) => value == null ? "Unavailable" : new Intl.NumberFormat().format(value);
 const dateLabel = (value: unknown) => {
   const parsed = new Date(String(value ?? ""));
-  return Number.isNaN(parsed.getTime()) ? "date unavailable" : parsed.toLocaleString();
+  return Number.isNaN(parsed.getTime()) ? "date unavailable" : formatDisplayDate(parsed);
 };
 
 function toneForStatus(status: string) {
@@ -180,7 +179,9 @@ function Empty({ title, detail }: { title: string; detail: string }) {
 
 export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkLinks, autoStart = false }: { projectId: string; backlinkSummary: DomainBacklinkSummary | null; backlinkLinks: DomainBacklinkLinks | null; autoStart?: boolean }) {
   const [workspace, setWorkspace] = useState<AuthorityWorkspace | null>(null);
-  const [tab, setTab] = useState<Tab>("overview");
+  const [tab, setTab] = useState<Tab>("profile");
+  const [linkLimit, setLinkLimit] = useState(50);
+  const [linkScope, setLinkScope] = useState("all");
   const [busy, setBusy] = useState("");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
@@ -230,8 +231,6 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
     setTab("opportunities");
     discover();
   }, [autoStart, workspace?.capabilities.canResearch]);
-  const updateOpportunity = (id: string, status: "shortlisted" | "researching" | "dismissed") => void run(`opportunity:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/opportunities/${encodeURIComponent(id)}`, { status }), `Opportunity moved to ${label(status).toLowerCase()}.`);
-  const approveOpportunity = (id: string) => void run(`approve:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/opportunities/${encodeURIComponent(id)}/approve`, {}), "Opportunity approved. Its execution task and authority asset are ready; any outreach remains an unsent draft.");
   const reviewFinding = (id: string, status: "reviewed_no_action" | "monitor" | "action_required") => void run(`finding:${id}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/risk-findings/${encodeURIComponent(id)}`, { status }), "Review decision saved. No link was automatically removed or disavowed.");
   const approveMessage = (id: string) => void run(`message:${id}`, () => api.post(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/outreach/messages/${encodeURIComponent(id)}/approve`, {}), "Outreach draft approved for manual use. Automatic sending remains disabled.");
   const saveMessage = () => void run(`edit-message:${messageDraft.messageId}`, () => api.patch(`/api/projects/${encodeURIComponent(projectId)}/authority-growth/outreach/messages/${encodeURIComponent(messageDraft.messageId)}`, { subject: messageDraft.subject, bodyText: messageDraft.bodyText }), "Outreach draft updated. Previous approval was cleared so the revised text can be reviewed.");
@@ -274,7 +273,8 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
   const referralVisits = workspace?.earnedMentions.reduce((sum, mention) => sum + mention.referralVisits, 0) ?? 0;
   const referralLeads = workspace?.earnedMentions.reduce((sum, mention) => sum + mention.referralLeads, 0) ?? 0;
   const topOpportunity = workspace?.opportunities.find((opportunity) => !["dismissed", "approved"].includes(opportunity.status));
-  const latestSnapshotBacklinks = useMemo(() => workspace?.backlinks ?? [], [workspace?.backlinks]);
+  const savedBacklinks = workspace?.savedBacklinks ?? [];
+  const latestSnapshotBacklinks = savedBacklinks.filter(link => linkScope === "all" || link.snapshot.profileType === linkScope);
   const monitoringLimitationRaw = workspace?.monitoringState?.snapshotJson && typeof workspace.monitoringState.snapshotJson.limitation === "string" ? workspace.monitoringState.snapshotJson.limitation : workspace?.monitoringState?.restrictionReason || workspace?.monitoringState?.errorMessage;
   const monitoringLimitation = monitoringLimitationRaw ? userFacingEvidenceText(monitoringLimitationRaw) : "";
 
@@ -288,11 +288,11 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
           <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
             <div>
               <div className="text-xs font-black uppercase tracking-[0.14em] text-brand-700">Backlink & authority growth</div>
-              <h2 className="mt-1 text-xl font-black text-charcoal-950">Build authority through useful assets and legitimate relationships</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">Analyse the profile, review evidence, discover relevant opportunities, approve the best work, and measure earned outcomes. SEnuke AI - AI Growth Operating System does not perform spam submissions, automatic disavows or unapproved outreach.</p>
+              <h2 className="mt-1 text-xl font-black text-charcoal-950">Find useful websites that could link to your business</h2>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">Start with All backlinks to see the links found for your site and competitors. Then review the suggested websites under Choose link opportunities. Open “What to do here” for checking instructions.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <button type="button" disabled={!backlinkSummary || !workspace.capabilities.canResearch || Boolean(busy)} onClick={captureSnapshot} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-black text-brand-700 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50">{busy === "snapshot" ? "Saving…" : "Save profile snapshot"}</button>
+              <button type="button" disabled={!backlinkSummary || !workspace.capabilities.canResearch || Boolean(busy)} onClick={captureSnapshot} className="rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-black text-brand-700 hover:bg-brand-50 disabled:cursor-not-allowed disabled:opacity-50">{busy === "snapshot" ? "Saving…" : "Save current backlink data"}</button>
               <button type="button" disabled={!workspace.capabilities.canResearch || Boolean(busy)} onClick={discover} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-black text-white hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300">{busy === "discover" ? "Researching…" : workspace.opportunities.length ? "Refresh AI research" : "Discover opportunities"}</button>
             </div>
           </div>
@@ -301,6 +301,15 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
           {tabs.map((item) => <button key={item.key} type="button" onClick={() => setTab(item.key)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-xs font-black ${tab === item.key ? "bg-brand-50 text-brand-700" : "text-charcoal-500 hover:bg-slate-50 hover:text-charcoal-800"}`}>{item.label}</button>)}
         </div>
       </div>
+
+      <div className="rounded-lg border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">{{
+        overview: "See a summary of your saved backlink data and progress. Open All backlinks to review individual links.",
+        profile: "Start here: review links found for your site and competitors. Use the filter to choose which to view, then open a source website to check its relevance.",
+        opportunities: "Review the suggested websites. Open “What to do here” for a short checking guide, then open the website links to assess their relevance.",
+        assets: "Prepare useful content to support an approved link opportunity, such as a guide or resource that another website could reference.",
+        outreach: "Review the contact details and message for each website. Approve the draft before using it manually; approval does not send the email.",
+        outcomes: "Record links or mentions you earned and any visits or enquiries they brought. This helps you see which work produced results.",
+      }[tab]}</div>
 
       {message && <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">{message}</div>}
       {error && <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-800">{error}</div>}
@@ -315,8 +324,8 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
             <Metric labelText="Recorded outcomes" value={number(workspace.earnedMentions.length)} helper={`${number(workspace.earnedMentions.filter((item) => item.status === "verified").length)} provider-verified · ${number(referralVisits)} visits`} />
             <Metric labelText="Referral leads" value={number(referralLeads)} helper="Recorded authority outcomes" />
           </div>
-          {latest ? <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs leading-5 text-charcoal-600"><span className="font-black text-charcoal-900">Evidence:</span> {evidenceSourceLabel(latest.provider)} · collected {new Date(latest.capturedAt).toLocaleString()} · comparison {latest.comparisonStartAt ? new Date(latest.comparisonStartAt).toLocaleDateString() : "first baseline"} to {new Date(latest.comparisonEndAt ?? latest.capturedAt).toLocaleDateString()}. Authority and risk scores from external sources are third-party proxy metrics, not Google ranking factors.{latest.limitationsJson.length ? <div className="mt-1 text-amber-700">{latest.limitationsJson.map(userFacingEvidenceText).join(" ")}</div> : null}</div> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Backlink evidence is not available yet. Connect the project website, then run or wait for the scheduled authority check to create the first baseline.</div>}
-          {monitoringLimitation ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><div className="font-black">Monitoring needs attention</div><p className="mt-1 leading-6">{monitoringLimitation} The last verified snapshot remains visible. Confirm the project website is connected, then use Refresh backlink data or wait for the next scheduled retry{workspace.monitoringState?.nextScheduledAt ? ` on ${new Date(workspace.monitoringState.nextScheduledAt).toLocaleString()}` : ""}.</p></div> : null}
+          {latest ? <div className="rounded-xl border border-slate-200 bg-white p-4 text-xs leading-5 text-charcoal-600"><span className="font-black text-charcoal-900">Evidence:</span> {evidenceSourceLabel(latest.provider)} · collected {formatDisplayDate(latest.capturedAt)} · comparison {latest.comparisonStartAt ? new Date(latest.comparisonStartAt).toLocaleDateString() : "first baseline"} to {new Date(latest.comparisonEndAt ?? latest.capturedAt).toLocaleDateString()}. Authority and risk scores from external sources are third-party proxy metrics, not Google ranking factors.{latest.limitationsJson.length ? <div className="mt-1 text-amber-700">{latest.limitationsJson.map(userFacingEvidenceText).join(" ")}</div> : null}</div> : <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm font-semibold text-amber-900">Backlink evidence is not available yet. Connect the project website, then run or wait for the scheduled authority check to create the first baseline.</div>}
+          {monitoringLimitation ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900"><div className="font-black">Monitoring needs attention</div><p className="mt-1 leading-6">{monitoringLimitation} The last verified snapshot remains visible. Confirm the project website is connected, then use Refresh backlink data or wait for the next scheduled retry{workspace.monitoringState?.nextScheduledAt ? ` on ${formatDisplayDate(workspace.monitoringState.nextScheduledAt, { includeTime: true })}` : ""}.</p></div> : null}
           {topOpportunity ? (
             <div className="rounded-xl border border-brand-100 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -336,13 +345,15 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
       {tab === "profile" && (
         <div className="space-y-5">
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
-            <div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Links in the latest saved evidence</h3><p className="mt-1 text-xs text-charcoal-500">New, active and lost states come from comparable provider snapshots. Authority and risk values are third-party review signals—not Google metrics or declarations that a link is harmful.</p></div>
+            <div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">All saved backlinks</h3><p className="mt-1 text-xs text-charcoal-500">Includes saved links for your site and competitors, with repeated source and target pairs shown once. Older observations remain available and may no longer be live. This is the collected sample, not every backlink on the web. New, active and lost states come from comparable provider snapshots. Authority and risk values are third-party review signals—not Google metrics or declarations that a link is harmful.</p></div>
+            <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-3"><label className="text-sm font-bold">Show <select value={linkScope} onChange={event => { setLinkScope(event.target.value); setLinkLimit(50); }} className="ml-2 rounded-lg border p-2"><option value="all">Your site and competitors</option><option value="owned">Your site</option><option value="competitor">Competitors</option></select></label><span className="text-sm text-slate-600">Showing {Math.min(linkLimit, latestSnapshotBacklinks.length)} of {latestSnapshotBacklinks.length} saved links</span></div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[860px] text-left text-sm">
-                <thead className="bg-slate-50 text-xs text-charcoal-500"><tr><th className="px-4 py-3">Source</th><th className="px-4 py-3">Target</th><th className="px-4 py-3">Anchor</th><th className="px-4 py-3">Lifecycle</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Provider authority proxy</th><th className="px-4 py-3">Provider risk signal</th></tr></thead>
-                <tbody className="divide-y divide-slate-100">{latestSnapshotBacklinks.length ? latestSnapshotBacklinks.slice(0, 50).map((link) => <tr key={link.id}><td className="max-w-[250px] px-4 py-3"><a href={link.sourceUrl} target="_blank" rel="noreferrer" className="break-all font-bold text-brand-700 hover:underline">{link.sourceDomain}</a></td><td className="max-w-[250px] break-all px-4 py-3 text-xs text-charcoal-600">{link.targetUrl}</td><td className="max-w-[220px] px-4 py-3 text-charcoal-700">{link.anchorText || "—"}</td><td className="px-4 py-3"><StatusPill value={link.status} /></td><td className="px-4 py-3"><StatusPill value={link.linkType} /></td><td className="px-4 py-3 font-bold">{link.domainRank ?? "Unavailable"}</td><td className="px-4 py-3 font-bold">{link.providerRiskScore ?? "Unavailable"}</td></tr>) : <tr><td colSpan={7} className="px-4 py-10 text-center text-charcoal-400">No link-level provider evidence is available for the latest snapshot.</td></tr>}</tbody>
+                <thead className="bg-slate-50 text-xs text-charcoal-500"><tr><th className="px-4 py-3">Source</th><th className="px-4 py-3">Target / analysis source</th><th className="px-4 py-3">Anchor</th><th className="px-4 py-3">Lifecycle</th><th className="px-4 py-3">Type</th><th className="px-4 py-3">Provider authority proxy</th><th className="px-4 py-3">Provider risk signal</th></tr></thead>
+                <tbody className="divide-y divide-slate-100">{latestSnapshotBacklinks.length ? latestSnapshotBacklinks.slice(0, linkLimit).map((link) => <tr key={link.id}><td className="max-w-[250px] px-4 py-3"><a href={link.sourceUrl} target="_blank" rel="noreferrer" className="break-all font-bold text-brand-700 hover:underline">{link.sourceDomain}</a></td><td className="max-w-[250px] break-all px-4 py-3 text-xs text-charcoal-600">{link.targetUrl}<div className="mt-1 font-bold">{link.snapshot.profileType === "owned" ? "Your site" : "Competitor"}: {link.snapshot.target}</div><div className="mt-1">Saved {formatDisplayDate(link.snapshot.capturedAt)}</div></td><td className="max-w-[220px] px-4 py-3 text-charcoal-700">{link.anchorText || "—"}</td><td className="px-4 py-3"><StatusPill value={link.status} /></td><td className="px-4 py-3"><StatusPill value={link.linkType} /></td><td className="px-4 py-3 font-bold">{link.domainRank ?? "Unavailable"}</td><td className="px-4 py-3 font-bold">{link.providerRiskScore ?? "Unavailable"}</td></tr>) : <tr><td colSpan={7} className="px-4 py-10 text-center text-charcoal-400">No saved backlink records are available for this selection.</td></tr>}</tbody>
               </table>
             </div>
+            {linkLimit < latestSnapshotBacklinks.length && <div className="p-4"><button type="button" onClick={() => setLinkLimit(value => value + 50)} className="rounded-lg bg-brand-700 px-4 py-2 text-sm font-bold text-white">Show more backlinks</button></div>}
           </div>
           <div className="rounded-xl border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-100 px-5 py-4"><h3 className="font-black text-charcoal-950">Findings requiring review</h3><p className="mt-1 text-xs text-charcoal-500">No automatic removal or disavow action is available.</p></div>
@@ -355,27 +366,46 @@ export function AuthorityGrowthWorkspace({ projectId, backlinkSummary, backlinkL
 
       {tab === "opportunities" && (
         <div className="space-y-4">
-          {workspace.opportunities.length ? workspace.opportunities.map((opportunity) => (
+          {workspace.opportunities.length ? workspace.opportunities.map((opportunity) => {
+            const isGap = opportunity.opportunityType === "competitor_backlink_gap";
+            const websites = (Array.isArray(opportunity.evidenceJson.gapDomains) ? opportunity.evidenceJson.gapDomains : []).flatMap((value: unknown) => {
+              if (!value || typeof value !== "object") return [];
+              const row = value as Record<string, unknown>;
+              const url = typeof row.sourceUrl === "string" ? row.sourceUrl : "";
+              try { if (!["https:", "http:"].includes(new URL(url).protocol)) return []; } catch { return []; }
+              return [{ url, name: typeof row.sourceDomain === "string" ? row.sourceDomain : new URL(url).hostname }];
+            });
+            return (
             <div key={opportunity.id} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
                 <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2"><StatusPill value={opportunity.opportunityType} /><StatusPill value={opportunity.status} /><StatusPill value={opportunity.riskLabel} />{opportunity.sourceName ? <span className="text-xs font-bold text-charcoal-500">Source context: {opportunity.sourceName}</span> : null}</div>
-                  <h3 className="mt-3 text-lg font-black text-charcoal-950">{opportunity.title}</h3>
-                  <p className="mt-2 text-sm leading-6 text-charcoal-600">{userFacingEvidenceText(opportunity.description)}</p>
-                  <div className="mt-3 rounded-lg bg-slate-50 px-3 py-2 text-sm text-charcoal-700"><span className="font-black">Value exchange:</span> {opportunity.valueExchange}</div>
-                  <p className="mt-3 text-xs font-semibold text-charcoal-500">{userFacingEvidenceText(opportunity.scoreReason)}</p>
-                  <div className="mt-2 text-xs text-charcoal-500"><span className="font-black">Evidence:</span> {label(opportunity.sourceType)} · {dateLabel(opportunity.evidenceJson.comparisonPeriodEnd ?? opportunity.evidenceJson.collectedAt ?? opportunity.createdAt)}{Array.isArray(opportunity.evidenceJson.limitations) && opportunity.evidenceJson.limitations.length ? ` · ${opportunity.evidenceJson.limitations.map(userFacingEvidenceText).join(" ")}` : opportunity.evidenceJson.verificationRequired ? " · Research lead; verify the source and relevance before approving work." : ""}</div>
-                  {opportunity.evidenceJson.verificationRequired ? <p className="mt-2 text-xs font-bold text-amber-700">This is a research lead, not a confirmed backlink gap. Verify the source before outreach.</p> : null}
+                  <div className="flex flex-wrap items-center gap-2"><StatusPill value={opportunity.status} /></div>
+                  <h3 className="mt-3 text-lg font-black text-charcoal-950">{isGap ? `Review ${websites.length || "the"} websites linking to ${opportunity.sourceName || "your competitor"}` : opportunity.title}</h3>
+                  <p className="mt-2 text-sm leading-6 text-charcoal-600">{isGap ? "These websites link to your competitor but were not found in the sample checked for your site. Some may be useful places to ask for a link to your business." : userFacingEvidenceText(opportunity.description)}</p>
+                  <details className="mt-3 rounded-lg bg-brand-50 p-4 text-sm text-brand-900">
+                    <summary className="cursor-pointer font-bold">What to do here</summary>
+                    <b className="mt-3 block">How to check</b>
+                    <ol className="mt-2 list-decimal space-y-2 pl-5"><li>{websites.length ? "Open a website below and read the page." : "Open the suggested website, if one is provided, and read the page. If no website is listed, look for a relevant one to review."}</li><li>Check whether it covers your services, industry or local area. Would your customers find it useful?</li><li>Look for a relevant article, resource list or directory where your business could fit.</li><li>Keep useful opportunities for later. Skip websites that are unrelated or look like spam.</li></ol>
+                    <p className="mt-3">Before asking for a link, choose a useful page on your own website to share.</p>
+                  </details>
+                  {websites.length > 0 && <details className="mt-3 rounded-lg border border-slate-200 p-3"><summary className="cursor-pointer text-sm font-bold text-brand-700">Review the {websites.length} websites →</summary><ul className="mt-3 space-y-2">{websites.map((site, index) => <li key={`${site.url}:${index}`}><a href={site.url} target="_blank" rel="noreferrer" className="break-all text-sm font-semibold text-brand-700 hover:underline">{site.name} ↗</a></li>)}</ul></details>}
+                  {isGap && <p className="mt-3 text-xs text-charcoal-500">This is a sample, so some websites may already link to you.</p>}
+                  <details className="mt-3 text-xs leading-5 text-charcoal-500"><summary className="cursor-pointer font-bold">More details about this suggestion</summary>
+                    <p className="mt-2"><b>What you could offer:</b> {opportunity.valueExchange}</p>
+                    <p className="mt-2">{userFacingEvidenceText(opportunity.scoreReason)}</p>
+                    <p className="mt-2">Checked: {dateLabel(opportunity.evidenceJson.comparisonPeriodEnd ?? opportunity.evidenceJson.collectedAt ?? opportunity.createdAt)}</p>
+                    {Array.isArray(opportunity.evidenceJson.limitations) && <p className="mt-2">{opportunity.evidenceJson.limitations.map(userFacingEvidenceText).join(" ")}</p>}
+                    {opportunity.evidenceJson.verificationRequired ? <p className="mt-2">Check the website and its relevance before approving any work.</p> : null}
+                  </details>
                 </div>
                 <div className="w-full shrink-0 xl:w-[310px]">
                   <div className="grid grid-cols-3 gap-2 text-center">
                     {[["Priority", opportunity.priorityScore], ["Likelihood", opportunity.earningLikelihoodScore], ["Effort", opportunity.effortScore]].map(([name, score]) => <div key={String(name)} className="rounded-lg border border-slate-100 bg-slate-50 p-2"><div className="text-xl font-black text-charcoal-950">{score}</div><div className="text-[9px] font-black uppercase tracking-wide text-charcoal-400">{name}</div></div>)}
                   </div>
-                  {!["approved", "dismissed"].includes(opportunity.status) && !workspace.capabilities.readOnly ? <div className="mt-3 grid grid-cols-2 gap-2"><button type="button" disabled={Boolean(busy)} onClick={() => updateOpportunity(opportunity.id, "shortlisted")} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-black text-brand-700">Shortlist</button><button type="button" disabled={Boolean(busy)} onClick={() => updateOpportunity(opportunity.id, "researching")} className="rounded-lg border border-amber-200 px-3 py-2 text-xs font-black text-amber-700">Research</button>{workspace.capabilities.canApprove ? workspace.capabilities.hasApprovedStrategy ? <button type="button" disabled={Boolean(busy)} onClick={() => approveOpportunity(opportunity.id)} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-black text-white">{busy === `approve:${opportunity.id}` ? "Approving…" : "Approve & create work"}</button> : <a href={`/strategy?projectId=${encodeURIComponent(projectId)}`} className="rounded-lg bg-brand-600 px-3 py-2 text-center text-xs font-black text-white">Approve Strategy first</a> : null}<button type="button" disabled={Boolean(busy)} onClick={() => updateOpportunity(opportunity.id, "dismissed")} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-black text-charcoal-600">Dismiss</button></div> : null}
                 </div>
               </div>
             </div>
-          )) : <Empty title="No authority opportunities yet" detail="Run AI research. Recommendations will use project intake, approved keywords, target markets and competitor context, while clearly separating confirmed evidence from research leads." />}
+          ); }) : <Empty title="No authority opportunities yet" detail="Run AI research. Recommendations will use project intake, approved keywords, target markets and competitor context, while clearly separating confirmed evidence from research leads." />}
         </div>
       )}
 

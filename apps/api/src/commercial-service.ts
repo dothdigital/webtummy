@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { jvZooDate, paidPeriodEnd, queueJvZooLifecycleNotice } from "./jvzoo-lifecycle.js";
 import { prisma, type Prisma } from "@webtummy/db";
 import { config } from "./config.js";
 import { COMMERCIAL_PLAN_CAPACITY, canonicalCommercialPlanCode, ensureCommercialAddonDefaults, ensureWorkspaceCapacityAccount, workspaceCapacitySummary } from "./commercial-capacity.js";
@@ -95,7 +96,7 @@ function stringValue(value: unknown) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
-function dateValue(value: unknown) {
+function legacyFingerprintDate(value: unknown) {
   if (typeof value === "number" && Number.isFinite(value)) return new Date(value < 10_000_000_000 ? value * 1_000 : value);
   if (typeof value !== "string" || !value.trim()) return null;
   const date = new Date(value);
@@ -726,14 +727,16 @@ export function normalizeJvZooIpn(payload: JsonObject) {
   const providerStatus = String(v2 ? payload.status ?? "" : payload.cstatus ?? "").trim().toUpperCase();
   const providerTransactionId = String(v2 ? payload.transaction_id ?? payload.receipt ?? payload.paykey ?? "" : payload.ctransreceipt ?? "").trim();
   const productId = String(v2 ? payload.product_id ?? "" : payload.cproditem ?? "").trim();
-  const occurredAt = dateValue(v2 ? payload.date : payload.ctranstime);
+  const occurredAt = jvZooDate(v2 ? payload.date : payload.ctranstime);
+  // Preserve existing event identities when fixing Unix timestamp parsing.
+  const fingerprintDate = legacyFingerprintDate(v2 ? payload.date : payload.ctranstime);
   const fingerprintSource = [
     `v${v2 ? 2 : 1}`,
     providerTransactionId,
     transactionType,
     providerStatus,
     productId,
-    occurredAt?.toISOString() ?? "",
+    fingerprintDate?.toISOString() ?? "",
   ].join("|");
   const eventFingerprint = crypto.createHash("sha256").update(
     providerTransactionId ? fingerprintSource : JSON.stringify(payload),
@@ -754,7 +757,7 @@ export function normalizeJvZooIpn(payload: JsonObject) {
     currency: String(payload.currency ?? "USD").trim().toUpperCase(),
     currencyProvided: Boolean(stringValue(payload.currency)),
     occurredAt,
-    currentPeriodEnd: dateValue(payload.current_period_end ?? payload.next_payment_date ?? payload.next_rebill_date ?? payload.rebill_date),
+    currentPeriodEnd: jvZooDate(payload.current_period_end ?? payload.next_payment_date ?? payload.next_rebill_date ?? payload.rebill_date),
     providerSubscriptionRef: stringValue(payload.subscription_id) ?? stringValue(payload.rebill_id) ?? stringValue(payload.ctransreceipt),
     workspaceId: workspaceIdFromJvZooPayload(payload),
   };
@@ -833,10 +836,7 @@ export function stateFromJvZooEvent(transactionType: string, providerStatus = ""
 }
 
 function periodEndFrom(interval: string | null | undefined, start: Date) {
-  const end = new Date(start);
-  if (interval === "annual") end.setUTCFullYear(end.getUTCFullYear() + 1);
-  else end.setUTCMonth(end.getUTCMonth() + 1);
-  return end;
+  return paidPeriodEnd(interval, start);
 }
 
 function amountCents(value: string) {
@@ -1319,6 +1319,9 @@ export async function processStoredJvZooEvent(eventId: string) {
           },
         });
     if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
+    if (normalized.transactionType === "CANCEL-REBILL" && updated.currentPeriodEnd && updated.currentPeriodEnd > new Date()) {
+      await queueJvZooLifecycleNotice(tx, updated, "cancellation");
+    }
     await tx.commercialBillingEvent.update({
       where: { id: event.id },
       data: { externalSubscriptionId: updated.id, workspaceId: workspace?.id ?? updated.workspaceId, status: "processed", processedAt: new Date(), error: null },
@@ -1371,6 +1374,7 @@ export async function reconcileJvZooLifecycle(now = new Date()) {
       if (claimed.count !== 1) return false;
       const updated = await tx.externalSubscription.findUniqueOrThrow({ where: { id: external.id } });
       if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
+      await queueJvZooLifecycleNotice(tx, updated, "ended");
       await tx.commercialAuditEvent.create({
         data: {
           workspaceId: updated.workspaceId,

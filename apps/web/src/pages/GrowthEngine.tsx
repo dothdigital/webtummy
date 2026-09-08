@@ -1,6 +1,10 @@
+import GrowthExecutionWorkspace from "../components/GrowthExecutionWorkspace.js";
+import { growthGuide } from "@webtummy/core/growth-execution";
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
+import { growthAccess } from "../growth-access.js";
 import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
 import ProjectModuleHeader from "../components/ProjectModuleHeader.js";
 import ProjectWorkflowController from "../components/ProjectWorkflowController.js";
@@ -9,7 +13,7 @@ import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionActi
 import { Button, Card, EmptyState } from "../components/ui.js";
 import type { GrowthCandidateAction, GrowthContentOpportunity, GrowthExperiment, GrowthOverviewResponse, GrowthReadinessItem, GuidedProject } from "../types.js";
 
-type Tab = "overview" | "blueprint" | "content" | "recommendations" | "diagnosis" | "evidence" | "funnel" | "experiments" | "tracker" | "history" | "report";
+type Tab = "execution" | "overview" | "blueprint" | "content" | "recommendations" | "diagnosis" | "evidence" | "funnel" | "experiments" | "tracker" | "history" | "report";
 
 type BlueprintItem = { dedupeKey?: string; title?: string; route?: string; score?: number; rationale?: string; conditions?: string[] };
 
@@ -66,6 +70,11 @@ function automationBadge(level: string) {
 }
 
 function growthActionWorkspace(action: GrowthCandidateAction, projectId: string) {
+  if (["strategy_conversion-path", "strategy_page-ownership", "strategy_measurement", "measurement_setup", "search_setup"].includes(action.actionType)) {
+    const guide = growthGuide({ ...action, projectId, taskId: action.followupTask?.id });
+    return { url: guide.url, label: guide.button, preparation: guide.work };
+  }
+
   const encodedProjectId = encodeURIComponent(projectId);
   const encodedActionId = encodeURIComponent(action.id);
   const text = `${action.actionType} ${action.route} ${action.title}`.toLowerCase();
@@ -317,39 +326,7 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
           Execution task created: {action.followupTask.title} · {titleCase(action.followupTask.status)}
         </div>
       )}
-      <div className="mt-5 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between">
-        <div className="max-w-2xl">
-          <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Next step</div>
-          <p className="mt-1 text-xs leading-5 text-slate-600">{nextStep}</p>
-        </div>
-        <div className="flex shrink-0 flex-wrap gap-2">
-          {taskHref ? (
-            <Link to={taskHref} className="inline-flex items-center justify-center rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white hover:bg-brand-700">
-              {workspace.label} →
-            </Link>
-          ) : canCreateTask ? (
-            <>
-              <Button onClick={() => onDecision(action, "accepted")} disabled={busy}>{primary ? "Start with AI" : startLabel}</Button>
-              <Button variant="ghost" onClick={() => onDecision(action, "edited")} disabled={busy}>Edit & Start</Button>
-            </>
-          ) : blockers.length ? (
-            <Link to="/billing" className="inline-flex items-center justify-center rounded-lg border border-amber-300 bg-white px-4 py-2 text-sm font-bold text-amber-800 hover:bg-amber-50">
-              Review AI Capacity →
-            </Link>
-          ) : (
-            <Link to={`/growth?projectId=${encodeURIComponent(projectId)}&tab=history`} className="inline-flex items-center justify-center rounded-lg border border-brand-200 bg-white px-4 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">
-              View Decision History →
-            </Link>
-          )}
-          {primary && !action.followupTask && !["accepted", "completed"].includes(action.status) && (
-            <>
-              <Button variant="ghost" onClick={() => onDecision(action, "deferred")} disabled={busy}>Defer 7 Days</Button>
-              <Button variant="ghost" onClick={() => onDecision(action, "alternatives")} disabled={busy}>Show Alternatives</Button>
-              <Button variant="ghost" onClick={() => onDecision(action, "rejected")} disabled={busy}>Reject</Button>
-            </>
-          )}
-        </div>
-      </div>
+
     </Card>
   );
 }
@@ -502,7 +479,8 @@ export default function GrowthEngine() {
   const navigate = useNavigate();
   const [projects, setProjects] = useState<GuidedProject[]>([]);
   const [data, setData] = useState<GrowthOverviewResponse | null>(null);
-  const [tab, setTab] = useState<Tab>((params.get("tab") as Tab) || "overview");
+  const [tab, setTab] = useState<Tab>((params.get("tab") === "monitoring" ? "overview" : params.get("tab") === "calendar" ? "execution" : params.get("tab") as Tab) || "overview");
+  const [executionCalendar, setExecutionCalendar] = useState(params.get("tab") === "calendar");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -743,11 +721,18 @@ export default function GrowthEngine() {
   if (!data) return <Card className="p-4 text-sm text-red-700">{error || "Growth data unavailable"}</Card>;
   const foundationReady = data.readiness.canRun;
   const workflowReady = Boolean(data.workflowController?.intelligenceReady && data.workflowController.strategyApprovedAt);
-  const canRunGrowth = foundationReady && workflowReady;
+  const { canRun: canRunGrowth, canView: canViewGrowth } = growthAccess({
+    foundationReady,
+    intelligenceReady: Boolean(data.workflowController?.intelligenceReady),
+    strategyApproved: Boolean(data.workflowController?.strategyApprovedAt),
+    hasBlueprint: Boolean(data.growth.blueprint),
+  });
   const blueprintVersion = data.growth.blueprint?.versions[0] ?? null;
   const contentRoadmap = data.growth.contentRoadmap;
   const contentQueueOrder = { now: 0, next: 1, later: 2, conditional: 3 };
   const plannedDay = (item: GrowthContentOpportunity) => {
+    const monthly = item.plannedPhase.match(/^month_(\d+)$/);
+    if (monthly) return Number(monthly[1]) * 30;
     const exactMatch = item.plannedPhase.match(/^day_(\d+)$/);
     if (exactMatch) return Number(exactMatch[1]);
     const legacyMatch = item.plannedPhase.match(/days_\d+_(\d+)/);
@@ -885,9 +870,17 @@ export default function GrowthEngine() {
       </div>}
 
       {!foundationReady && <ReadinessChecklist items={data.readiness.items} onAddWebsiteUrl={() => { setWebsiteUrlError(""); setWebsiteUrlPromptOpen(true); }} />}
-      {foundationReady && data.workflowController && !workflowReady && <IntelligenceReadiness controller={data.workflowController} />}
+      {canViewGrowth && !canRunGrowth && <Card className="border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+        <p className="font-bold">Your saved Growth Blueprint remains available</p>
+        <p className="mt-1">Review your saved plan, tasks, and results below. Refresh the required evidence before running new Growth analysis.</p>
+        {foundationReady && data.workflowController && !workflowReady && <details className="mt-3">
+          <summary className="cursor-pointer font-semibold">Review evidence needed for new analysis</summary>
+          <div className="mt-3"><IntelligenceReadiness controller={data.workflowController} /></div>
+        </details>}
+      </Card>}
+      {!canViewGrowth && foundationReady && data.workflowController && !workflowReady && <IntelligenceReadiness controller={data.workflowController} />}
 
-      {!canRunGrowth ? null : (
+      {!canViewGrowth ? null : (
       <>
 
       {data.growth.blueprint && !blueprintMatchesStrategy && <Card className="border-amber-200 bg-amber-50 p-4">
@@ -907,13 +900,13 @@ export default function GrowthEngine() {
             )}
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button onClick={() => reviewGeneration("Review Growth Blueprint refresh", "A newer approved Strategy is available. Continuing creates a replacement Blueprint; cancelling keeps the current Blueprint active.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Review &amp; Decide</Button>
+            <Button onClick={() => reviewGeneration("Review Growth Blueprint refresh", "A newer approved Strategy is available. Continuing creates a replacement Blueprint; cancelling keeps the current Blueprint active.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy || !canRunGrowth}>Review &amp; Decide</Button>
             <Link to={`/strategy?projectId=${projectId}`} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-sm font-bold text-brand-700 hover:bg-brand-50">Review Strategy</Link>
           </div>
         </div>
       </Card>}
 
-      {growthStrategySynced && officialNextAction?.action && !/growth engine|growth blueprint/i.test(officialNextAction.title) && <Card className="flex flex-col gap-4 border-emerald-200 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between">
+      {growthStrategySynced && officialNextAction?.action && !/growth engine|growth blueprint|continue growth execution/i.test(officialNextAction.title) && <Card className="flex flex-col gap-4 border-emerald-200 bg-emerald-50 p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <div className="text-xs font-black uppercase tracking-wide text-emerald-700">Growth Blueprint synchronized · Next plan action</div>
           <h2 className="mt-1 text-lg font-bold text-emerald-950">{officialNextAction.title}</h2>
@@ -931,18 +924,22 @@ export default function GrowthEngine() {
 
       <Card className="p-2">
         <div className="flex flex-wrap gap-2">
-          {(["overview", "blueprint", "content", "recommendations", "diagnosis", "evidence", "funnel", "experiments", "tracker", "history", "report"] as Tab[]).map((item) => (
+          {(["overview", "blueprint", "content", "recommendations", "diagnosis", "evidence", "funnel", "experiments", "tracker", "history", "report", "execution"] as Tab[]).map((item) => (
             <button
               key={item}
               type="button"
               onClick={() => { setTab(item); setParams({ projectId, tab: item }); }}
-              className={`rounded-lg px-3 py-2 text-sm font-bold ${tab === item ? "bg-brand-600 text-white" : "text-slate-600 hover:bg-slate-50"}`}
+              aria-current={tab === item ? "page" : undefined}
+              className={`rounded-lg px-3 py-2 text-sm font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 ${item === "execution" ? `inline-flex items-center gap-2 border border-emerald-700 text-white shadow-sm focus-visible:ring-emerald-600 ${tab === item ? "bg-emerald-800 ring-2 ring-emerald-200" : "bg-emerald-600 hover:bg-emerald-700"}` : tab === item ? "bg-brand-600 text-white focus-visible:ring-brand-600" : "text-slate-600 hover:bg-slate-50 focus-visible:ring-brand-600"}`}
             >
-              {titleCase(item)}
+              {item === "execution" ? "Growth Execution" : titleCase(item)}
+              {item === "execution" && <span aria-hidden="true">→</span>}
             </button>
           ))}
         </div>
       </Card>
+
+      {tab === "execution" && <div className="space-y-4"><div className="flex gap-2"><Button onClick={() => setExecutionCalendar(false)}>Execution tasks</Button><Button variant="ghost" onClick={() => setExecutionCalendar(true)}>Publishing calendar</Button></div><GrowthExecutionWorkspace key={`${projectId}:${executionCalendar}`} projectId={projectId} calendarOnly={executionCalendar} refreshKey={data.growth.blueprint?.currentVersion ?? 0} /></div>}
 
       {tab === "overview" && (
         <div className="space-y-5">
@@ -960,6 +957,24 @@ export default function GrowthEngine() {
                 <div className="rounded-xl bg-white/10 p-3"><div className="text-sm font-bold text-emerald-300">{titleCase(data.growthIntelligence.lifecycle.state)}</div><div className="text-[11px] text-slate-300">Measurement state</div></div>
               </div>
             </div>
+          <div className="border-t border-slate-200 bg-white p-5 text-slate-900">
+            <h2 className="text-lg font-black text-charcoal-950">Next Big Action</h2>
+            <div className="mt-4 space-y-3">
+              {data.growth.selectedAction?.followupTask ? (() => { const workspace = growthActionWorkspace(data.growth.selectedAction!, projectId); return <Link to={workspace.url} className="block w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50"><div className="font-bold text-charcoal-950">{data.growth.selectedAction!.title}</div><div className="mt-1 text-sm text-slate-500">{workspace.preparation}</div><div className="mt-3 text-xs font-bold text-brand-700">{workspace.label} →</div></Link>; })() : data.growth.selectedAction ? (
+                <button type="button" disabled={busy} onClick={() => void decideRecommendation(data.growth.selectedAction!, "accepted")} className="w-full rounded-xl border-2 border-brand-300 bg-brand-50 p-5 text-left shadow-sm hover:border-brand-500 hover:bg-brand-100 disabled:opacity-50">
+                  <div className="font-bold text-charcoal-950">{data.growth.selectedAction.title}</div>
+                  <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction.recommendation}</div>
+                  <div className="mt-3 text-xs font-bold text-brand-700">Start Next Big Action with AI →</div>
+                </button>
+              ) : (
+                <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50"><div className="font-bold text-charcoal-950">Review the Next Best Action</div><div className="mt-1 text-sm text-slate-500">Run the Growth Engine to generate an explainable recommendation.</div></button>
+              )}
+              <Link to={`/strategy?projectId=${projectId}`} className="block rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
+                <div className="font-bold text-charcoal-950">Review approved strategy</div>
+                <div className="mt-1 text-sm text-slate-500">The Blueprint and recommendations remain anchored to this approved direction.</div>
+              </Link>
+            </div>
+          </div>
             {data.growthIntelligence.dataQuality.limitations.length > 0 && <div className="border-t border-white/10 bg-white/5 px-5 py-3 text-xs text-amber-200">Known limitations: {data.growthIntelligence.dataQuality.limitations.join(" · ")}</div>}
           </div>
           <Card className="overflow-hidden">
@@ -978,8 +993,8 @@ export default function GrowthEngine() {
             </div>
             <div className="grid gap-4 p-5 lg:grid-cols-[280px_1fr]">
               <div className="space-y-3 text-sm">
-                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Last checked</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.lastCheckedAt ? new Date(data.growthIntelligence.continuousMonitoring.lastCheckedAt).toLocaleString() : "Waiting for first cycle"}</div></div>
-                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Next scheduled</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.nextScheduledAt ? new Date(data.growthIntelligence.continuousMonitoring.nextScheduledAt).toLocaleString() : "Activates after Strategy approval"}</div></div>
+                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Last checked</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.lastCheckedAt ? formatDisplayDate(data.growthIntelligence.continuousMonitoring.lastCheckedAt) : "Waiting for first cycle"}</div></div>
+                <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">Next scheduled</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.nextScheduledAt ? formatDisplayDate(data.growthIntelligence.continuousMonitoring.nextScheduledAt, { includeTime: true }) : "Activates after Strategy approval"}</div></div>
                 <div><div className="text-[10px] font-black uppercase tracking-wide text-slate-400">NBA decision</div><div className="mt-1 font-bold text-slate-800">{data.growthIntelligence.continuousMonitoring.decision?.outcome ?? "No decision yet"}</div>{data.growthIntelligence.continuousMonitoring.decision && <p className="mt-1 text-xs leading-5 text-slate-500">{data.growthIntelligence.continuousMonitoring.decision.reason}</p>}</div>
               </div>
               <div>
@@ -991,31 +1006,14 @@ export default function GrowthEngine() {
               </div>
             </div>
           </Card>
-          <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
+          <div className="space-y-5">
           <Card className="p-5">
             <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-bold text-charcoal-950">Growth evidence-readiness scorecard</h2><p className="mt-1 text-xs text-slate-500">A low score means evidence or measurement is missing. It does not prove that business performance is poor.</p></div><button type="button" onClick={() => { setTab("diagnosis"); setParams({ projectId, tab: "diagnosis" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Resolve evidence gaps →</button></div>
             <div className="mt-5 grid gap-4 md:grid-cols-2">
               {scoreEntries.map(([key, value]) => <ScoreBar key={key} label={titleCase(key)} value={value} />)}
             </div>
           </Card>
-          <Card className="p-5">
-            <h2 className="font-bold text-charcoal-950">Decision loop</h2>
-            <div className="mt-4 space-y-3">
-              {data.growth.selectedAction?.followupTask ? (() => { const workspace = growthActionWorkspace(data.growth.selectedAction!, projectId); return <Link to={workspace.url} className="block w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50"><div className="font-bold text-charcoal-950">{data.growth.selectedAction!.title}</div><div className="mt-1 text-sm text-slate-500">{workspace.preparation}</div><div className="mt-3 text-xs font-bold text-brand-700">{workspace.label} →</div></Link>; })() : data.growth.selectedAction ? (
-                <button type="button" disabled={busy} onClick={() => void decideRecommendation(data.growth.selectedAction!, "accepted")} className="w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50 disabled:opacity-50">
-                  <div className="font-bold text-charcoal-950">{data.growth.selectedAction.title}</div>
-                  <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction.recommendation}</div>
-                  <div className="mt-3 text-xs font-bold text-brand-700">Start Next Best Action with AI →</div>
-                </button>
-              ) : (
-                <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="w-full rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50"><div className="font-bold text-charcoal-950">Review the Next Best Action</div><div className="mt-1 text-sm text-slate-500">Run the Growth Engine to generate an explainable recommendation.</div></button>
-              )}
-              <Link to={`/strategy?projectId=${projectId}`} className="block rounded-lg border border-slate-200 p-3 text-left hover:bg-slate-50">
-                <div className="font-bold text-charcoal-950">Review approved strategy</div>
-                <div className="mt-1 text-sm text-slate-500">The Blueprint and recommendations remain anchored to this approved direction.</div>
-              </Link>
-            </div>
-          </Card>
+
           </div>
         </div>
       )}
@@ -1052,7 +1050,6 @@ export default function GrowthEngine() {
                         <div className="mt-1 text-xs font-bold text-brand-600">{titleCase(item.route || "growth")} · score {item.score ?? "—"}</div>
                         {item.rationale && <p className="mt-2 text-xs leading-5 text-slate-500">{item.rationale}</p>}
                         {item.conditions && item.conditions.length > 0 && <div className="mt-2 text-xs text-amber-700">Needs: {item.conditions.join(", ")}</div>}
-                        {matchingAction && <div className="mt-3 border-t border-slate-100 pt-3">{matchingAction.followupTask && workspace ? <Link to={workspace.url} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white">{workspace.label} →</Link> : matchingAction.status === "completed" ? <button type="button" onClick={() => { setTab("history"); setParams({ projectId, tab: "history" }); }} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">View outcome →</button> : <button type="button" disabled={busy || Boolean(item.conditions?.length)} onClick={() => setBlueprintActionReview(matchingAction)} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white disabled:bg-slate-300">Start with AI →</button>}</div>}
                       </div>;
                     })}
                   </div>
@@ -1060,7 +1057,7 @@ export default function GrowthEngine() {
               ))}
             </div>
           ) : (
-            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Intelligence" title="No Growth Blueprint exists yet" description="Review the approved Strategy and current evidence, then choose whether to create the first Blueprint." action={<Button onClick={() => reviewGeneration("Review first Growth Blueprint", "Confirm that the approved Strategy and current evidence are the inputs you want to use.", `/api/projects-v2/${projectId}/growth/analyze`, "blueprint")} disabled={busy}>Review &amp; Generate</Button>} /></Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Intelligence" title="No Growth Blueprint exists yet" description="Review the approved Strategy and current evidence, then choose whether to create the first Blueprint." action={<></>} /></Card>
           )}
           <Card className="overflow-hidden">
             <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-100 bg-gradient-to-r from-violet-50 to-white p-5">
@@ -1069,7 +1066,7 @@ export default function GrowthEngine() {
                 <h2 className="mt-2 text-xl font-bold text-charcoal-950">Supporting Content Distribution Plan</h2>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{contentRoadmap?.recommendationRationale || "Map the complete supporting-content opportunity, then generate only the current approved phase."}</p>
               </div>
-              <Button onClick={() => contentRoadmap ? (setTab("content"), setParams({ projectId, tab: "content" })) : reviewGeneration("Review Supporting Content Plan", "Review the Strategy, Blueprint, keywords, pages, markets, and goals that will be used before creating this plan.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{contentRoadmap ? "Open Content Plan" : "Review & Generate"}</Button>
+              <></>
             </div>
             {contentRoadmap && <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
               <Stat label="Total opportunity" value={contentRoadmap.opportunityCount} />
@@ -1086,7 +1083,7 @@ export default function GrowthEngine() {
                 <h2 className="mt-2 text-xl font-bold text-charcoal-950">Social Distribution & Repurposing Plan</h2>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">{data.growth.socialDistribution?.strategySummary || "Turn approved project intelligence and existing content into a coordinated, approval-based social calendar, then feed measured results back into Growth."}</p>
               </div>
-              <Link to={`/social-strategy?projectId=${projectId}`} className="rounded-lg bg-pink-600 px-4 py-2 text-sm font-bold text-white">{data.growth.socialDistribution ? "Open Social Plan" : "Create Social Plan"}</Link>
+              <></>
             </div>
             {data.growth.socialDistribution && (
               <div className="border-b border-slate-100 bg-white px-5 py-3 text-xs font-semibold text-slate-600">
@@ -1107,7 +1104,7 @@ export default function GrowthEngine() {
       {tab === "content" && (
         <div className="space-y-5">
           {!contentRoadmap ? (
-            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Review before creating the Supporting Content Plan" description="SEnuke AI will use the approved Strategy, keyword research, website pages, target markets, and business goals. Nothing is generated until you review and continue." action={<Button onClick={() => reviewGeneration("Review Supporting Content Plan", "Confirm these approved project inputs before creating the opportunity map. Articles will not be generated by this action.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content")} disabled={busy || !canRunGrowth}>{busy ? "Researching opportunities…" : "Review & Generate"}</Button>} /></Card>
+            <Card className="overflow-hidden"><EmptyState eyebrow="Growth Blueprint" title="Review before creating the Supporting Content Plan" description="SEnuke AI will use the approved Strategy, keyword research, website pages, target markets, and business goals. Nothing is generated until you review and continue." action={<></>} /></Card>
           ) : (
             <>
               <Card className="overflow-hidden">
@@ -1119,8 +1116,8 @@ export default function GrowthEngine() {
                     <div className="mt-3 text-xs font-semibold text-slate-500">Cadence: {contentRoadmap.recommendedCadence}{contentRoadmap.nextReviewAt ? ` · Reassess ${new Date(contentRoadmap.nextReviewAt).toLocaleDateString()}` : ""}</div>
                   </div>
                   <div className="flex flex-wrap items-end gap-2">
-                    <label className="text-xs font-bold text-slate-600"><span className="mb-1 block">Plan start date (optional)</span><input type="date" value={contentPlanStartDate} onChange={(event) => setContentPlanStartDate(event.target.value)} className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-charcoal-950" /></label>
-                    <Button variant="ghost" onClick={() => reviewGeneration("Review Content Plan recreation", "Approved, scheduled, and published work keeps its status and dates. Continue only if you want to recreate the remaining 180-day plan.", `/api/projects-v2/${projectId}/growth/content-roadmap/refresh`, "content", contentPlanStartDate ? { startDate: contentPlanStartDate } : {})} disabled={busy}>{busy ? "Recreating plan…" : "Review & Recreate Plan"}</Button>
+                    <></>
+                    <></>
                   </div>
                 </div>
                 <div className="grid gap-3 p-5 sm:grid-cols-2 xl:grid-cols-5">
@@ -1136,12 +1133,12 @@ export default function GrowthEngine() {
                 <div className="border-b border-cyan-100 bg-cyan-50/60 p-4">
                   <div className="text-xs font-bold uppercase tracking-wide text-cyan-700">180-day publishing plan</div>
                   <h2 className="mt-1 text-lg font-bold text-charcoal-950">Choose a delivery window</h2>
-                  <p className="mt-1 text-sm text-slate-600">These windows show planned topics, not finished articles. Empty months do not fill automatically when their dates arrive. Add researched keywords and review a plan refresh to discover more opportunities. Article drafting follows Website Plan approval. Without a start date, dates remain relative to Day 1.</p>
+                  <p className="mt-1 text-sm text-slate-600">Articles, monthly lead magnets and at least four suggested social posts per month share this 180-day plan. Social suggestions also appear in the Social section. Work starts after verified website launch; dates remain relative to Day 0 until then. Nothing is published automatically.</p>
                 </div>
                 <div className="grid gap-2 p-4 sm:grid-cols-3 xl:grid-cols-7">
                   {([30, 60, 90, 120, 150, 180] as const).map((days) => {
                     const count = contentRoadmap.opportunities.filter((item) => item.lifecycleStatus !== "superseded" && scheduleWindow(item) === days).length;
-                    return <button key={days} type="button" onClick={() => { setContentWindow(days); setContentQueue("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === days ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Days {days - 29}–{days}</span><span className="mt-1 block text-xs text-slate-500">{count} planned {count === 1 ? "article" : "articles"}</span></button>;
+                    return <button key={days} type="button" onClick={() => { setContentWindow(days); setContentQueue("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === days ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Days {days - 29}–{days}</span><span className="mt-1 block text-xs text-slate-500">{count} planned {count === 1 ? "item" : "items"}</span></button>;
                   })}
                   <button type="button" onClick={() => { setContentWindow("all"); setContentQueue("all"); setSelectedContentIds([]); }} className={`rounded-xl border p-3 text-left ${contentWindow === "all" ? "border-cyan-500 bg-cyan-50 ring-1 ring-cyan-200" : "border-slate-200 bg-white hover:border-cyan-300"}`}><span className="block text-sm font-bold text-charcoal-950">Full plan</span><span className="mt-1 block text-xs text-slate-500">{contentRoadmap.opportunityCount} opportunities</span></button>
                 </div>
@@ -1149,7 +1146,7 @@ export default function GrowthEngine() {
 
               <Card className="overflow-hidden">
                 <div className="border-b border-brand-100 bg-brand-50/60 p-4">
-                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Turn the plan into governed website work</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Add content opportunities to Website Plan</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Supporting-content suggestions become their own proposed pages and retain the supplied target page as their cluster parent. Content work begins only after Website Plan approval.</p></div>{recommendedContentOpportunity&&<WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "growth", sourceType: "content_opportunity", sourceId: recommendedContentOpportunity.id, title: recommendedContentOpportunity.title, pageMode: "create_supporting", targetUrl: null, parentTargetUrl: recommendedContentOpportunity.internalLinkTargetUrl || recommendedContentOpportunity.targetUrl, evidence: recommendedContentOpportunity.recommendationReason, recommendedAction: recommendedContentOpportunity.businessPurpose, expectedImpact: `Priority ${recommendedContentOpportunity.priorityScore}/100 growth content opportunity.` }} className="shrink-0 rounded-lg bg-brand-600 px-4 py-2.5 text-sm font-bold text-white disabled:opacity-50" />}</div>
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between"><div><div className="text-xs font-bold uppercase tracking-wide text-brand-700">Turn the plan into governed website work</div><h2 className="mt-1 text-lg font-bold text-charcoal-950">Add content opportunities to Website Plan</h2><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Supporting-content suggestions become their own proposed pages and retain the supplied target page as their cluster parent. Content work begins only after Website Plan approval.</p></div>{recommendedContentOpportunity&&<></>}</div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 p-4">
                   <div className="flex flex-wrap gap-2">
@@ -1162,7 +1159,7 @@ export default function GrowthEngine() {
                     ] as const).map(([queue, label]) => <button key={queue} type="button" onClick={() => { setContentQueue(queue); setSelectedContentIds([]); }} className={`rounded-full px-3 py-2 text-xs font-bold ${contentQueue === queue ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600 hover:bg-slate-200"}`}>{label}</button>)}
                   </div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <button type="button" disabled={!selectableContentOpportunities.length} onClick={() => setSelectedContentIds(selectableContentOpportunities.map((item) => item.id))} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 disabled:text-slate-300">Select all in this view</button>
+                    <></>
                     <span className="text-xs font-semibold text-slate-500">Add each selected opportunity to its matched Website Plan page below.</span>
                   </div>
                 </div>
@@ -1172,44 +1169,45 @@ export default function GrowthEngine() {
                     const selected = selectedContentIds.includes(opportunity.id);
                     return <div key={opportunity.id} className={`rounded-xl border p-4 ${selected ? "border-brand-400 bg-brand-50/40 ring-1 ring-brand-100" : "border-slate-200 bg-white"}`}>
                       <div className="flex flex-wrap items-start gap-3">
-                        <label className={`mt-1 ${selectable ? "cursor-pointer" : "cursor-not-allowed opacity-40"}`}><input type="checkbox" disabled={!selectable} checked={selected} onChange={() => setSelectedContentIds((current) => current.includes(opportunity.id) ? current.filter((id) => id !== opportunity.id) : [...current, opportunity.id])}/></label>
+                        <></>
                         <div className="min-w-0 flex-1">
                           <div className="flex flex-wrap items-center gap-2">
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold uppercase ${opportunity.queue === "now" ? "bg-emerald-100 text-emerald-700" : opportunity.queue === "next" ? "bg-cyan-100 text-cyan-700" : opportunity.queue === "conditional" ? "bg-amber-100 text-amber-700" : "bg-slate-100 text-slate-600"}`}>{opportunity.queue}</span>
+                            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[10px] font-bold text-blue-800">{({ article: "Article", lead_magnet: "Lead magnet", social_post: "Social media post", social_media_post: "Social media post", social: "Social media post" } as Record<string, string>)[opportunity.contentType] || titleCase(opportunity.contentType || "content")}</span>
                             <span className={`rounded-full px-2.5 py-1 text-[10px] font-bold ${statusBadge(opportunity.lifecycleStatus)}`}>{titleCase(opportunity.lifecycleStatus)}</span>
                             <span className="rounded-full bg-violet-50 px-2.5 py-1 text-[10px] font-bold text-violet-700">Day {plannedDay(opportunity) ?? "TBD"}</span>
                           </div>
-                          <h3 className="mt-2 text-base font-bold text-charcoal-950">{opportunity.title}</h3>
+                          <h3 className="mt-2 text-base font-bold text-charcoal-950">{opportunity.title}</h3>{opportunity.contentType === "lead_magnet" && <p className="mt-1 text-xs font-bold text-violet-700">Monthly lead magnet · Track sign-ups and delivery or downloads</p>}
                           <div className="mt-1 text-xs font-semibold text-brand-700">{opportunity.primaryKeyword} · {titleCase(opportunity.searchIntent)} · {opportunity.clusterName}</div>
                           <p className="mt-3 text-sm leading-6 text-slate-600">{opportunity.recommendationReason}</p>
                           <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Business purpose</span><span className="mt-1 block leading-5 text-slate-700">{opportunity.businessPurpose}</span></div>
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Target page</span><span className="mt-1 block break-all leading-5 text-slate-700">{opportunity.internalLinkTargetUrl || opportunity.targetUrl || "Assign during content review"}</span></div>
                             <div className="rounded-lg bg-slate-50 p-3"><span className="block font-bold uppercase text-slate-400">Priority</span><span className="mt-1 block text-lg font-bold text-brand-700">{opportunity.priorityScore}/100</span><span className="text-slate-500">{opportunity.confidence}% confidence</span></div>
-                            <div className="rounded-lg bg-cyan-50 p-3"><span className="block font-bold uppercase text-cyan-700">Action trigger</span><span className="mt-1 block font-bold text-charcoal-950">{opportunity.plannedPublishAt ? `Post ${formatDate(opportunity.plannedPublishAt)}` : `Publish on Day ${plannedDay(opportunity) ?? "TBD"}`}</span><span className="mt-1 block leading-5 text-slate-600">{opportunity.plannedPublishAt ? `Add to Website Plan by ${formatDate(new Date(new Date(opportunity.plannedPublishAt).getTime() - 14 * 86_400_000).toISOString())}` : `Add to Website Plan 14 days before Day ${plannedDay(opportunity) ?? "TBD"}`}</span></div>
+                            <div className="rounded-lg bg-cyan-50 p-3"><span className="block font-bold uppercase text-cyan-700">Action trigger</span><span className="mt-1 block font-bold text-charcoal-950">{opportunity.plannedPublishAt ? `Post ${formatDate(opportunity.plannedPublishAt)}` : `Publish on Day ${plannedDay(opportunity) ?? "TBD"}`}</span><span className="mt-1 block leading-5 text-slate-600">{opportunity.plannedPublishAt ? `Review before ${formatDate(opportunity.plannedPublishAt)}` : `Review before Day ${plannedDay(opportunity) ?? "TBD"}`}</span></div>
                           </div>
                         </div>
                       </div>
                       <div className="mt-4 flex flex-wrap items-center justify-end gap-2 border-t border-slate-100 pt-3">
-                        {opportunity.executionTaskId && <Link to={`/ai-content?projectId=${projectId}&taskId=${opportunity.executionTaskId}&open=1`} className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-bold text-white">Open Content Task →</Link>}
-                        {selectable && <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "growth", sourceType: "content_opportunity", sourceId: opportunity.id, title: opportunity.title, pageMode: "create_supporting", targetUrl: null, parentTargetUrl: opportunity.internalLinkTargetUrl || opportunity.targetUrl, evidence: opportunity.recommendationReason, recommendedAction: opportunity.businessPurpose, expectedImpact: `Priority ${opportunity.priorityScore}/100 · ${opportunity.confidence}% confidence.` }} />}
-                        {selectable && opportunity.queue !== "next" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "next" })} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600">Move to Next</button>}
-                        {selectable && opportunity.queue !== "now" && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { queue: "now" })} className="rounded-lg border border-brand-200 px-3 py-2 text-xs font-bold text-brand-700">Move to Now</button>}
-                        {selectable && <button type="button" disabled={busy} onClick={() => void updateContentOpportunity(opportunity, { lifecycleStatus: "rejected" })} className="rounded-lg border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">Reject</button>}
+                        {opportunity.executionTaskId && <></>}
+                        {selectable && <></>}
+                        {selectable && opportunity.queue !== "next" && <></>}
+                        {selectable && opportunity.queue !== "now" && <></>}
+                        {selectable && <></>}
                       </div>
                     </div>;
                   })}
                   {!visibleContentOpportunities.length && <div className="rounded-xl border border-dashed border-slate-300 p-8 text-center">
                     <h3 className="font-bold text-charcoal-950">{contentWindowCount ? "Planned topics are hidden by this queue filter" : `No topics planned ${contentWindow === "all" ? "yet" : `for days ${contentWindow - 29}–${contentWindow}`}`}</h3>
                     <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-slate-600">{contentWindowCount ? `${contentWindowCount} planned topic${contentWindowCount === 1 ? " is" : "s are"} available in this delivery window. Show all queues to see them.` : "This is an empty planning window, not an article-generation job waiting to run. Research and approve more relevant keywords, then use Review & Recreate Plan above. New topics depend on the available evidence; an empty month does not fill automatically."}</p>
-                    {contentWindowCount ? <button type="button" onClick={() => { setContentQueue("all"); setSelectedContentIds([]); }} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Show all queues in this window</button> : <Link to={`/keywords?projectId=${encodeURIComponent(projectId)}`} className="mt-4 inline-flex rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Review keyword research →</Link>}
+                    {contentWindowCount ? <button type="button" onClick={() => { setContentQueue("all"); setSelectedContentIds([]); }} className="mt-4 rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white">Show all queues in this window</button> : <></>}
                   </div>}
                 </div>
               </Card>
 
               {contentRoadmap.batches.length > 0 && <Card className="overflow-hidden">
                 <div className="border-b border-slate-100 p-5"><h2 className="font-bold text-charcoal-950">Approved generation batches</h2><p className="mt-1 text-sm text-slate-500">Only these approved opportunities are available for AI generation.</p></div>
-                <div className="space-y-3 p-5">{contentRoadmap.batches.map((batch) => <div key={batch.id} className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold text-charcoal-950">{batch.title}</div><div className="mt-1 text-xs font-semibold text-emerald-700">{batch.opportunityCount} opportunities · {titleCase(batch.phase)} · {titleCase(batch.status)}</div></div><span className="text-xs text-slate-500">{batch.approvedAt ? `Approved ${new Date(batch.approvedAt).toLocaleDateString()}` : "Approved batch"}</span></div><div className="mt-3 flex flex-wrap gap-2">{batch.opportunities.map((item) => item.executionTaskId ? <Link key={item.id} to={`/ai-content?projectId=${projectId}&taskId=${item.executionTaskId}&open=1`} className="rounded-full border border-emerald-200 bg-white px-3 py-1.5 text-xs font-bold text-emerald-700">{item.title} →</Link> : <span key={item.id} className="rounded-full bg-white px-3 py-1.5 text-xs text-slate-500">{item.title}</span>)}</div></div>)}</div>
+                <div className="space-y-3 p-5">{contentRoadmap.batches.map((batch) => <div key={batch.id} className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-4"><div className="flex flex-wrap items-center justify-between gap-3"><div><div className="font-bold text-charcoal-950">{batch.title}</div><div className="mt-1 text-xs font-semibold text-emerald-700">{batch.opportunityCount} opportunities · {titleCase(batch.phase)} · {titleCase(batch.status)}</div></div><span className="text-xs text-slate-500">{batch.approvedAt ? `Approved ${new Date(batch.approvedAt).toLocaleDateString()}` : "Approved batch"}</span></div><div className="mt-3 flex flex-wrap gap-2">{batch.opportunities.map((item) => item.executionTaskId ? <></> : <span key={item.id} className="rounded-full bg-white px-3 py-1.5 text-xs text-slate-500">{item.title}</span>)}</div></div>)}</div>
               </Card>}
             </>
           )}
@@ -1219,11 +1217,7 @@ export default function GrowthEngine() {
       {tab === "recommendations" && (
         <div className="space-y-4">
           {blueprintApprovalRequired && data.workflowController && (
-            <MasterWorkflowStatus
-              workflow={data.workflowController}
-              onAction={approveGrowthBlueprint}
-              actionBusy={busy}
-            />
+            <></>
           )}
           {data.growth.selectedAction ? (
             <RecommendationCard action={data.growth.selectedAction} projectId={projectId} primary busy={busy} onDecision={decideRecommendation} />
@@ -1232,7 +1226,7 @@ export default function GrowthEngine() {
               <span className={`inline-flex rounded-full px-2.5 py-1 text-xs font-bold ${statusBadge(data.growth.decisionState.key === "NO_MATERIAL_ACTION" ? "evidence_available" : data.growth.decisionState.key === "BLOCKED_BY_DEPENDENCY" ? "blocked" : "watch")}`}>{titleCase(data.growth.decisionState.key)}</span>
               <h2 className="mt-3 font-bold text-charcoal-950">{data.growth.decisionState.title}</h2>
               <p className="mt-2 text-sm text-slate-500">{data.growth.decisionState.message}</p>
-              <Button className="mt-4" onClick={() => reviewGeneration("Review evidence and actions refresh", "Review the missing and changed evidence first. Continue only if you want Growth recommendations recalculated.", `/api/projects-v2/${projectId}/growth/analyze`, "recommendations")} disabled={busy}>Review &amp; Refresh</Button>
+              <></>
             </Card>
           )}
           {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).length > 0 && (
@@ -1245,6 +1239,7 @@ export default function GrowthEngine() {
           )}
         </div>
       )}
+
 
       {tab === "diagnosis" && (
         <div className="grid gap-5 xl:grid-cols-[1fr_360px]">
@@ -1282,18 +1277,10 @@ export default function GrowthEngine() {
                         <div className="text-[10px] font-bold uppercase tracking-wide text-slate-400">Resolution</div>
                         <div className="mt-1 text-sm font-bold text-charcoal-950">{matchingAction.title}</div>
                         <p className="mt-1 text-xs leading-5 text-slate-600">{matchingAction.recommendation}</p>
-                        <div className="mt-3">
-                          {matchingTaskHref ? (
-                            <Link to={matchingTaskHref} className="inline-flex rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700">{matchingWorkspace?.label ?? "Continue with AI"} →</Link>
-                          ) : matchingAction.status === "completed" ? (
-                            <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700">Review Completed Action →</button>
-                          ) : (
-                            <button type="button" disabled={busy} onClick={() => void decideRecommendation(matchingAction, "accepted")} className="rounded-lg bg-brand-600 px-3 py-2 text-xs font-bold text-white hover:bg-brand-700 disabled:bg-slate-300">Fix {titleCase(dimension)} with AI →</button>
-                          )}
-                        </div>
+
                       </div>
                     ) : (
-                      <button type="button" onClick={() => { setTab("recommendations"); setParams({ projectId, tab: "recommendations" }); }} className="mt-3 rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700">Review Growth Actions →</button>
+                      <p className="mt-3 text-xs text-slate-500">Follow the matching task in Growth Execution.</p>
                     )}
                   </div>
                   );
@@ -1442,7 +1429,7 @@ export default function GrowthEngine() {
                     <div className="font-bold text-charcoal-950">Growth Engine run</div>
                     <span className={`rounded-full px-2 py-1 text-xs font-bold ${statusBadge(run.status)}`}>{titleCase(run.status)}</span>
                   </div>
-                  <div className="mt-1 text-sm text-slate-500">{new Date(run.createdAt).toLocaleString()}</div>
+                  <div className="mt-1 text-sm text-slate-500">{formatDisplayDate(run.createdAt)}</div>
                 </div>
               ))}
             </div>

@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -883,7 +884,7 @@ export default function GapAnalysis() {
                   </div>
                 </div>
               )}
-              <div className="mt-4 text-xs text-slate-400">Latest analysis: {new Date(overview.latestGapRun.completedAt || overview.latestGapRun.createdAt).toLocaleString()} · Approved gaps feed the next Strategy generation, Execution Plan, and Next Best Action ranking.</div>
+              <div className="mt-4 text-xs text-slate-400">Latest analysis: {formatDisplayDate(overview.latestGapRun.completedAt || overview.latestGapRun.createdAt)} · Approved gaps feed the next Strategy generation, Execution Plan, and Next Best Action ranking.</div>
             </div>}
           </Card>
 

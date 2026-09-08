@@ -1,9 +1,13 @@
+export * from "./websiteDelivery.js";
+export * from "./websiteImagePreferences.js";
 import {
   SENUKE_COMPONENT_REGISTRY_V1,
   validateComponentInstance,
   websitePageCompositionPolicy,
   type WebsiteComponentInstance,
 } from "./websiteModel.js";
+
+export const WEBSITE_FAQ_ANSWER_DIRECTION = "Write each FAQ as a genuine customer question with a self-contained answer. Start with a direct answer, then explain relevant details, decision factors, or practical steps specific to the question and page. Aim for 3–5 sentences and 50–90 words per answer within the page word budget. Avoid one-line replies, repeated sales pitches, filler, and answers that merely tell the reader to contact the business. Use only approved business facts; do not invent prices, policies, guarantees, availability, credentials, or outcomes. When a detail is unconfirmed, explain what needs confirming without presenting it as an established fact. Use natural language and keep FAQPage schema identical to the visible answers.";
 
 export type WebsiteQueueState =
   | "active"
@@ -763,4 +767,9 @@ export function normalizeWebsiteFooterMenu(
     }
   }
   return [...columns, ...savedPages.values()];
+}
+
+/** A reviewed complete page also satisfies content preparation in improvement mode. */
+export function websiteCompleteContentIsApproved(status: string, complete: boolean): boolean {
+  return complete && ["approved", "deployed", "published"].includes(status);
 }

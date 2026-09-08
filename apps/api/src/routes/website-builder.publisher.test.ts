@@ -640,3 +640,13 @@ describe("ongoing WordPress publishing schema", () => {
     expect(schema["@graph"].map((entity) => entity["@type"])).not.toContain("BlogPosting");
   });
 });
+
+
+describe("Foundation company name in page schema", () => {
+  it("uses the saved website name instead of stale intake or generated schema names", () => {
+    const renamedProject = { ...project, websiteBuilds: [{ brandJson: { businessName: "Customer Confirmed Company" } }] };
+    const schema = combinedPageSchema({ title: "Insurance CRM", pageType: "service", primaryKeyword: "insurance CRM" }, renamedProject, [], { "@type": "Service", provider: { "@type": "Organization", name: "Old company" } });
+    expect(JSON.stringify(schema)).toContain("Customer Confirmed Company");
+    expect(JSON.stringify(schema)).not.toContain("Old company");
+  });
+});

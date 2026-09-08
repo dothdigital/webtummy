@@ -1,3 +1,4 @@
+import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
@@ -29,6 +30,7 @@ async function projectContext(req: Parameters<typeof workspaceContext>[0], proje
 optimizationWorkflowRouter.get("/projects/:projectId/optimization-workflow", async (req, res) => {
   try {
     await projectContext(req, req.params.projectId);
+    await reconcileProjectPlanning(req.params.projectId);
     const [discoveryChecks, checkpoints, nextBestActions] = await Promise.all([
       prisma.contentDiscoveryCheck.findMany({ where: { projectId: req.params.projectId }, orderBy: { createdAt: "desc" }, include: { task: { select: { id: true, title: true, status: true } } } }),
       prisma.measurementCheckpoint.findMany({ where: { projectId: req.params.projectId }, orderBy: [{ dueAt: "asc" }, { createdAt: "desc" }], include: { task: { select: { id: true, title: true, status: true, relatedUrl: true } } } }),

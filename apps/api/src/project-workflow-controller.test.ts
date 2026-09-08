@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionPlanWorkflowBlocker, hasCurrentBusinessBrainGovernance, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
+import { latestWebsiteImplementationAt, executionPlanWorkflowBlocker, hasCurrentBusinessBrainGovernance, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
 function snapshot(overrides: Partial<WorkflowEvidenceSnapshot> = {}): WorkflowEvidenceSnapshot {
   const now = new Date("2026-08-01T12:00:00.000Z");
@@ -140,8 +140,9 @@ describe("DEV-046 project workflow controller", () => {
       measurementStarted: false,
     }));
     expect(published.nextBestAction.title).not.toBe("Review and approve the Business Brain");
-    expect(published.nextBestAction.title).toBe("Review the published website and next growth action");
-    expect(published.nextBestAction.action.url).toContain("/growth?");
+    expect(published.nextBestAction.title).toBe("Continue Growth Execution");
+    expect(published.nextBestAction.action.url).toBe("/growth?projectId=project-1");
+    expect(published.nextBestAction.action.label).toBe("Continue Growth Execution");
     expect(published.stages.find((stage) => stage.key === "business_brain_approval")?.status).toBe("approved");
     expect(published.stages.find((stage) => stage.key === "readiness_check")?.status).toBe("complete");
   });
@@ -651,5 +652,67 @@ describe("DEV-046 project workflow controller", () => {
     const active = resolveProjectWorkflow(snapshot({ ...base, trackingVerified: true }));
     expect(active.state).toBe("continuous_growth");
     expect(active.nextBestAction.title).toBe("Review the Next Best Action");
+  });
+});
+
+
+describe("shared website delivery progression", () => {
+  it.each(["wordpress", "static", "handoff"])("advances %s from live checks through tracking into growth", destination => {
+    const delivery = { websiteHandoffComplete: destination === "handoff", publishingComplete: destination !== "handoff", websiteDevelopmentStarted: true, websitePlanApproved: true, publishingStarted: true };
+    const live = resolveProjectWorkflow(snapshot({ ...delivery, postImplementationVerificationRequired: true, websiteHandoffVerified: false, trackingVerified: true }));
+    expect(live.websiteDeliveryStage).toBe("live_checks");
+    expect(live.nextBestAction.action.url).toContain("/site-analysis?");
+    const tracking = resolveProjectWorkflow(snapshot({ ...delivery, websiteHandoffVerified: true, trackingVerified: false }));
+    expect(tracking.websiteDeliveryStage).toBe("tracking_checks");
+    expect(tracking.nextBestAction.action.url).toContain("performance?view=senuke");
+    const growth = resolveProjectWorkflow(snapshot({ ...delivery, websiteHandoffVerified: true, trackingVerified: true, measurementComplete: false, reportingLearningComplete: false, openExecutionTasks: 10 }));
+    expect(growth.websiteDeliveryStage).toBe("growth_execution");
+    expect(growth.state).toBe("execution");
+    expect(growth.stateLabel).toBe("Growth Execution");
+    expect(growth.nextBestAction.action.url).toBe("/growth?projectId=project-1");
+  });
+  it.each(["confirm_applied", "assessment", "review_findings"] as const)("keeps handoff %s in live review even with tracking data", phase => {
+    const result = resolveProjectWorkflow(snapshot({ websiteHandoffComplete: true, websiteHandoffVerified: false, handoffReviewStage: phase, trackingVerified: true }));
+    expect(result.websiteDeliveryStage).toBe("live_checks");
+    expect(result.handoffReviewStage).toBe(phase);
+    expect(result.nextBestAction.action.url).toContain("/site-analysis?");
+    expect(result.nextBestAction.action.url).not.toContain("gap-analysis");
+  });
+  it("does not treat a tracking event as proof the handoff was applied", () => {
+    const result = resolveProjectWorkflow(snapshot({ websiteHandoffComplete: true, websiteHandoffVerified: false, trackingVerified: true }));
+    expect(result.websiteDeliveryStage).toBe("live_checks");
+  });
+  it("allows an authorized tracking limitation after live checks", () => {
+    const result = resolveProjectWorkflow(snapshot({ publishingComplete: true, trackingVerified: false, trackingLimitationRecorded: true }));
+    expect(result.websiteDeliveryStage).toBe("growth_execution");
+  });
+  it("does not put an undelivered draft in the delivery workflow", () => {
+    const result = resolveProjectWorkflow(snapshot({ websiteDevelopmentStarted: true, publishingStarted: true }));
+    expect(result.websiteDeliveryStage).toBeUndefined();
+  });
+});
+
+
+describe("website review completion does not restart live verification", () => {
+  const builtAt = new Date("2026-09-06T02:52:00Z");
+  const crawledAt = new Date("2026-09-06T15:57:00Z");
+  const reviewedAt = new Date("2026-09-07T04:24:00Z");
+  const built = { moduleName: "site_architect", sourceType: "website_builder_request", title: "Create website", publishedAt: null, completedAt: builtAt };
+  const review = { moduleName: "site_architect", sourceType: "website_builder_review", title: "Review generated website", publishedAt: null, completedAt: reviewedAt };
+  it("advances an already verified handoff after a later review task completes", () => {
+    const implementedAt = latestWebsiteImplementationAt([built, review]);
+    expect(implementedAt).toEqual(builtAt);
+    const result = resolveProjectWorkflow(snapshot({ websiteHandoffComplete: true, websiteHandoffVerified: true, trackingVerified: true, websiteDevelopmentStarted: true, websitePlanApproved: true, publishingStarted: true, postImplementationVerificationRequired: Boolean(implementedAt && implementedAt > crawledAt) }));
+    expect(result.websiteDeliveryStage).toBe("growth_execution");
+    expect(result.nextBestAction.action.url).toBe("/growth?projectId=project-1");
+  });
+  it("still requires a fresh check when a page is implemented after the last crawl", () => {
+    const changed = { ...built, sourceType: "site_architecture_page", title: "Update contact page", completedAt: reviewedAt };
+    expect(latestWebsiteImplementationAt([built, review, changed])).toEqual(reviewedAt);
+    const result = resolveProjectWorkflow(snapshot({ websiteHandoffComplete: true, websiteHandoffVerified: true, trackingVerified: true, postImplementationVerificationRequired: true }));
+    expect(result.websiteDeliveryStage).toBe("live_checks");
+  });
+  it("does not treat a review or approved plan alone as implementation", () => {
+    expect(latestWebsiteImplementationAt([review, { ...built, sourceType: "seo_plan" }])).toBeNull();
   });
 });

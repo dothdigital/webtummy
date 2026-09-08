@@ -1,3 +1,4 @@
+import { formatDisplayDate, formatTimestampValue } from "@webtummy/core/display-date";
 import PDFDocument from "pdfkit";
 
 type PdfBrand = { workspaceName: string; workspaceType: string; clientName?: string | null; logoDataUrl?: string | null; preparedByName?: string | null; contactEmail?: string | null; contactPhone?: string | null; websiteUrl?: string | null; address?: string | null; primaryColor?: string | null; secondaryColor?: string | null; footerDisclaimer?: string | null; senderSignature?: string | null; minimizeSenukeBranding?: boolean };
@@ -5,7 +6,7 @@ type PdfBrand = { workspaceName: string; workspaceType: string; clientName?: str
 const titleCase = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (character) => character.toUpperCase());
 const values = (value: unknown) => Array.isArray(value) ? value : [];
 const record = (value: unknown): Record<string, unknown> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-const display = (value: unknown) => value == null || value === "" ? "Data pending" : typeof value === "boolean" ? (value ? "Yes" : "No") : Array.isArray(value) ? (value.length ? value.map((item) => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") : "None") : String(value);
+const display = (value: unknown) => value == null || value === "" ? "Data pending" : typeof value === "boolean" ? (value ? "Yes" : "No") : Array.isArray(value) ? (value.length ? value.map((item) => typeof item === "object" ? JSON.stringify(item) : String(item)).join(", ") : "None") : formatTimestampValue(String(value));
 const clientItem = (value: unknown) => { if (!value || typeof value !== "object") return display(value); const item = record(value); const title = display(item.title ?? item.keyword ?? item.name ?? item.recommendation ?? item.issueSummary ?? "Recorded item"); const detail = item.location ? ` · ${display(item.location)}` : item.status ? ` · ${titleCase(display(item.status))}` : ""; return `${title}${detail}`; };
 const sourceVersionLabel = (value: unknown) => {
   const item = record(value);
@@ -16,7 +17,7 @@ const sourceVersionLabel = (value: unknown) => {
     item.status ? titleCase(display(item.status)) : null,
     item.score != null ? `Score ${display(item.score)}/100` : null,
     item.pagesCrawled != null ? `${display(item.pagesCrawled)} pages analyzed` : null,
-    timestamp ? `recorded ${new Date(String(timestamp)).toLocaleString("en-CA")}` : null,
+    timestamp ? `recorded ${formatDisplayDate(timestamp)}` : null,
   ].filter(Boolean);
   return parts.length ? parts.join(" · ") : "Recorded in this report's immutable source snapshot";
 };

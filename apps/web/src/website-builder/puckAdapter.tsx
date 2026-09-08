@@ -38,6 +38,7 @@ export type WebsiteChrome = {
   menu: Array<{ pageId: string; label: string; slug: string; parentPageId: string | null; custom?: boolean }>;
   footerMenu?: Array<{ pageId: string; label: string; slug: string; parentPageId: string | null; custom?: boolean }>;
   onNavigate?: (pageId: string) => void;
+  linkPages?: Array<{ id: string; title: string; slug: string }>;
 };
 
 const friendlyName = (value: string) => value
@@ -428,6 +429,24 @@ function RegisteredComponent({ componentId, props, mediaAssets, chrome }: { comp
   return <SectionShell><b>Unsupported preview component: {componentId}</b></SectionShell>;
 }
 
+export function WebsiteSectionLinksEditor({ value, onChange, pages }: { value: unknown; onChange: (value: Record<string, unknown>[]) => void; pages: NonNullable<WebsiteChrome["linkPages"]> }) {
+  const links = list(value);
+  const available = pages.filter(page => !links.some(link => link.targetPageId === page.id || link.url === `/${page.slug.replace(/^\/+|\/+$/g, "")}/`));
+  return <div className="space-y-3">
+    <p className="text-xs leading-5 text-slate-500">Choose any page on this website, including pages outside the menus and recommendations.</p>
+    <label className="block text-xs font-bold text-slate-700">Add website page<select aria-label="Add website page" value="" disabled={links.length >= 12} onChange={event => {
+      const page = available.find(item => item.id === event.target.value);
+      if (page) onChange([...links, { targetPageId: page.id, label: page.title, url: page.slug.replace(/\//g, "") ? `/${page.slug.replace(/^\/+|\/+$/g, "")}/` : "/" }]);
+    }} className="mt-1 w-full rounded-lg border border-slate-300 bg-white p-2 text-xs"><option value="">Choose a page…</option>{available.map(page => <option key={page.id} value={page.id}>{page.title}</option>)}</select></label>
+    {links.map((link, index) => <div key={index} className="space-y-2 rounded-lg border border-slate-200 p-3">
+      <label className="block text-xs font-bold">Link text<input value={String(link.label ?? "")} onChange={event => onChange(links.map((item, i) => i === index ? { ...item, label: event.target.value } : item))} className="mt-1 w-full rounded border p-2 text-xs"/></label>
+      <p className="break-all text-xs text-slate-500">{String(link.url ?? "")}</p>
+      <button type="button" onClick={() => onChange(links.filter((_, i) => i !== index))} className="text-xs font-bold text-rose-700">Remove link</button>
+    </div>)}
+    <p className="text-xs text-slate-500">{links.length}/12 links. Save New Version when finished.</p>
+  </div>;
+}
+
 export function createSenukePuckConfig(theme: Theme = {}, mediaAssets: VisualMediaAsset[] = [], chrome?: WebsiteChrome): Config<any> {
   const components: Record<string, unknown> = {};
   for (const definition of SENUKE_COMPONENT_REGISTRY_V1.components.filter((item) => item.lifecycleStatus === "active")) {
@@ -439,6 +458,11 @@ export function createSenukePuckConfig(theme: Theme = {}, mediaAssets: VisualMed
       },
     };
     for (const [fieldName, fieldDefinition] of Object.entries(definition.fields)) fields[fieldName] = registryField(fieldName, fieldDefinition, mediaAssets, definition.allowedChildren);
+    if (definition.componentId === "content.link_section" && chrome?.linkPages) fields.links = {
+      type: "custom",
+      label: "Links",
+      render: ({ value, onChange }: { value: unknown; onChange: (value: Record<string, unknown>[]) => void }) => <WebsiteSectionLinksEditor value={value} onChange={onChange} pages={chrome.linkPages!} />,
+    };
     components[definition.componentId] = {
       label: definition.componentId === "layout.section" ? "Add section / columns" : friendlyName(definition.componentId),
       fields,

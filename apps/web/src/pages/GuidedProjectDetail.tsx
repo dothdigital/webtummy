@@ -15,7 +15,9 @@ import ExecutionTaskBrief from "../components/ExecutionTaskBrief.js";
 import OptimizationWorkflow from "../components/OptimizationWorkflow.js";
 import { canonicalPrimaryGoal } from "@webtummy/core/project-goals";
 import { executionTaskDestination, executionTaskGuidance } from "../execution-task-guidance.js";
+import { isPageOwnershipReview } from "../optimization-task-guide.js";
 import { useAuth } from "../auth.js";
+import { isGrowthExecutionPrerequisite, nextReadyExecutionTask } from "../execution-task-page.js";
 
 const EXECUTION_PHASES = ["Setup + Discovery", "Strategy", "Build + Publish", "Promote + Measure", "Execution"] as const;
 type ExecutionPhase = typeof EXECUTION_PHASES[number];
@@ -92,6 +94,7 @@ function taskPriorityTone(task: GuidedExecutionTask) {
 }
 
 function taskActionUrl(task: GuidedExecutionTask, projectId: string) {
+  if (isPageOwnershipReview(task.title)) return `/seo-page-map?projectId=${encodeURIComponent(projectId)}`;
   if (isContentPlanTask(task)) return task.relatedUrl
     ? projectScopedTaskUrl(task.relatedUrl, projectId, task.id)
     : `/seo-page-map?projectId=${encodeURIComponent(projectId)}&taskId=${encodeURIComponent(task.id)}`;
@@ -140,6 +143,7 @@ function taskActionUrl(task: GuidedExecutionTask, projectId: string) {
 }
 
 function taskActionLabel(task: GuidedExecutionTask) {
+  if (isPageOwnershipReview(task.title)) return "Review existing SEO page plan";
   const destination = executionTaskDestination(task.moduleName).label;
   if (["waiting_for_approval", "pending_approval", "submitted_for_approval", "needs_approval"].includes(task.status)) return `Review approval in ${destination}`;
   if (isContentPlanTask(task)) return contentPlanActionLabel(task);
@@ -737,7 +741,7 @@ export default function GuidedProjectDetail() {
   );
   const requestedExecutionTaskId = new URLSearchParams(location.search).get("actionTask");
   const requestedExecutionTask = requestedExecutionTaskId ? visibleActiveTasks.find((task) => task.id === requestedExecutionTaskId) ?? null : null;
-  const nextExecutionTask = requestedExecutionTask ?? visibleActiveTasks[0] ?? null;
+  const nextExecutionTask = nextReadyExecutionTask(visibleActiveTasks, requestedExecutionTask?.id);
   const executionGroups = EXECUTION_PHASES.map((phase) => ({ phase, tasks: visibleActiveTasks.filter((task) => executionPhase(task) === phase) }));
   const selectedExecutionPhase = executionPhaseTab ?? (nextExecutionTask ? executionPhase(nextExecutionTask) : executionGroups.find((group) => group.tasks.length > 0)?.phase ?? "Setup + Discovery");
   const selectedExecutionTasks = executionGroups.find((group) => group.phase === selectedExecutionPhase)?.tasks ?? [];
@@ -784,8 +788,8 @@ export default function GuidedProjectDetail() {
   const hasWebsite = projectHasWebsite(project);
   const requestedTab = new URLSearchParams(location.search).get("tab");
   const activeTab = requestedTab === "execution" ? "execution" : "overview";
-  const growthPrerequisite = workflowController?.nextBestAction.action.url.startsWith("/growth")
-    ? workflowController.nextBestAction
+  const growthPrerequisite = isGrowthExecutionPrerequisite(workflowController?.nextBestAction)
+    ? workflowController!.nextBestAction
     : null;
   const projectTab = (tab: "overview" | "profile" | "execution") =>
     `/guided-projects/${project.id}${tab === "overview" ? "" : `?tab=${tab}`}`;
@@ -793,7 +797,7 @@ export default function GuidedProjectDetail() {
     <div className="space-y-5" onClickCapture={interceptGuidedPlanNavigation}>
       <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 bg-charcoal-50/70 px-5 py-4">
-          <div className="flex flex-col gap-4">
+          <div className="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.5fr)] lg:items-start">
             <div className="w-full min-w-0">
               <div className="min-w-0">
                 <h1 className="break-words text-[28px] font-bold leading-tight text-charcoal-950">{displayName}</h1>
@@ -803,29 +807,31 @@ export default function GuidedProjectDetail() {
                   <span className="mt-1 block max-w-full break-all text-sm font-semibold text-brand-700">{projectUrl}</span>
                 )}
               </div>
-              <div className="mt-3 grid min-w-0 gap-x-5 gap-y-1.5 text-sm text-charcoal-500 sm:grid-cols-2 xl:grid-cols-4">
-                {internalProjectName && <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Project:</span> {internalProjectName}</div>}
-                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Project type:</span> {projectTypeLabel(project)}</div>
-                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Location:</span> {project.businessLocation ?? "Not set"}</div>
-                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Timeline:</span> {project.targetLaunchTimeline ?? "Not set"}</div>
-                <div className="min-w-0 break-words"><span className="font-semibold text-charcoal-700">Primary goal:</span> {project.primaryGoal ?? "Not set"}</div>
-              </div>
             </div>
             <div className="min-w-0">
-              <div className="flex max-w-full flex-wrap items-center gap-2">
-                <span className="shrink-0"><StatusPill status={project.currentStep} /></span>
-                <span className="shrink-0"><StatusPill status={project.status} /></span>
+              <div className="flex max-w-full flex-wrap items-center gap-2 [&>a]:max-w-full [&>button]:max-w-full [&>span]:max-w-full lg:justify-end">
                 {project.projectLaunchAnalysis && ["completed", "reviewed", "applied"].includes(project.projectLaunchAnalysis.status) && <button type="button" disabled={busyAction === "project-launch-pdf"} onClick={() => void downloadProjectLaunchAnalysis()} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-violet-200 bg-violet-50 px-3 py-2 text-sm font-semibold text-violet-800 hover:bg-violet-100 disabled:opacity-60">{busyAction === "project-launch-pdf" ? "Preparing PDF…" : "Download project analysis PDF"}</button>}
                 {project.projectLaunchAnalysis?.status === "failed" && <button type="button" disabled={busyAction === "retry-project-launch-analysis"} onClick={() => void retryProjectLaunchAnalysis()} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-semibold text-amber-900 hover:bg-amber-100 disabled:opacity-60">{busyAction === "retry-project-launch-analysis" ? "Retrying analysis…" : "Retry project analysis"}</button>}
                 {project.projectLaunchAnalysis?.status === "running" && <span className="inline-flex shrink-0 items-center rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-sm font-semibold text-blue-800">Project analysis is running…</span>}
                 {convertedDiscovery && selectedDiscoveryIdea && <button type="button" disabled={busyAction === "discovery-pdf"} onClick={() => void downloadOriginalAnalysis(convertedDiscovery.id, selectedDiscoveryIdea.id)} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-60">{busyAction === "discovery-pdf" ? "Preparing PDF…" : "Download original idea PDF"}</button>}
                 {canManageProjects && !archived && project.status !== "completed" && <button type="button" disabled={Boolean(busyAction)} onClick={() => void changeLifecycleStatus("complete")} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-2 text-sm font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-60">{busyAction === "project-complete" ? "Completing…" : "Mark project completed"}</button>}
                 {canManageProjects && project.status === "completed" && <button type="button" disabled={Boolean(busyAction)} onClick={() => void changeLifecycleStatus("reopen")} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-teal-300 bg-teal-50 px-3 py-2 text-sm font-semibold text-teal-800 hover:bg-teal-100 disabled:opacity-60">{busyAction === "project-reopen" ? "Reopening…" : "Reopen project"}</button>}
-                {!archived && (project.opportunities.length > 0 || project.strategyPlans.length > 0) && <Link to={`/guided-projects/${project.id}?resetAfterStrategy=1`} className="inline-flex shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-white px-3 py-2 text-sm font-semibold text-rose-700 hover:bg-rose-50">Manage module data</Link>}
                 {!archived && <Link to={`/guided-projects/${project.id}/intake`} className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Edit profile</Link>}
-                <Link to="/projects" className="inline-flex shrink-0 items-center justify-center rounded-lg bg-brand-600 px-3 py-2 text-sm font-semibold text-white hover:bg-brand-700">Back to projects</Link>
               </div>
             </div>
+          </div>
+          <div className="mt-3 flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+            <div className="flex shrink-0 items-center gap-2">
+              <StatusPill status={project.currentStep} />
+              <StatusPill status={project.status} />
+            </div>
+            <dl className="flex min-w-0 flex-1 flex-wrap items-center justify-between gap-x-5 gap-y-2 text-xs text-charcoal-500 [&>div]:min-w-0 [&>div]:break-words [&_dt]:inline [&_dd]:inline [&_dd]:font-semibold [&_dd]:text-charcoal-800">
+              {internalProjectName && <div><dt>Project: </dt><dd>{internalProjectName}</dd></div>}
+              <div><dt>Project type: </dt><dd>{projectTypeLabel(project)}</dd></div>
+              <div><dt>Location: </dt><dd>{project.businessLocation ?? "Not set"}</dd></div>
+              <div><dt>Timeline: </dt><dd>{project.targetLaunchTimeline ?? "Not set"}</dd></div>
+              <div><dt>Primary goal: </dt><dd>{project.primaryGoal ?? "Not set"}</dd></div>
+            </dl>
           </div>
         </div>
 
@@ -849,8 +855,8 @@ export default function GuidedProjectDetail() {
 
         <div className="space-y-5 p-5">
           {archived && <Card className="border-slate-300 bg-slate-100 p-4 text-sm text-slate-700"><b>Archived project — view only.</b> Restore this project from the Projects page before editing, assigning, approving, generating, publishing, or changing tasks.</Card>}
+          {activeTab === "overview" && !archived && <ProjectWorkflowController projectId={project.id} websiteId={project.website?.id} refreshKey={tasks.length + strategyCount} onLoaded={setWorkflowController} onNextAction={() => void createExecutionPlan()} nextActionBusy={busyAction === "execution-plan"} nextActionDisabled={Boolean(busyAction)} />}
           {activeTab === "overview" && <>
-          {!archived && <ProjectWorkflowController projectId={project.id} refreshKey={tasks.length + strategyCount} />}
 
           <div className="grid gap-4 lg:grid-cols-3">
               <FocusCard
@@ -936,41 +942,17 @@ export default function GuidedProjectDetail() {
         </Card>
       )}
 
-      {activeTab === "execution" && <ProjectWorkflowController projectId={project.id} refreshKey={tasks.length + strategyCount} compact onLoaded={setWorkflowController} />}
-
-      {activeTab === "execution" && growthPrerequisite && (
-        <Card className="border-violet-300 bg-gradient-to-r from-violet-50 via-white to-brand-50 p-5">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <div className="text-xs font-black uppercase tracking-wide text-violet-700">Required before SEO Plan and execution</div>
-              <h2 className="mt-1 text-lg font-black text-charcoal-950">{growthPrerequisite.title}</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-charcoal-600">{growthPrerequisite.reason}</p>
-            </div>
-            <Link to={growthPrerequisite.action.url} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-violet-200 hover:bg-violet-800">{growthPrerequisite.action.label} →</Link>
-          </div>
-        </Card>
-      )}
-
-      {activeTab === "execution" && workflowController && !growthPrerequisite && (
+      {activeTab === "execution" && (
         <Card id="execution-tasks" className="scroll-mt-24 overflow-hidden">
-          <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-gradient-to-r from-brand-50 via-white to-emerald-50 px-5 py-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <SectionTitle title="Execution tasks" helper="Choose a phase, review what to do, and open the correct action." />
+            {!archived && <ProjectWorkflowController actionOnly projectId={project.id} refreshKey={tasks.length + strategyCount} onLoaded={setWorkflowController} onNextAction={() => void createExecutionPlan()} nextActionBusy={busyAction === "execution-plan"} nextActionDisabled={Boolean(busyAction)} />}
             <div className="flex flex-wrap gap-2 text-xs font-bold">
               <span className="rounded-full bg-white px-3 py-1 text-brand-700 shadow-sm">{activeTasks.length} open</span>
               <span className="rounded-full bg-white px-3 py-1 text-emerald-700 shadow-sm">{completedTasks.length} completed</span>
             </div>
           </div>
-          {nextExecutionTask && <div className="border-b border-brand-200 bg-gradient-to-r from-brand-100/80 via-violet-50 to-emerald-50 p-4 sm:p-5">
-            <div className="flex flex-col gap-4 rounded-2xl border border-brand-300 bg-white/95 p-5 shadow-lg shadow-brand-100 transition hover:-translate-y-0.5 hover:shadow-xl lg:flex-row lg:items-center lg:justify-between">
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-2"><span className="inline-flex items-center gap-1.5 rounded-full bg-brand-700 px-3 py-1 text-[10px] font-black uppercase tracking-wide text-white shadow-sm"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-white"/>Current action</span><span className={`rounded-full border px-2.5 py-1 text-[10px] font-black uppercase ${taskPriorityTone(nextExecutionTask).badge}`}>{taskPriorityTone(nextExecutionTask).label}</span><span className="text-xs font-bold text-charcoal-500">{moduleLabel(nextExecutionTask.moduleName)} · {activeTasks.length} open across the plan</span></div>
-                <h3 className="mt-2 text-lg font-black text-charcoal-950">{executionTaskGuidance(nextExecutionTask).plainTitle}</h3>
-                <p className="mt-1 max-w-4xl text-sm leading-6 text-charcoal-600">{executionTaskGuidance(nextExecutionTask).plainPurpose}</p>
-                <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2"><div className="rounded-lg border border-brand-100 bg-brand-50 px-3 py-2 leading-5 text-brand-900"><b>Do now:</b> {executionTaskGuidance(nextExecutionTask).userSteps[0]}</div><div className="rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 leading-5 text-emerald-900"><b>Finished when:</b> {executionTaskGuidance(nextExecutionTask).doneWhenItems[0]}</div></div>
-              </div>
-              {executionTaskGuidance(nextExecutionTask).staleResolution === "regenerate_strategy" ? <Link to={`/strategy?projectId=${encodeURIComponent(project.id)}`} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-brand-700 to-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-brand-200">Regenerate & approve Strategy →</Link> : executionTaskGuidance(nextExecutionTask).stale ? <Button onClick={() => void createExecutionPlan()} disabled={busyAction === "execution-plan"}>{busyAction === "execution-plan" ? "Refreshing plan…" : "Refresh Execution Plan"}</Button> : <Link to={taskActionUrl(nextExecutionTask, project.id)} className="inline-flex shrink-0 items-center justify-center rounded-xl bg-gradient-to-r from-brand-700 to-violet-700 px-5 py-3 text-sm font-black text-white shadow-lg shadow-brand-200 transition hover:-translate-y-0.5 hover:from-brand-800 hover:to-violet-800">{taskActionLabel(nextExecutionTask)} <span className="ml-2">→</span></Link>}
-            </div>
-          </div>}
+          {(archived || (workflowController && !growthPrerequisite)) && <>
           <div className="border-b border-slate-200 bg-white px-3 pt-3 sm:px-5">
             <div className="flex gap-2 overflow-x-auto pb-3" role="tablist" aria-label="Execution phases">
               {executionGroups.map((group) => {
@@ -1018,9 +1000,9 @@ export default function GuidedProjectDetail() {
                     const directAction = ["opportunity", "strategy", "strategy_approval"].includes(task.moduleName) && !task.relatedUrl;
                     const priorityTone = taskPriorityTone(task);
                     const guidance = executionTaskGuidance(task);
-                    return <div key={task.id} className={`group border-l-4 transition duration-200 hover:shadow-md ${taskPriorityBorder(task)} ${priorityTone.row} ${task.id === nextExecutionTask?.id ? "ring-1 ring-inset ring-brand-200" : ""}`}><div className="grid lg:grid-cols-[1.1fr_1fr_1fr]">
+                    return <div key={task.id} className={`group border-l-4 transition duration-200 hover:shadow-md ${taskPriorityBorder(task)} ${priorityTone.row}`}><div className="grid lg:grid-cols-[1.1fr_1fr_1fr]">
                       <div className="p-4">
-                        <div className="flex flex-wrap items-center gap-2"><h4 className="font-bold text-charcoal-950">{guidance.plainTitle}</h4>{task.id === nextExecutionTask?.id && <span className="rounded-full bg-brand-100 px-2 py-0.5 text-[10px] font-black uppercase text-brand-700">Next</span>}<StatusPill status={task.status} /></div>
+                        <div className="flex flex-wrap items-center gap-2"><h4 className="font-bold text-charcoal-950">{guidance.plainTitle}</h4><StatusPill status={task.status} /></div>
                         {guidance.plainTitle !== task.title && <p className="mt-1 text-[11px] font-semibold text-charcoal-400">Strategy source: {task.title}</p>}
                         <p className="mt-2 text-sm leading-6 text-charcoal-700">{guidance.plainPurpose}</p>
                         <details className="mt-3 rounded-lg border border-slate-200 bg-white/70 px-3 py-2"><summary className="cursor-pointer text-xs font-bold text-charcoal-500">Why this task</summary><div className="mt-2 border-t border-slate-100 pt-2"><ExecutionTaskBrief task={task} /></div></details>
@@ -1045,8 +1027,11 @@ export default function GuidedProjectDetail() {
             </div>
           )}
           <OptimizationWorkflow projectId={project.id} />
+          </>}
         </Card>
       )}
+
+
       <ContentPlanModal open={Boolean(contentPlanTask)} projectId={project.id} taskId={contentPlanTask?.id} task={contentPlanTask} onClose={closeContentPlan} onSaved={() => load()} />
       {busyAction === "execution-plan" && <GuidedExecutionPlanCooking />}
       {executionPlanCreatedCount !== null && <GuidedExecutionPlanComplete projectId={project.id} taskCount={executionPlanCreatedCount} onClose={() => setExecutionPlanCreatedCount(null)} />}

@@ -342,6 +342,7 @@ export type WebsiteModel = {
   navigationModel?: WebsiteNavigationModel;
   keywordMap?: WebsiteKeywordMap;
   locationAuthorityGraph?: WebsiteLocationAuthorityCluster[];
+  recaptcha?: { credentialId: string; siteKey: string; hostname: string };
   forms: Array<{ formId: string; type: string; destination: string; fields: string[] }>;
   mediaAssets: Array<{ assetId: string; status: string; altText: string; sourceUrl?: string }>;
 };

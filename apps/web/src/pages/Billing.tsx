@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
@@ -100,18 +101,6 @@ export default function Billing() {
     }
   };
 
-  const openPortal = async () => {
-    setPortalBusy(true);
-    setMessage(null);
-    try {
-      const result = await api.post<{ url: string }>("/api/billing/portal-session", {});
-      window.location.assign(result.url);
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Could not open billing portal");
-      setPortalBusy(false);
-    }
-  };
-
   const buyAddon = async (addonId: string) => {
     setPortalBusy(true); setMessage(null);
     try {
@@ -145,8 +134,7 @@ export default function Billing() {
           <p className="mt-1 text-sm text-charcoal-500">Review your plan, AI Capacity, add-ons, billing history and subscription status.</p>
         </div>
         <div className="flex gap-2">
-          <Link to="/pricing"><Button variant="ghost">Change plan</Button></Link>
-          {billing?.commercial?.subscription && <Button onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Open JVZoo purchases"}</Button>}
+          <Button onClick={() => window.location.assign("https://customer.jvzoo.com/")}>Upgrade or cancel plan</Button>
         </div>
       </div>
 
@@ -154,8 +142,8 @@ export default function Billing() {
 
       {providerLifecycle?.status === "cancel_at_period_end" && (
         <Card className="border-amber-200 bg-amber-50 p-5 text-sm text-amber-950">
-          <div className="font-bold">Your SEnuke AI subscription has been cancelled.</div>
-          <p className="mt-1">You will continue to have access until {dateLabel(providerLifecycle.currentPeriodEnd)}. You will not be billed again.</p>
+          <div className="font-bold">Your subscription renewal is cancelled.</div>
+          <p className="mt-1">You will continue to have access until {dateLabel(providerLifecycle.currentPeriodEnd)}. This subscription will not renew. After your paid term ends, you can still log in, but your workspace becomes read-only.</p>
         </Card>
       )}
       {providerLifecycle?.status === "refunded" && (
@@ -239,7 +227,7 @@ export default function Billing() {
               <div><div className="text-lg font-bold text-charcoal-900">Capacity Usage History</div><p className="mt-1 text-sm text-charcoal-500">Every Capacity charge and restoration for this workspace during {monthLabel()}.</p></div>
               <div className="flex gap-2 text-xs font-bold"><span className="rounded-full bg-rose-50 px-3 py-1.5 text-rose-700">{capacityHistory?.charged.toLocaleString() ?? 0} charged</span><span className="rounded-full bg-emerald-50 px-3 py-1.5 text-emerald-700">{capacityHistory?.refunded.toLocaleString() ?? 0} restored</span></div>
             </div>
-            {!capacityHistory?.transactions.length?<div className="p-5 text-sm text-charcoal-500">No Capacity transactions were recorded this month.</div>:<div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Action</th><th className="px-4 py-3">Project</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Balance after</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{capacityHistory.transactions.map(item=><tr key={item.id}><td className="px-4 py-4"><div className="font-semibold text-charcoal-900">{item.action}</div><div className="mt-0.5 text-xs text-charcoal-500">{item.feature||item.reason} · {item.bucket}</div></td><td className="px-4 py-4 text-charcoal-600">{item.projectId?<Link className="font-semibold text-brand-700 hover:underline" to={`/projects/${item.projectId}`}>{item.projectName}</Link>:"Workspace"}</td><td className="whitespace-nowrap px-4 py-4 text-charcoal-600">{new Intl.DateTimeFormat(undefined,{month:"short",day:"numeric",hour:"numeric",minute:"2-digit"}).format(new Date(item.createdAt))}</td><td className={`whitespace-nowrap px-4 py-4 font-bold ${item.effect==="restored"?"text-emerald-700":"text-rose-700"}`}>{item.effect==="restored"?"+":"−"}{item.units.toLocaleString()}</td><td className="whitespace-nowrap px-4 py-4 font-semibold text-charcoal-700">{item.balanceAfter.toLocaleString()}</td></tr>)}</tbody></table></div>}
+            {!capacityHistory?.transactions.length?<div className="p-5 text-sm text-charcoal-500">No Capacity transactions were recorded this month.</div>:<div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm"><thead className="bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Action</th><th className="px-4 py-3">Project</th><th className="px-4 py-3">Date</th><th className="px-4 py-3">Capacity</th><th className="px-4 py-3">Balance after</th></tr></thead><tbody className="divide-y divide-slate-100 bg-white">{capacityHistory.transactions.map(item=><tr key={item.id}><td className="px-4 py-4"><div className="font-semibold text-charcoal-900">{item.action}</div><div className="mt-0.5 text-xs text-charcoal-500">{item.feature||item.reason} · {item.bucket}</div></td><td className="px-4 py-4 text-charcoal-600">{item.projectId?<Link className="font-semibold text-brand-700 hover:underline" to={`/projects/${item.projectId}`}>{item.projectName}</Link>:"Workspace"}</td><td className="whitespace-nowrap px-4 py-4 text-charcoal-600">{formatDisplayDate(new Date(item.createdAt))}</td><td className={`whitespace-nowrap px-4 py-4 font-bold ${item.effect==="restored"?"text-emerald-700":"text-rose-700"}`}>{item.effect==="restored"?"+":"−"}{item.units.toLocaleString()}</td><td className="whitespace-nowrap px-4 py-4 font-semibold text-charcoal-700">{item.balanceAfter.toLocaleString()}</td></tr>)}</tbody></table></div>}
           </Card>
 
           <Card className="overflow-hidden">
@@ -315,7 +303,6 @@ export default function Billing() {
                 <div className="text-lg font-bold text-charcoal-900">Invoices</div>
                 <div className="text-sm text-charcoal-500">Verified JVZoo sale, rebill, and refund records for this workspace.</div>
               </div>
-              {billing.commercial?.subscription && <Button variant="ghost" onClick={openPortal} disabled={portalBusy}>{portalBusy ? "Opening..." : "Open JVZoo purchases"}</Button>}
             </div>
             {invoices.length === 0 ? (
               <div className="p-5 text-sm text-charcoal-500">No verified JVZoo billing records have been linked to this workspace yet.</div>

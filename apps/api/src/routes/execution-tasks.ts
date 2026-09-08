@@ -1,3 +1,5 @@
+import { requireGrowthLaunch } from "@webtummy/db/growth-execution";
+import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router, type Request, type Response } from "express";
 import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -25,6 +27,20 @@ import { queueApiErrorReport } from "../api-error-reporter.js";
 
 export const executionTasksRouter = Router();
 executionTasksRouter.use(requireAuth);
+executionTasksRouter.use("/execution-tasks/:id", async (req, res, next) => {
+  if (!["POST", "PATCH", "PUT"].includes(req.method)) return next();
+  try {
+    const clientId = await executionClientScope(req);
+    const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, select: { projectId: true, sourceType: true, sourceId: true } });
+    if (!task?.projectId) return next();
+    if (!await canAccessProject(await workspaceContext(req), task.projectId)) return res.status(404).json({ error: "task not found" });
+    const fromGrowth = ["growth_content_opportunity", "growth_experiment"].includes(task.sourceType || "") || task.sourceType === "next_best_action" && Boolean(await prisma.nextBestAction.findFirst({ where: { id: task.sourceId || "", projectId: task.projectId, sourceType: "growth_engine" }, select: { id: true } }));
+    const linkedSocial = task.sourceType === "social_calendar_post" && Boolean(await prisma.growthContentOpportunity.findFirst({ where: { projectId: task.projectId, executionTaskId: req.params.id, contentType: "social_post" }, select: { id: true } }));
+    if (fromGrowth || linkedSocial) await requireGrowthLaunch(task.projectId);
+    return next();
+  } catch (error) { return next(error); }
+});
+
 
 async function enforceSeoPlanWorkflow(projectId: string, res: Response) {
   const workflow = await getProjectWorkflowController(projectId);
@@ -2521,6 +2537,7 @@ executionTasksRouter.get("/execution-tasks", async (req, res) => {
     projectScope = await prisma.project.findFirst({ where: { id: parsed.data.projectId, ...(clientId ? { clientId } : {}) }, select: { id: true, websiteId: true, clientId: true } });
     const context = await workspaceContext(req);
     if (!projectScope || !await canAccessProject(context, projectScope.id)) return res.status(404).json({ error: "project not found" });
+    await reconcileProjectPlanning(projectScope.id);
   }
   const where: Prisma.ExecutionTaskWhereInput = {
     ...(clientId ? { clientId } : {}),

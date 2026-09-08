@@ -51,9 +51,33 @@ export async function issueJvZooActivationEmail(externalSubscriptionId: string) 
   try {
     await sendMail({
       to: external.providerCustomerEmail,
-      subject: "Activate your SEnuke AI - AI Growth Operating System purchase",
-      text: `Activate your ${external.planCode ?? "SEnuke AI - AI Growth Operating System"} purchase: ${link}. This secure link expires in 72 hours and can be used once.`,
-      html: `<p>Thank you for purchasing SEnuke AI - AI Growth Operating System.</p><p><a href="${link}">Activate your ${external.planCode ?? "SEnuke AI - AI Growth Operating System"} access</a></p><p>This secure link expires in 72 hours and can be used once.</p>`,
+      subject: "Activate your SEnuke AI workspace",
+      text: `Thank you for your SEnuke AI purchase. We’re excited to have you with us.
+
+Your SEnuke AI workspace is ready to be activated.
+
+Click the link below to begin activation of your workspace and create your login:
+
+ACTIVATE YOUR WORKSPACE
+${link}
+
+For security, this activation link will expire in 72 hours.
+
+Once your workspace is activated, you’ll be able to log in and begin setting up your business so SEnuke AI can start understanding where you are, identifying opportunities, and building your growth strategy.
+
+Welcome to SEnuke AI.
+
+The SEnuke AI Team`,
+      html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">
+<p>Thank you for your SEnuke AI purchase. We’re excited to have you with us.</p>
+<p>Your SEnuke AI workspace is ready to be activated.</p>
+<p>Click the link below to begin activation of your workspace and create your login:</p>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:24px 0;"><tr><td align="center" bgcolor="#0f766e" style="border-radius:6px;mso-padding-alt:16px 24px;"><a href="${escapeHtml(link)}" style="display:inline-block;background-color:#0f766e;border:1px solid #0f766e;border-radius:6px;padding:16px 24px;color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;text-align:center;text-decoration:none;">ACTIVATE YOUR WORKSPACE</a></td></tr></table>
+<p>For security, this activation link will expire in 72 hours.</p>
+<p>Once your workspace is activated, you’ll be able to log in and begin setting up your business so SEnuke AI can start understanding where you are, identifying opportunities, and building your growth strategy.</p>
+<p>Welcome to SEnuke AI.</p>
+<p>The SEnuke AI Team</p>
+</div>`,
     });
     await prisma.externalSubscription.update({ where: { id: external.id }, data: { activationEmailSentAt: new Date(), activationEmailError: null } });
     return { sent: true };
@@ -102,12 +126,35 @@ export async function inspectJvZooActivation(token: string) {
 async function issueJvZooWelcomeEmail(input: { email: string; name: string; planCode: string | null }) {
   const loginUrl = `${config.webAppUrl.replace(/\/$/, "")}/login`;
   const safeName = escapeHtml(input.name);
-  const safePlan = escapeHtml(input.planCode ?? "SEnuke AI - AI Growth Operating System");
   await sendMail({
     to: input.email,
-    subject: "Welcome to SEnuke AI - AI Growth Operating System",
-    text: `Welcome ${input.name}. Your ${input.planCode ?? "SEnuke AI - AI Growth Operating System"} purchase is active and your workspace is ready. Sign in at ${loginUrl}`,
-    html: `<p>Welcome ${safeName}.</p><p>Your <strong>${safePlan}</strong> purchase is active and your workspace is ready.</p><p><a href="${loginUrl}">Sign in to SEnuke AI - AI Growth Operating System</a></p>`,
+    subject: "Welcome to SEnuke AI. Your Workspace Is Active",
+    text: `Welcome, ${input.name}!
+
+Your SEnuke AI workspace is now active and ready to use.
+
+You can log in anytime using the link below:
+
+LOGIN TO SENUKE AI
+${loginUrl}
+
+Welcome to SEnuke AI, The AI Growth Operating System.
+
+Once you log in, SEnuke AI will guide you through setting up your workspace so it can begin understanding your business, identifying opportunities, and building your growth strategy.
+
+We’re excited to have you with us.
+
+The SEnuke AI Team`,
+    html: `<div style="font-family:Arial,Helvetica,sans-serif;font-size:16px;line-height:1.6;color:#1e293b;max-width:600px;margin:0 auto;padding:24px;">
+<p>Welcome, ${safeName}!</p>
+<p>Your SEnuke AI workspace is now active and ready to use.</p>
+<p>You can log in anytime using the link below:</p>
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" style="margin:24px 0;"><tr><td align="center" bgcolor="#0f766e" style="border-radius:6px;mso-padding-alt:16px 24px;"><a href="${escapeHtml(loginUrl)}" style="display:inline-block;background-color:#0f766e;border:1px solid #0f766e;border-radius:6px;padding:16px 24px;color:#ffffff;font-family:Arial,Helvetica,sans-serif;font-size:16px;font-weight:bold;text-align:center;text-decoration:none;">LOGIN TO SENUKE AI</a></td></tr></table>
+<p>Welcome to SEnuke AI, The AI Growth Operating System.</p>
+<p>Once you log in, SEnuke AI will guide you through setting up your workspace so it can begin understanding your business, identifying opportunities, and building your growth strategy.</p>
+<p>We’re excited to have you with us.</p>
+<p>The SEnuke AI Team</p>
+</div>`,
   });
 }
 

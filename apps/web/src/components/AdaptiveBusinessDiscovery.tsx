@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api.js";
@@ -136,7 +137,7 @@ export function DiscoveryDraftList({ drafts, onResume, onDelete }: { drafts: Dis
                 <span className="rounded-full bg-violet-50 px-2 py-1 text-[9px] font-black uppercase text-violet-700">{draft.status.replaceAll("_", " ")}</span>
               </div>
               <p className="mt-1 text-xs text-slate-500">
-                {draft.ideas.length} idea{draft.ideas.length === 1 ? "" : "s"} · Updated {new Date(draft.updatedAt).toLocaleString()}
+                {draft.ideas.length} idea{draft.ideas.length === 1 ? "" : "s"} · Updated {formatDisplayDate(draft.updatedAt)}
               </p>
             </div>
             <div className="flex flex-wrap gap-2">

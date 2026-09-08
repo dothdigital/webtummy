@@ -1,3 +1,7 @@
+import OpportunityRefineModal, { type OpportunityRefinementResult } from "../components/OpportunityRefineModal.js";
+import { formatDisplayDate } from "@webtummy/core/display-date";
+import WebsiteHandoffReview from "../components/WebsiteHandoffReview.js";
+import { siteAnalysisPrimaryMode } from "../components/siteAnalysisNavigation.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
@@ -662,9 +666,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     || Boolean(data.backlinkLinks?.links?.length);
   const backlinkCooldown = useMemo(() => backlinkRefreshState(data.backlinkSummary?.fetchedAt), [data.backlinkSummary?.fetchedAt]);
   const siteScanCooldown = useMemo(() => siteScanCooldownState(latestSiteCrawl, nowMs), [latestSiteCrawl, nowMs]);
+  const sitePrimaryMode = siteAnalysisPrimaryMode(workflowController, Boolean(latestSiteCrawl));
+  const liveSiteReview = kind === "site-analysis" && sitePrimaryMode === "live_review";
+  const handoffLiveReview = liveSiteReview && Boolean(workflowController?.handoffReviewStage);
+  const siteScanBlocked = siteScanCooldown.blocked && !(handoffLiveReview && workflowController?.handoffReviewStage === "assessment");
   const readiness = moduleReadiness(kind, scopedData, activeProject, activeWebsite);
-  const canRunModule = readiness.canRun;
-  const preLaunchSiteAnalysis = Boolean(kind === "site-analysis" && activeProject && !isExistingWebsiteFlow(activeProject, activeWebsite));
+  const canRunModule = readiness.canRun || (liveSiteReview && Boolean(activeWebsite));
+  const preLaunchSiteAnalysis = Boolean(kind === "site-analysis" && !liveSiteReview && !workflowController?.websiteDeliveryStage && activeProject && !isExistingWebsiteFlow(activeProject, activeWebsite));
   const preLaunchAiCitation = Boolean(kind === "ai-citations" && activeProject && !isExistingWebsiteFlow(activeProject, activeWebsite));
   const plannedDomain = (() => {
     const value = activeProject?.websiteUrl?.trim();
@@ -701,12 +709,13 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     }
   };
 
-  const analyzeSite = async () => {
-    if (!activeWebsite || activeSiteCrawl || siteAnalysisBusy || siteScanCooldown.blocked) return;
+  const analyzeSite = async (handoffReview?: { projectId: string; releaseId: string }) => {
+    if (!activeWebsite || activeSiteCrawl || siteAnalysisBusy || siteScanBlocked) return;
     setSiteAnalysisBusy(true);
     setSiteAnalysisMessage("");
     try {
       const result = await api.post<{ crawlJob: NonNullable<Website["crawlJobs"]>[number] }>(`/api/websites/${activeWebsite.id}/crawls`, {
+        ...(handoffReview ? { handoffReview } : {}),
         pageLimit: 150,
         maxDepth: 3,
         includePatterns: [],
@@ -1036,13 +1045,22 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     }
   };
 
-  const refineOpportunities = async (instructions: string) => {
-    if (!activeProject || opportunityBusy) return;
-    if (!instructions?.trim()) return;
+  const refineOpportunities = async (instructions: string): Promise<OpportunityRefinementResult> => {
+    if (!activeProject || opportunityBusy) return { ok: false, message: "Another action is running. Please wait and try again." };
+    if (!instructions?.trim()) return { ok: false, message: "Choose a priority or add instructions first." };
     setOpportunityBusy("refine"); setOpportunityMessage("");
-    try { const result = await api.post<{ project: GuidedProject; generationMode: "ai" | "rule_fallback" }>(`/api/projects-v2/${activeProject.id}/opportunities/refine`, { instructions }); updateActiveProject(result.project); setOpportunityMessage(result.generationMode === "rule_fallback" ? "The AI provider was unavailable, so the saved rules-based recommendations remain a fallback. Refresh when AI is available." : "AI created and reranked three revised opportunities using the Business Brain and your instructions."); }
-    catch (error) { setOpportunityMessage(error instanceof Error ? error.message : "Could not refine opportunities."); }
-    finally { setOpportunityBusy(null); }
+    try {
+      const result = await api.post<{ project: GuidedProject; generationMode: "ai" | "rule_fallback" }>(`/api/projects-v2/${activeProject.id}/opportunities/refine`, { instructions });
+      updateActiveProject(result.project);
+      const ok = result.generationMode !== "rule_fallback";
+      const message = ok ? "Your updated opportunities are ready. Close this window to review and compare them." : "AI could not complete the refinement. Your recommendations are using the saved fallback. Please try again later.";
+      setOpportunityMessage(message);
+      return { ok, message };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not refine opportunities. Please try again.";
+      setOpportunityMessage(message);
+      return { ok: false, message };
+    } finally { setOpportunityBusy(null); }
   };
 
   const skipOpportunityFinder = async () => {
@@ -1061,7 +1079,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const primaryDisabled = kind === "backlinks"
     ? (!activeWebsite || refreshingBacklinks || backlinkCooldown.blocked || !canRunModule)
     : kind === "site-analysis"
-      ? latestSiteCrawl ? false : (!activeWebsite || Boolean(activeSiteCrawl) || siteAnalysisBusy || siteScanCooldown.blocked || !canRunModule)
+      ? ["gap", "workflow"].includes(sitePrimaryMode) ? !workflowController : (!activeWebsite || Boolean(activeSiteCrawl) || siteAnalysisBusy || siteScanBlocked || !canRunModule)
     : kind === "ai-citations"
       ? true
     : kind === "strategy"
@@ -1077,14 +1095,18 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       : backlinkCooldown.blocked
         ? `Available ${backlinkCooldown.availableLabel}`
         : copy.primary
-    : kind === "site-analysis" && latestSiteCrawl
+    : kind === "site-analysis" && sitePrimaryMode === "workflow"
+      ? workflowController!.nextBestAction.action.label
+    : kind === "site-analysis" && sitePrimaryMode === "gap"
       ? "Continue to SEO & Gap Analysis"
     : kind === "site-analysis" && siteAnalysisBusy
       ? "Analyzing..."
     : kind === "site-analysis" && activeSiteCrawl
       ? activeSiteCrawl.status === "queued" ? "Crawl queued..." : "Crawl running..."
-    : kind === "site-analysis" && siteScanCooldown.blocked
+    : kind === "site-analysis" && siteScanBlocked
       ? `Available ${siteScanCooldown.remainingLabel}`
+    : liveSiteReview
+      ? "Run Fresh Live-Site Assessment"
     : kind === "ai-citations"
       ? "Citation Snapshot"
     : kind === "strategy" && strategyBusy === "generate"
@@ -1103,7 +1125,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
     project: activeProject,
     website: activeWebsite,
     latestCrawl: latestSiteCrawl,
-    siteScanBlocked: siteScanCooldown.blocked,
+    siteScanBlocked: siteScanBlocked,
     siteScanRemaining: siteScanCooldown.remainingLabel,
     keywordRuns: scopedKeywordRuns,
   }) : null;
@@ -1114,7 +1136,11 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       return;
     }
     if (kind === "site-analysis") {
-      if (latestSiteCrawl && activeProject) {
+      if (sitePrimaryMode === "workflow" && workflowController) {
+        navigate(workflowController.nextBestAction.action.url);
+        return;
+      }
+      if (sitePrimaryMode === "gap" && activeProject) {
         navigate(`/gap-analysis?projectId=${encodeURIComponent(activeProject.id)}`);
         return;
       }
@@ -1142,7 +1168,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
   const headerActions: ProjectHeaderAction[] = [];
   if (kind === "keywords" && scopedKeywordRuns.length > 0) headerActions.push({ key: "manage-keywords", label: "Manage keyword groups", variant: "secondary", onClick: () => { const next = new URLSearchParams(searchParams); next.set("manageKeywords", "1"); setSearchParams(next, { replace: true }); } });
   if (kind === "ai-citations") headerActions.push({ key: "evidence-workspace", label: "Evidence-led workspace", variant: "status" });
-  else if (kind !== "site-architect" && kind !== "keywords" && kind !== "lead-magnets" && !(kind === "site-analysis" && !latestSiteCrawl) && !(kind === "opportunities" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/opportunities")) && !(kind === "strategy" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/strategy"))) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
+  else if (!handoffLiveReview && kind !== "site-architect" && kind !== "keywords" && kind !== "lead-magnets" && !(kind === "site-analysis" && !latestSiteCrawl) && !(kind === "opportunities" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/opportunities")) && !(kind === "strategy" && workflowController && !workflowController.nextBestAction.action.url.startsWith("/strategy"))) headerActions.push({ key: "primary", label: primaryLabel, disabled: primaryDisabled, onClick: runHeaderPrimaryAction });
 
   return (
     <div className={kind === "keywords"
@@ -1152,6 +1178,16 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {kind === "strategy" && strategyBusy === "execution" && <ExecutionPlanCookingOverlay />}
       <ProjectModuleHeader eyebrow={copy.title} title={moduleTitle} subtitle={copy.subtitle} project={hasActiveProject ? activeProject : null} projects={data.projects} tasks={scopedData.tasks} notifications={scopedData.notifications} onProjectChange={changeProject} actions={headerActions} showExecution={kind !== "keywords" && kind !== "site-analysis"} />
       {hasActiveProject && activeProject && <ProjectWorkflowController projectId={activeProject.id} refreshKey={`${scopedData.tasks.length}:${scopedKeywordRuns.length}:${activeSiteCrawl?.id ?? ""}:${activeSiteCrawl?.status ?? ""}:${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}`} compact onLoaded={setWorkflowController} />}
+      {hasActiveProject && handoffLiveReview && activeProject && <WebsiteHandoffReview key={activeProject.id} projectId={activeProject.id} refreshKey={`${latestSiteCrawl?.id ?? ""}:${latestSiteCrawl?.completedAt ?? ""}:${workflowController?.handoffReviewStage ?? ""}`} onScan={releaseId => { void analyzeSite({ projectId: activeProject.id, releaseId }); }} scanDisabled={primaryDisabled} scanLabel={primaryLabel} />}
+      {hasActiveProject && liveSiteReview && !handoffLiveReview && <Card className="border-cyan-200 bg-cyan-50/50 p-5">
+        <h2 className="text-lg font-black text-slate-950">Review Live Website Changes</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-700">{workflowController?.nextBestAction.reason}</p>
+        <p className="mt-2 text-xs font-semibold text-slate-600">Last completed assessment: {latestSiteCrawl?.completedAt ? formatDateTime(latestSiteCrawl.completedAt) : "No completed assessment"}. A fresh assessment is still required for the current changes.</p>
+        <p className="mt-2 text-sm text-slate-600">Once the changes are applied to the live website, run the assessment, then review the crawled pages and any remaining issues below.</p>
+        <button type="button" onClick={() => { void analyzeSite(); }} disabled={primaryDisabled} className="mt-4 rounded-lg bg-cyan-700 px-4 py-2.5 text-sm font-black text-white disabled:bg-slate-400">{primaryLabel}</button>
+        {siteScanBlocked && <p className="mt-2 text-xs text-slate-600">The next scan is available in {siteScanCooldown.remainingLabel}. The report below is your previous assessment.</p>}
+      </Card>}
+      {hasActiveProject && kind === "site-analysis" && sitePrimaryMode === "workflow" && workflowController && <MasterWorkflowStatus workflow={workflowController} />}
       {hasActiveProject && kind === "backlinks" && (
         <div className={`rounded-lg border px-4 py-3 text-sm ${backlinkMessage ? "border-brand-100 bg-brand-50 text-brand-700" : "border-slate-200 bg-white text-charcoal-500"}`}>
           {backlinkMessage || (activeWebsite ? backlinkCooldown.helpText : "Connect a website before refreshing backlinks.")}
@@ -1236,7 +1272,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "opportunities" && <OpportunityScreen data={scopedData} selectingId={opportunityBusy} capacityEstimate={opportunityCapacityEstimate} onGenerate={generateOpportunities} onSelect={selectOpportunity} onClearSelection={clearOpportunitySelection} onDeleteData={deleteOpportunityData} onRefine={refineOpportunities} onSkip={skipOpportunityFinder} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "strategy" && <StrategyScreen data={scopedData} busy={strategyBusy} workflowController={workflowController} onAction={runStrategyAction} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "keywords" && <KeywordScreen data={scopedData} workflowController={workflowController} />}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !preLaunchSiteAnalysis && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && !preLaunchSiteAnalysis && !liveSiteReview && !latestSiteCrawl && !activeSiteCrawl && !siteAnalysisBusy && (
         <div className="flex min-h-[360px] items-center justify-center rounded-xl border border-slate-200 bg-white px-6 py-12 shadow-sm">
           <div className="max-w-xl text-center">
             <div className="text-xs font-bold uppercase tracking-[0.16em] text-brand-600">Ready for site analysis</div>
@@ -1254,7 +1290,7 @@ export default function ExecutionModule({ kind }: { kind: ModuleKind }) {
           </div>
         </div>
       )}
-      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && latestSiteCrawl && <SiteAnalysisScreen data={scopedData} />}
+      {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "site-analysis" && latestSiteCrawl && <div id="live-site-assessment-report" className="scroll-mt-6"><SiteAnalysisScreen data={scopedData} showPlanningNextStep={Boolean(workflowController) && sitePrimaryMode === "gap"} /></div>}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "backlinks" && <BacklinkScreen data={scopedData} autoStart={searchParams.get("start") === "discover"} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && canRunModule && kind === "ai-citations" && <CitationScreen data={scopedData} />}
       {!loading && hasActiveProject && hasWorkspaceRecords && kind === "site-architect" && <ArchitectScreen data={scopedData} workflowController={workflowController} />}
@@ -1614,7 +1650,7 @@ function OpportunityScreen({
   onSelect: (opportunityId: string) => Promise<boolean>;
   onClearSelection: () => Promise<void>;
   onDeleteData: () => Promise<void>;
-  onRefine: (instructions: string) => Promise<void>;
+  onRefine: (instructions: string) => Promise<OpportunityRefinementResult>;
   onSkip: () => Promise<void>;
 }) {
   const project = data.projects[0];
@@ -1751,7 +1787,7 @@ function OpportunityScreen({
       <OpportunityDetailsDrawer opportunity={focusedOpportunity} open={detailsOpen} onClose={() => setDetailsOpen(false)} onSelect={focusedOpportunity ? () => { void selectAndConfirm(focusedOpportunity.id); } : undefined} selected={Boolean(focusedOpportunity && ["selected", "confirmed"].includes(focusedOpportunity.status))} />
       <OpportunityCompareDrawer opportunities={visibleOpportunities} open={compareOpen} onClose={() => setCompareOpen(false)} onFocus={(id) => { setFocusedId(id); setDetailsOpen(true); }} onSelect={(id) => { void selectAndConfirm(id); }} />
       <OpportunityReportDrawer opportunity={focusedOpportunity} open={reportOpen} onClose={() => setReportOpen(false)} projectId={project.id} />
-      <OpportunityRefineModal open={refineOpen} busy={selectingId === "refine"} onClose={() => setRefineOpen(false)} onSubmit={async (instructions) => { await onRefine(instructions); setRefineOpen(false); }} />
+      <OpportunityRefineModal open={refineOpen} busy={selectingId === "refine"} onClose={() => setRefineOpen(false)} onSubmit={onRefine} />
       {mappedOpportunityName && <OpportunityMappedModal projectId={project.id} opportunityName={mappedOpportunityName} onReview={() => setMappedOpportunityName("")} />}
     </>
   );
@@ -1825,51 +1861,6 @@ function OpportunityMappedModal({ projectId, opportunityName, onReview }: { proj
   );
 }
 
-const opportunityRefinementIdeas = [
-  { title: "Faster results", instruction: "Prioritize opportunities that can produce measurable results quickly with low implementation effort." },
-  { title: "More leads", instruction: "Focus on high-intent lead generation opportunities with clear calls to action and conversion potential." },
-  { title: "Local growth", instruction: "Prioritize local SEO, Google Business Profile, service-area pages, reviews, and location-based demand." },
-  { title: "Lower competition", instruction: "Find realistic opportunities with lower competition and a stronger chance of early visibility." },
-  { title: "Higher revenue", instruction: "Rank opportunities by revenue potential, buyer intent, and value per acquired customer." },
-  { title: "Content authority", instruction: "Focus on opportunities that build topical authority through useful content and supporting keyword clusters." },
-];
-
-function OpportunityRefineModal({ open, busy, onClose, onSubmit }: { open: boolean; busy: boolean; onClose: () => void; onSubmit: (instructions: string) => Promise<void> }) {
-  const [selected, setSelected] = useState<string[]>([]);
-  const [custom, setCustom] = useState("");
-  useEffect(() => { if (!open) { setSelected([]); setCustom(""); } }, [open]);
-  if (!open) return null;
-  const instructions = [...selected, custom.trim()].filter(Boolean).join(" ");
-  const toggle = (instruction: string) => setSelected((current) => current.includes(instruction) ? current.filter((item) => item !== instruction) : [...current, instruction]);
-  return (
-    <div className="fixed inset-0 z-[60] grid place-items-center overflow-y-auto bg-charcoal-950/50 p-4" role="dialog" aria-modal="true" aria-labelledby="refine-opportunities-title">
-      <button type="button" className="absolute inset-0" aria-label="Close refinement" onClick={busy ? undefined : onClose} />
-      <div className="relative w-full max-w-2xl overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-5 py-5 sm:px-6">
-          <div><div className="text-xs font-bold uppercase tracking-wide text-brand-600">Opportunity Finder</div><h2 id="refine-opportunities-title" className="mt-1 text-xl font-bold text-charcoal-950">What should AI improve?</h2><p className="mt-2 text-sm leading-6 text-charcoal-600">Choose one or more priorities, then add any project-specific direction. Recommendations will be rebuilt using the existing intake and your instructions.</p></div>
-          <button type="button" onClick={onClose} disabled={busy} className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-slate-200 text-lg text-charcoal-500 disabled:opacity-50" aria-label="Close">×</button>
-        </div>
-        <div className="max-h-[70vh] overflow-y-auto px-5 py-5 sm:px-6">
-          <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm leading-6 text-brand-900"><b>How it works:</b> AI re-evaluates business value, expected impact, effort, and confidence. Your selected direction and saved-for-later ideas remain protected.</div>
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-            <div><div className="text-sm font-bold text-charcoal-900">Choose refinement priorities</div><div className="mt-1 text-xs text-charcoal-500">Select as many options as needed.</div></div>
-            <div className="flex items-center gap-2">
-              <span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{selected.length} selected</span>
-              <button type="button" onClick={() => setSelected(opportunityRefinementIdeas.map((idea) => idea.instruction))} disabled={busy || selected.length === opportunityRefinementIdeas.length} className="text-xs font-bold text-brand-700 disabled:text-charcoal-300">Select all</button>
-              <button type="button" onClick={() => setSelected([])} disabled={busy || selected.length === 0} className="text-xs font-bold text-charcoal-600 disabled:text-charcoal-300">Clear</button>
-            </div>
-          </div>
-          <div className="mt-3 grid gap-3 sm:grid-cols-2">{opportunityRefinementIdeas.map((idea) => { const active = selected.includes(idea.instruction); return <label key={idea.title} className={`flex cursor-pointer items-start gap-3 rounded-xl border p-4 text-left transition ${active ? "border-brand-500 bg-brand-50 ring-1 ring-brand-200" : "border-slate-200 hover:border-brand-300"}`}><input type="checkbox" checked={active} disabled={busy} onChange={() => toggle(idea.instruction)} className="mt-0.5 h-5 w-5 shrink-0 rounded border-slate-300 accent-brand-600" /><span><span className="block font-bold text-charcoal-950">{idea.title}</span><span className="mt-2 block text-xs leading-5 text-charcoal-500">{idea.instruction}</span></span></label>; })}</div>
-          <div className={`mt-4 rounded-xl border px-4 py-3 text-sm ${selected.length ? "border-emerald-200 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-slate-50 text-charcoal-500"}`}><b>{selected.length ? `${selected.length} priorit${selected.length === 1 ? "y" : "ies"} selected` : "No priority selected yet"}</b><span className="ml-1">{selected.length ? "— scores and ranking will change after you click Refine Recommendations." : "Choose a suggestion above or write custom instructions below."}</span></div>
-          <label className="mt-5 block text-sm font-bold text-charcoal-800" htmlFor="opportunity-refine-custom">Additional instructions</label>
-          <textarea id="opportunity-refine-custom" value={custom} onChange={(event) => setCustom(event.target.value)} rows={4} maxLength={2000} placeholder="Enter your details" className="mt-2 w-full resize-y rounded-xl border border-slate-200 px-4 py-3 text-sm leading-6 outline-none focus:border-brand-400 focus:ring-2 focus:ring-brand-100" />
-          <div className="mt-2 text-right text-xs text-charcoal-400">{custom.length}/2000</div>
-        </div>
-        <div className="flex flex-col-reverse gap-2 border-t border-slate-100 bg-slate-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:px-6"><span className="text-xs text-charcoal-500">Selecting a suggestion prepares it. Click the button to apply the refinement.</span><div className="flex flex-col-reverse gap-2 sm:flex-row"><button type="button" onClick={onClose} disabled={busy} className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-sm font-bold text-charcoal-700 disabled:opacity-50">Cancel</button><button type="button" onClick={() => void onSubmit(instructions)} disabled={busy || instructions.length < 3} className="rounded-lg bg-brand-600 px-5 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:bg-slate-300">{busy ? "Refining recommendations…" : `Refine Recommendations${selected.length ? ` (${selected.length})` : ""}`}</button></div></div>
-      </div>
-    </div>
-  );
-}
 
 type StrategyActionResult = { ok: boolean; message: string };
 
@@ -3714,7 +3705,7 @@ function KeywordCompetitorAnalysis({ runs, projectCompetitors, ownDomain }: { ru
   </Card>;
 }
 
-function SiteAnalysisScreen({ data }: { data: ModuleData }) {
+function SiteAnalysisScreen({ data, showPlanningNextStep = true }: { data: ModuleData; showPlanningNextStep?: boolean }) {
   const website = data.websites[0];
   const project = data.projects[0];
   const crawls = data.websites.flatMap((site) => site.crawlJobs ?? []);
@@ -3835,12 +3826,12 @@ function SiteAnalysisScreen({ data }: { data: ModuleData }) {
         <ScanSummaryCards report={healthReport} loading={issuesLoading} onOpen={setActiveDetail} embedded />
         {project && <SiteCapabilityExtension projectId={project.id} crawlCompletedAt={latest?.completedAt} />}
       </Card>
-      <Card className={`border ${missingKeywordResearch.length ? "border-amber-200 bg-amber-50/60" : "border-emerald-200 bg-emerald-50/50"}`}>
+      {showPlanningNextStep && <Card className={`border ${missingKeywordResearch.length ? "border-amber-200 bg-amber-50/60" : "border-emerald-200 bg-emerald-50/50"}`}>
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div><div className={`text-xs font-black uppercase tracking-wide ${missingKeywordResearch.length ? "text-amber-700" : "text-emerald-700"}`}>Shared keyword evidence</div><h3 className="mt-1 font-black text-slate-950">{approvedKeywords.length} approved Primary and Secondary keyword{approvedKeywords.length === 1 ? "" : "s"} connected to this crawl</h3><p className="mt-1 max-w-4xl text-sm leading-6 text-slate-600">Site Analysis captures each page’s URL, title, meta description, H1, H2, body, links, and schema. SEO &amp; Gap Analysis compares those exact crawl signals with every approved keyword, so the crawl does not invent page targets from the Industry / Niche field.</p></div>
           <Link to={missingKeywordResearch.length ? `/keywords?projectId=${project?.id ?? ""}` : `/gap-analysis?projectId=${project?.id ?? ""}`} className={`shrink-0 rounded-lg px-4 py-2.5 text-sm font-black text-white ${missingKeywordResearch.length ? "bg-amber-600" : "bg-emerald-600"}`}>{missingKeywordResearch.length ? `Analyze ${missingKeywordResearch.length} remaining` : "Continue to Gap Analysis"}</Link>
         </div>
-      </Card>
+      </Card>}
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-2 border-b border-slate-200 bg-slate-50 px-4 pt-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="flex" role="tablist" aria-label="Site Analysis report sections">
@@ -4140,7 +4131,7 @@ function ArchitectScreen({ data, workflowController }: { data: ModuleData; workf
       {view === "pages" && <div className="grid gap-5 xl:grid-cols-[360px_minmax(0,1fr)]"><Card className="overflow-hidden p-0"><div className="border-b px-4 py-3"><h3 className="font-black text-charcoal-950">Page hierarchy</h3><p className="mt-1 text-xs text-charcoal-500">Select a page to review why it belongs.</p></div><div className="max-h-[650px] divide-y divide-slate-100 overflow-y-auto">{current.pages.map((page) => <button key={page.id} type="button" onClick={() => setSelectedPageKey(page.pageKey)} className={`block w-full p-4 text-left ${selectedPage?.id === page.id ? "bg-brand-50" : "bg-white hover:bg-slate-50"}`}><div className="flex items-start justify-between gap-3"><div><div className="text-sm font-black text-charcoal-900">{page.title}</div><div className="mt-1 text-xs font-semibold text-brand-700">{page.suggestedUrl}</div></div><span className="rounded-full bg-slate-100 px-2 py-1 text-[9px] font-black uppercase text-slate-600">{page.pageType}</span></div>{page.parentPageKey && <div className="mt-2 text-[10px] text-charcoal-400">Parent: {page.parentPageKey.replaceAll("_", " ")}</div>}</button>)}</div></Card>{selectedPage && <Card className="p-5"><div className="flex flex-wrap items-start justify-between gap-3"><div><div className="text-xs font-black uppercase tracking-wide text-brand-700">{selectedPage.pageType} · {selectedPage.searchIntent} intent</div><h3 className="mt-1 text-2xl font-black text-charcoal-950">{selectedPage.title}</h3><div className="mt-1 font-mono text-sm font-bold text-brand-700">{selectedPage.suggestedUrl}</div></div><span className={`rounded-full px-3 py-1 text-xs font-black ${selectedPage.status === "existing" ? "bg-emerald-50 text-emerald-700" : "bg-blue-50 text-blue-700"}`}>{selectedPage.status}</span></div><div className="mt-5 grid gap-4 md:grid-cols-2"><ArchitectureDetail title="Page purpose" value={selectedPage.purpose} /><ArchitectureDetail title="Why recommended" value={selectedPage.recommendationWhy} /><ArchitectureDetail title="Navigation group" value={label(selectedPage.navigationGroup)} /><ArchitectureDetail title="Category" value={selectedPage.category || "Core website"} /></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Target keywords</div><div className="mt-2 flex flex-wrap gap-2">{(Array.isArray(selectedPage.targetKeywordsJson) ? selectedPage.targetKeywordsJson.map(String) : []).map((keyword) => <span key={keyword} className="rounded-full border border-brand-100 bg-brand-50 px-3 py-1.5 text-xs font-bold text-brand-700">{keyword}</span>)}{!Array.isArray(selectedPage.targetKeywordsJson) || !selectedPage.targetKeywordsJson.length ? <span className="text-sm text-charcoal-400">Intent and navigation page—no dedicated keyword target required.</span> : null}</div></div><div className="mt-5"><div className="text-xs font-black uppercase tracking-wide text-charcoal-400">Planned links</div><div className="mt-2 space-y-2">{current.links.filter((link) => link.sourcePageKey === selectedPage.pageKey || link.targetPageKey === selectedPage.pageKey).map((link) => <div key={link.id} className="rounded-lg border border-slate-100 bg-slate-50 p-3 text-sm"><b>{link.sourcePageKey.replaceAll("_", " ")} → {link.targetPageKey.replaceAll("_", " ")}</b><span className="ml-2 text-charcoal-500">“{link.anchorText}”</span></div>)}</div></div></Card>}</div>}
       {view === "navigation" && <ArchitectureNavigation pages={current.pages} />}
       {view === "links" && <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h3 className="font-black text-charcoal-950">Internal linking plan</h3><p className="mt-1 text-sm text-charcoal-500">Every link has a source, target, suggested anchor, type, and reason.</p></div><div className="divide-y divide-slate-100">{current.links.map((link) => <div key={link.id} className="grid gap-3 p-4 md:grid-cols-[minmax(0,1fr)_180px_minmax(0,1fr)]"><div><div className="text-xs font-black uppercase text-slate-400">Route</div><div className="mt-1 text-sm font-black text-slate-900">{link.sourcePageKey.replaceAll("_", " ")} <span className="text-brand-600">→</span> {link.targetPageKey.replaceAll("_", " ")}</div></div><div><div className="text-xs font-black uppercase text-slate-400">Anchor</div><div className="mt-1 text-sm font-semibold">{link.anchorText}</div></div><div><div className="text-xs font-black uppercase text-slate-400">Why</div><div className="mt-1 text-sm leading-6 text-slate-600">{link.rationale}</div></div></div>)}</div></Card>}
-      {view === "versions" && <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h3 className="font-black text-charcoal-950">Architecture versions</h3><p className="mt-1 text-sm text-charcoal-500">Previous versions remain available for comparison and audit history.</p></div><div className="divide-y divide-slate-100">{architectures.map((architecture) => <div key={architecture.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="font-black text-charcoal-900">Version {architecture.version} · {architecture.title}</div><div className="mt-1 text-xs text-charcoal-500">{new Date(architecture.createdAt).toLocaleString()} · {architecture.pages.length} pages · {architecture.links.length} links</div>{architecture.rejectionReason && <div className="mt-1 text-xs font-semibold text-rose-700">Changes requested: {architecture.rejectionReason}</div>}</div><span className={`self-start rounded-full px-3 py-1 text-xs font-black uppercase ${architecture.status === "approved" ? "bg-emerald-50 text-emerald-700" : architecture.status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{architecture.status}</span></div>)}</div></Card>}
+      {view === "versions" && <Card className="overflow-hidden p-0"><div className="border-b px-5 py-4"><h3 className="font-black text-charcoal-950">Architecture versions</h3><p className="mt-1 text-sm text-charcoal-500">Previous versions remain available for comparison and audit history.</p></div><div className="divide-y divide-slate-100">{architectures.map((architecture) => <div key={architecture.id} className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="font-black text-charcoal-900">Version {architecture.version} · {architecture.title}</div><div className="mt-1 text-xs text-charcoal-500">{formatDisplayDate(architecture.createdAt)} · {architecture.pages.length} pages · {architecture.links.length} links</div>{architecture.rejectionReason && <div className="mt-1 text-xs font-semibold text-rose-700">Changes requested: {architecture.rejectionReason}</div>}</div><span className={`self-start rounded-full px-3 py-1 text-xs font-black uppercase ${architecture.status === "approved" ? "bg-emerald-50 text-emerald-700" : architecture.status === "rejected" ? "bg-rose-50 text-rose-700" : "bg-amber-50 text-amber-700"}`}>{architecture.status}</span></div>)}</div></Card>}
       <div className="rounded-lg border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900"><b>No structural changes are made from a draft.</b> Approval creates or updates Execution Plan tasks for recommended pages and internal links; publishing and live-site changes remain separately protected.</div>
     </>}
   </div>;
@@ -4548,17 +4539,7 @@ function getModuleNextStep({
       tone: "violet",
     };
   }
-  if (kind === "backlinks") {
-    return {
-      eyebrow: "Next step",
-      title: "Review authority opportunities",
-      detail: "Use backlink data with strategy context to identify authority gaps, outreach assets, and linkable content opportunities.",
-      actionLabel: "Review Backlinks",
-      actionTo: `/backlinks${projectQuery}`,
-      helper: "Refresh is rate-limited so users cannot repeatedly run provider calls.",
-      tone: "blue",
-    };
-  }
+  if (kind === "backlinks") return null;
   if (kind === "ai-citations") {
     return {
       eyebrow: "Next step",
@@ -5402,7 +5383,7 @@ function canRefreshKeyword(run: KeywordResearchRun): boolean {
 }
 
 function refreshBlockedLabel(run: KeywordResearchRun): string {
-  if (run.refreshBlockedUntil) return "Refresh available " + formatDateTime(run.refreshBlockedUntil);
+  if (run.refreshBlockedUntil) return "Refresh available " + formatDisplayDate(run.refreshBlockedUntil, { includeTime: true });
   return "Refresh unavailable";
 }
 
@@ -6047,7 +6028,7 @@ function crawlSource(crawl: CrawlSummary) {
 
 function formatDateTime(value?: string | null) {
   if (!value) return "not yet";
-  return new Date(value).toLocaleString(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" });
+  return formatDisplayDate(value);
 }
 
 function shortUrl(value: string) {

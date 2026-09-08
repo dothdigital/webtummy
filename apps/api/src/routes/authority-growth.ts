@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
 import { z } from "zod";
 import { backlinkRiskFinding, buildAuthorityOpportunityDrafts } from "../authority-growth-engine.js";
+import { uniqueSavedBacklinks } from "../saved-backlink-list.js";
 import { centralAiJson } from "../central-ai-service.js";
 import { canAccessProject, hasWorkspacePermission, recordWorkspaceActivity, workspaceContext } from "../workspace-access.js";
 
@@ -142,7 +143,7 @@ authorityGrowthRouter.get("/projects/:projectId/authority-growth", async (req, r
   const clientViewer = context.roles.size === 1 && context.roles.has("client_viewer");
   const [snapshots, backlinks, riskFindings, opportunities, assets, campaigns, earnedMentions, performance, preparationFeature, monitoringRun] = await Promise.all([
     prisma.backlinkProfileSnapshot.findMany({ where: { projectId: project.id, profileType: "owned" }, orderBy: { capturedAt: "desc" }, take: 12 }),
-    prisma.projectBacklink.findMany({ where: { projectId: project.id, snapshot: { profileType: "owned" } }, orderBy: { createdAt: "desc" }, take: 100 }),
+    prisma.projectBacklink.findMany({ where: { projectId: project.id }, include: { snapshot: { select: { profileType: true, target: true, capturedAt: true } } }, orderBy: [{ snapshot: { capturedAt: "desc" } }, { id: "asc" }] }),
     prisma.authorityRiskFinding.findMany({ where: { projectId: project.id, ...(clientViewer ? { status: { not: "needs_review" } } : {}) }, orderBy: [{ status: "asc" }, { severity: "asc" }, { createdAt: "desc" }], take: 100 }),
     prisma.authorityOpportunity.findMany({
       where: { projectId: project.id, status: clientViewer ? "approved" : { not: "superseded" } },
@@ -167,6 +168,7 @@ authorityGrowthRouter.get("/projects/:projectId/authority-growth", async (req, r
     },
     snapshots,
     backlinks: snapshots[0] ? backlinks.filter((item) => item.snapshotId === snapshots[0].id) : [],
+    savedBacklinks: uniqueSavedBacklinks(backlinks),
     riskFindings,
     opportunities,
     assets,

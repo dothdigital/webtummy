@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -12,7 +13,7 @@ function formatUpdatedDate(value: string | null | undefined): string {
 
 function formatShortDate(value: string | null | undefined): string {
   if (!value) return "-";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+  return formatDisplayDate(new Date(value));
 }
 
 function scoreTone(score: number | null | undefined): string {

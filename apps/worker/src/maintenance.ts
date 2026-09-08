@@ -1,3 +1,5 @@
+import { reconcileAllProjectPlanning } from "@webtummy/db/planning-reconciliation";
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { Prisma, prisma, type Client } from "@webtummy/db";
 import { crawlQueue } from "./queue.js";
 import { config } from "./config.js";
@@ -591,7 +593,7 @@ export async function approvalReminderEscalations(now = new Date()) {
       for (const userId of [...new Set(recipients)]) await prisma.workspaceNotification.create({ data: {
         workspaceId: workspace.id, userId, agencyClientId: task.project.agencyClientId, projectId: task.projectId, type,
         title: stage === "owner" ? "Approval escalated to Owner" : "Approval reminder",
-        body: `${task.title} has been waiting for approval since ${task.submittedAt.toLocaleString()}.`, actionUrl,
+        body: `${task.title} has been waiting for approval since ${formatDisplayDate(task.submittedAt)}.`, actionUrl,
         emailEligible: true, emailStatus: "pending",
       } });
       if (stage === "owner") ownerEscalations += 1;
@@ -622,7 +624,7 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       const overrides = membership?.permissionOverrides && typeof membership.permissionOverrides === "object" && !Array.isArray(membership.permissionOverrides) ? membership.permissionOverrides as { notificationPreferences?: unknown } : {};
       const preferences = overrides.notificationPreferences && typeof overrides.notificationPreferences === "object" && !Array.isArray(overrides.notificationPreferences) ? overrides.notificationPreferences as { emailFrequency?: unknown } : {};
       const frequency = ["immediate", "daily", "weekly", "monthly"].includes(String(preferences.emailFrequency)) ? String(preferences.emailFrequency) : "immediate";
-      const critical = items.filter((item) => /security|integration.*(failed|disconnected)|publishing_failed|critical/.test(item.type));
+      const critical = items.filter((item) => /security|integration.*(failed|disconnected)|publishing_failed|critical|^billing_subscription_(cancellation|ended)$/.test(item.type));
       const routine = items.filter((item) => !critical.includes(item));
       const batches: (typeof notifications)[] = critical.map((item) => [item]);
       const ageRequired = frequency === "daily" ? DAY_MS : frequency === "weekly" ? 7 * DAY_MS : frequency === "monthly" ? 30 * DAY_MS : 0;
@@ -630,7 +632,7 @@ export async function workspaceNotificationEmailDelivery(now = new Date()) {
       if (readyRoutine.length) batches.push(readyRoutine);
       deferred += routine.length - readyRoutine.length;
       for (const batch of batches) {
-        const lines = batch.map((item) => `${item.title}: ${item.body}${batch.length > 1 ? `\nUpdate recorded: ${item.createdAt.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, " UTC")}` : ""}`);
+        const lines = batch.map((item) => `${item.title}: ${item.body}${batch.length > 1 ? `\nUpdate recorded: ${formatDisplayDate(item.createdAt)}` : ""}`);
         const presentation = batch.length > 1
           ? { ctaLabel: "Open SEnuke AI dashboard", previewText: "Review completed work and updates that need your attention." }
           : notificationPresentation(batch[0].type);
@@ -1017,6 +1019,7 @@ export async function runMaintenanceSuite() {
     await weeklyRankingReportGeneration();
     await monthlyClientReportGeneration();
     await scheduledProjectReportGeneration();
+    await reconcileAllProjectPlanning();
     await taskDeadlineNotifications();
     await approvalReminderEscalations();
     await pendingContentDiscoveryChecks();

@@ -1,3 +1,4 @@
+import { requireGrowthLaunch } from "@webtummy/db/growth-execution";
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
@@ -65,6 +66,7 @@ const saveSetupSchema = z.object({
 });
 
 const generateSchema = z.object({
+  growthOpportunityIds: z.array(z.string().max(191)).max(120).default([]),
   websiteId: z.string(),
   projectId: z.string().optional().nullable(),
   campaignId: z.string().optional().nullable(),
@@ -92,6 +94,7 @@ const generateSchema = z.object({
 });
 
 const campaignSetupSchema = z.object({
+  growthOpportunityIds: z.array(z.string().max(191)).max(120).default([]),
   websiteId: z.string(),
   projectId: z.string(),
   campaignId: z.string().optional().nullable(),
@@ -185,6 +188,7 @@ const socialPostChangeRequestSchema = z.object({
 }).refine((input) => input.changeContent || input.changeImage, { message: "Choose content, image, or both." });
 
 const quickPostGenerateSchema = z.object({
+  growthTaskId: z.string().max(191).optional(),
   projectId: z.string().min(1).max(191),
   strategyId: z.string().min(1).max(191).optional(),
   platform: z.enum(["facebook", "instagram"]),
@@ -1006,6 +1010,7 @@ socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
     monthlyTheme: null,
     status: "draft",
     generationMode: "campaign_setup",
+    intelligenceSnapshotJson: { growthOpportunityIds: input.growthOpportunityIds },
     strategySummary: null,
   };
   const campaign = existingDraft
@@ -1064,6 +1069,15 @@ socialStrategyRouter.post("/social-strategy/quick-post/generate", async (req, re
   if (!await canAccessProject(context, parsed.data.projectId)) return res.status(404).json({ error: "Project not found." });
   const project = await prisma.project.findUnique({ where: { id: parsed.data.projectId }, include: { businessProfile: true, intakeAnswers: true, strategyPlans: { where: { status: "approved" }, orderBy: { version: "desc" }, take: 1 } } });
   if (!project) return res.status(404).json({ error: "Project not found." });
+  const growthOpportunity = parsed.data.growthTaskId ? await prisma.growthContentOpportunity.findFirst({ where: { projectId: project.id, executionTaskId: parsed.data.growthTaskId, contentType: "social_post" } }) : null;
+  if (parsed.data.growthTaskId) {
+    if (!growthOpportunity || !project.websiteId) return res.status(404).json({ error: "Growth social task not found." });
+    if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+    await requireGrowthLaunch(project.id);
+    const savedEvidence = growthOpportunity.evidenceJson && typeof growthOpportunity.evidenceJson === "object" && !Array.isArray(growthOpportunity.evidenceJson) ? growthOpportunity.evidenceJson : {};
+    const existing = await prisma.socialCalendarPost.findFirst({ where: { strategy: { projectId: project.id }, OR: [{ sourceType: "growth_content_opportunity", sourceId: growthOpportunity.id }, ...(typeof savedEvidence.socialCalendarPostId === "string" ? [{ id: savedEvidence.socialCalendarPostId }] : [])] } });
+    if (existing) return res.json({ growthPost: existing, idempotent: true });
+  }
   const strategy = parsed.data.strategyId ? await prisma.socialStrategy.findFirst({ where: { id: parsed.data.strategyId, projectId: project.id } }) : null;
   try {
     if (!config.openaiApiKey) return res.status(409).json({ error: "Configure OpenAI before generating a Quick Post." });
@@ -1094,6 +1108,22 @@ socialStrategyRouter.post("/social-strategy/quick-post/generate", async (req, re
       const dataUrl = await reviseSocialPostImage({ topic: content.topic, caption: content.caption, targetKeyword: null, targetUrl: null, platform: parsed.data.platform, imageSuggestion: content.imageSuggestion, strategy: { campaignName: "Quick Post", imageDirection: strategy?.imageDirection || null, audience: strategy?.audience || null, intelligenceSnapshotJson: (strategy?.intelligenceSnapshotJson || { businessProfile: project.businessProfile, targetLocations: project.targetLocations }) as Prisma.JsonValue, project } }, parsed.data.context);
       imageUrl = await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, filename: `quick-post-${Date.now()}.png`, dataUrl, source: "openai_generated", visibility: "published", altText: content.topic.slice(0, 500), sourceEntityType: "social_quick_post", sourceEntityId: project.id, createdByUserId: context.membership.userId });
     }
+    if (growthOpportunity && parsed.data.growthTaskId && project.websiteId) {
+      const growthPost = await prisma.$transaction(async tx => {
+        await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${project.id}`}, 0::bigint))::text`;
+        const current = await tx.growthContentOpportunity.findUniqueOrThrow({ where: { id: growthOpportunity.id } });
+        if (current.executionTaskId !== parsed.data.growthTaskId || ["rejected", "superseded"].includes(current.lifecycleStatus)) throw Object.assign(new Error("This growth task is no longer available."), { statusCode: 409 });
+        const existing = await tx.socialCalendarPost.findFirst({ where: { sourceType: "growth_content_opportunity", sourceId: current.id, strategy: { projectId: project.id } } });
+        if (existing) return existing;
+        const campaign = strategy || await tx.socialStrategy.findFirst({ where: { projectId: project.id, status: "active" }, orderBy: { createdAt: "desc" } }) || await tx.socialStrategy.create({ data: { projectId: project.id, websiteId: project.websiteId!, campaignName: "Growth content distribution", goal: String(project.primaryGoal || "Bring relevant visitors to the website").slice(0,160), status: "active", platforms: [parsed.data.platform], strategySummary: "Social posts prepared from the approved Growth content roadmap." } });
+        const post = await tx.socialCalendarPost.create({ data: { strategyId: campaign.id, platform: parsed.data.platform, topic: content.topic, caption: content.caption, cta: content.cta, hashtagsJson: content.hashtags, imageUrl, imageSuggestion: content.imageSuggestion, imageStatus: imageUrl ? "image_generated" : "planned", targetKeyword: current.primaryKeyword.slice(0,255), targetUrl: current.targetUrl || current.internalLinkTargetUrl, publishDate: current.plannedPublishAt || new Date(), sourceType: "growth_content_opportunity", sourceId: current.id, status: "needs_review" } });
+        await tx.executionTask.update({ where: { id: current.executionTaskId! }, data: { sourceType: "social_calendar_post", sourceId: post.id, moduleName: "social_strategy", status: "needs_review", requiresApproval: true, approvedAt: null, approvalDecision: null, automationLevel: "execute_with_approval", safetyCategory: "publishing", actionButtonLabel: "Review and schedule social post", relatedUrl: `/social-strategy?projectId=${project.id}&campaignId=${campaign.id}&postId=${post.id}&mode=posting`, approvalSnapshotJson: { growthContentOpportunityId: current.id, socialStrategyId: campaign.id, socialCalendarPostId: post.id } } });
+        await tx.growthContentOpportunity.update({ where: { id: current.id }, data: { lifecycleStatus: "needs_review", evidenceJson: { ...(current.evidenceJson && typeof current.evidenceJson === "object" && !Array.isArray(current.evidenceJson) ? current.evidenceJson : {}), socialCalendarPostId: post.id, socialStrategyId: campaign.id, platform: post.platform } } });
+        await recordWorkspaceActivity(tx, { context, action: "growth_social_post.prepared", entityType: "social_calendar_post", entityId: post.id, projectId: project.id, agencyClientId: project.agencyClientId, nextJson: { growthContentOpportunityId: current.id, taskId: current.executionTaskId, platform: post.platform, status: post.status } });
+        return post;
+      });
+      return res.json({ ...content, imageUrl, growthPost });
+    }
     await prisma.$transaction(async (tx) => recordWorkspaceActivity(tx, { context, action: "social_quick_post.generated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, nextJson: { platform: parsed.data.platform, topic: content.topic, hashtags: content.hashtags, imageGenerated: Boolean(imageUrl) } }));
     res.json({ ...content, imageUrl });
   } catch (error) {
@@ -1112,6 +1142,18 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const intelligence = await getProjectIntelligence(req, website.id, input.projectId);
   if (!intelligence.project) return res.status(409).json({ error: "Select a guided project connected to this website before generating its social strategy." });
   const project = intelligence.project;
+  if (!input.growthOpportunityIds.length && input.campaignId) {
+    const saved = await prisma.socialStrategy.findFirst({where:{id:input.campaignId,projectId:project.id,status:"draft"},select:{intelligenceSnapshotJson:true}});
+    const snapshot = saved?.intelligenceSnapshotJson;
+    const ids = snapshot && typeof snapshot === "object" && !Array.isArray(snapshot) ? snapshot.growthOpportunityIds : null;
+    if (Array.isArray(ids)) input.growthOpportunityIds = ids.filter((id): id is string => typeof id === "string");
+  }
+  const growthItems = input.growthOpportunityIds.length ? await prisma.growthContentOpportunity.findMany({where:{id:{in:input.growthOpportunityIds},projectId:project.id,contentType:"social_post"},orderBy:{plannedPhase:"asc"}}) : [];
+  if (input.growthOpportunityIds.length) {
+    await requireGrowthLaunch(project.id);
+    if (growthItems.length !== new Set(input.growthOpportunityIds).size || growthItems.some(item=>item.executionTaskId || !["proposed","deferred"].includes(item.lifecycleStatus))) return res.status(409).json({error:"Some Growth suggestions already have posts or tasks. Reload the Growth Strategy and continue existing work."});
+  }
+
   const snapshot = intelligenceSnapshot(project, intelligence.sources);
   const profiles = await prisma.socialProfile.findMany({ where: { websiteId: website.id } });
   const competitors = await prisma.socialCompetitorProfile.findMany({ where: { websiteId: website.id } });
@@ -1147,6 +1189,16 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const competitorThemes = uniqueStrings(competitorInputs.flatMap((competitor) => competitor.contentThemes));
   const pillars = buildPillars(goal, website.domain, competitorThemes, intelligence.sources);
   let posts = buildCalendar(enrichedInput, snapshot, activePlatforms, intelligence.sources, pillars);
+  if (growthItems.length) {
+    const templates=posts;
+    posts=growthItems.map((item,index)=>{
+      const day=Number(/^day_(\d+)$/.exec(item.plannedPhase)?.[1] || index*7+1);
+      const publishDate=new Date(campaignStartAt.getTime()+day*86400000);publishDate.setUTCHours(14,0,0,0);
+      return {...templates[index%templates.length],platform:activePlatforms[index%activePlatforms.length],topic:item.title,caption:item.recommendationReason,targetKeyword:item.primaryKeyword.slice(0,255),targetUrl:item.targetUrl||item.internalLinkTargetUrl,sourceType:"growth_content_opportunity",sourceId:item.id,publishDate};
+    });
+    if (posts.some(post=>post.publishDate>campaignEndAt)) return res.status(409).json({error:"Extend the campaign dates to cover all loaded Growth suggestions (180 days), or continue individual social tasks."});
+  }
+
   let generationMode = "evidence_engine";
   let strategySummary = `${campaignName} is a ${campaignDurationDays}-day campaign focused on ${activePlatforms.map((platform) => platform.replaceAll("_", " ")).join(", ")}. It will repurpose approved project content to support “${goal}” and measure progress against ${campaignTarget}.`;
   let campaignThemes = pillars.slice(0, 5).map((pillar) => pillar.title);
@@ -1190,6 +1242,12 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
   const socialScore = Math.round(profileScore * 0.2 + consistencyScore * 0.15 + activityScore * 0.15 + competitorScore * 0.15 + seoAlignmentScore * 0.2 + Math.min(100, intelligence.sources.length * 8) * 0.15);
   const recommendations = buildRecommendations(enrichedInput, profileInputs, competitorInputs, intelligence.sources, platformPlans);
   const strategy = await prisma.$transaction(async (tx) => {
+    if (growthItems.length) {
+      await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${project.id}`}, 0::bigint))::text`;
+      const current=await tx.growthContentOpportunity.findMany({where:{id:{in:input.growthOpportunityIds},projectId:project.id}});
+      if(current.some(item=>item.executionTaskId||!["proposed","deferred"].includes(item.lifecycleStatus))) throw Object.assign(new Error("Growth social tasks changed during generation. Reload the plan to continue."),{statusCode:409});
+    }
+
     if (input.campaignId) {
       await tx.socialStrategy.deleteMany({ where: { id: input.campaignId, projectId: project.id, status: "draft" } });
     }
@@ -1227,7 +1285,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
         platformRecommendationsJson: platformPlans as unknown as Prisma.InputJsonValue,
         campaignThemesJson: campaignThemes,
         bestPostingTimesJson: platformPlans.filter((plan) => activePlatforms.includes(plan.platform)).map((plan) => ({ platform: plan.platform, times: plan.bestTimes })) as Prisma.InputJsonValue,
-        intelligenceSnapshotJson: snapshot as unknown as Prisma.InputJsonValue,
+        intelligenceSnapshotJson: { ...snapshot, growthOpportunityIds: input.growthOpportunityIds } as unknown as Prisma.InputJsonValue,
         socialScore: Math.max(0, Math.min(100, socialScore)),
         profileScore,
         consistencyScore,
@@ -1263,7 +1321,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
     });
     const executionPlan = await activeExecutionPlan(tx, project.id, project.name);
     for (const post of row.posts) {
-      await tx.executionTask.create({
+      const growthTask = await tx.executionTask.create({
         data: {
           clientId: project.clientId,
           websiteId: project.websiteId,
@@ -1288,6 +1346,7 @@ socialStrategyRouter.post("/social-strategy/generate", async (req, res) => {
           approvalSnapshotJson: { socialStrategyId: row.id, socialCalendarPostId: post.id, sourceType: post.sourceType, sourceId: post.sourceId } as Prisma.InputJsonValue,
         },
       });
+      if(post.sourceType === "growth_content_opportunity" && post.sourceId) await tx.growthContentOpportunity.update({where:{id:post.sourceId},data:{executionTaskId:growthTask.id,lifecycleStatus:"needs_review",plannedPublishAt:post.publishDate,evidenceJson:{socialCalendarPostId:post.id,socialStrategyId:row.id,platform:post.platform}}});
     }
     await tx.aiRun.create({
       data: {

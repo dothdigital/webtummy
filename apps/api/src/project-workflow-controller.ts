@@ -1,8 +1,10 @@
+import { resolveHandoffReview } from "./website-handoff-review-state.js";
+import { websiteHandoffIsComplete, websitePublicationIsLive } from "@webtummy/core/website-generation";
 import { createHash } from "node:crypto";
 import { prisma, type Prisma } from "@webtummy/db";
 import { approvedKeywordEntries, incompleteApprovedKeywordResearchChecks, latestKeywordResearchChecks, missingApprovedKeywordResearch, normalizeKeywordPhrase, unresolvedApprovedKeywordResearchChecks, workflowBlockedPayload } from "@webtummy/core";
 import { projectAnalysisLocationLabels, type BusinessLocation } from "./project-location.js";
-import { isWebsitePlanTask } from "./website-plan-task.js";
+import { isWebsitePlanTask, type WebsitePlanTaskIdentity } from "./website-plan-task.js";
 import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
 
 export const WORKFLOW_CONTROLLER_VERSION = "workflow-controller-v1";
@@ -138,6 +140,8 @@ export type WorkflowStage = {
 };
 
 export type ProjectWorkflowControllerView = {
+  handoffReviewStage?: "confirm_applied" | "assessment" | "review_findings" | "complete";
+  websiteDeliveryStage?: "live_checks" | "tracking_checks" | "growth_execution";
   version: string;
   projectId: string;
   state: WorkflowState;
@@ -328,6 +332,9 @@ export type WorkflowEvidenceSnapshot = {
   postImplementationVerificationRequired: boolean;
   publishingStarted: boolean;
   publishingComplete: boolean;
+  websiteHandoffComplete?: boolean;
+  websiteHandoffVerified?: boolean;
+  handoffReviewStage?: "confirm_applied" | "assessment" | "review_findings" | "complete";
   measurementStarted: boolean;
   measurementComplete: boolean;
   reportingLearningComplete?: boolean;
@@ -367,6 +374,17 @@ const stateLabels: Record<WorkflowState, string> = {
 // reviewed. Explicit invalidation events still set the Strategy status to
 // `stale` immediately; the window applies only to timestamp-based detection.
 export const STRATEGY_EVIDENCE_SETTLING_WINDOW_MS = 2 * 60 * 1000;
+
+/** Review completion records approval, not a new change to the live website. */
+export function latestWebsiteImplementationAt(tasks: Array<WebsitePlanTaskIdentity & {
+  moduleName: string; publishedAt: Date | null; completedAt: Date | null;
+}>) {
+  return newest(...tasks
+    .filter((task) => !isWebsitePlanTask(task)
+      && task.sourceType !== "website_builder_review"
+      && (task.moduleName === "site_architect" || task.sourceType === "website_builder_request" || task.sourceType === "site_architecture_page"))
+    .map((task) => task.publishedAt ?? task.completedAt));
+}
 
 function newest(...dates: Array<Date | null | undefined>) {
   return dates.filter((date): date is Date => Boolean(date)).sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
@@ -616,8 +634,8 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   // its governed onboarding and release path. Later crawl, URL, or website
   // evidence may advance the stored Brain version, but it must not send a
   // published project back to Business Brain or Readiness approval.
-  const businessBrainGovernanceSatisfied = snapshot.businessBrainApproved || snapshot.publishingComplete;
-  const readinessGovernanceSatisfied = snapshot.readinessComplete || snapshot.publishingComplete;
+  const businessBrainGovernanceSatisfied = snapshot.businessBrainApproved || snapshot.publishingComplete || Boolean(snapshot.websiteHandoffComplete);
+  const readinessGovernanceSatisfied = snapshot.readinessComplete || snapshot.publishingComplete || Boolean(snapshot.websiteHandoffComplete);
   const continuousGrowthReady = Boolean(businessBrainGovernanceSatisfied && readinessGovernanceSatisfied && intelligenceGovernanceSatisfied && findingsReviewed && strategyApproved && growthBlueprintApproved && snapshot.executionPlanApproved && snapshot.completedExecutionTasks > 0 && snapshot.measurementComplete && reportingLearningComplete && trackingReady && snapshot.nextBestActionExists);
   const implementationComplete = snapshot.executionTasksExist && snapshot.openExecutionTasks === 0 && snapshot.completedExecutionTasks > 0;
   // The build-ready Website Plan is the governed bridge between an approved
@@ -666,8 +684,8 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     { key: "execution_plan_approval", label: "Execution Plan Review and Approval", description: "Create, review and approve sequenced work.", status: snapshot.executionPlanApproved ? "approved" : snapshot.executionTasksExist && strategyApproved ? "ready" : strategyApproved ? "ready" : "blocked", reason: snapshot.executionPlanApproved ? "The current Execution Plan version is approved and remains preserved." : snapshot.executionTasksExist ? "Review and approve the plan." : strategyApproved ? "Create the Execution Plan." : "Approve Strategy first.", action: action(snapshot.executionTasksExist ? "Review Execution Plan" : "Create Execution Plan", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, snapshot.executionTasksExist ? "approve" : "generate"), ai: aiRoles.planning },
     { key: "approved_execution", label: "Approved Execution", description: "Prepare and execute only approved work.", status: snapshot.completedExecutionTasks > 0 ? "complete" : snapshot.executionPlanApproved && snapshot.executionTasksExist ? "in_progress" : "blocked", reason: snapshot.completedExecutionTasks > 0 ? "At least one approved action is complete." : snapshot.executionPlanApproved ? "Execute dependency-ready approved tasks." : "Approve the Execution Plan first.", action: action("Continue Execution", `/guided-projects/${snapshot.projectId}?tab=execution#execution-tasks`, "implement"), ai: aiRoles.execution },
     { key: "output_approval", label: "Output Review and Approval", description: "Review generated outputs before external action.", status: snapshot.preparedChangesAwaitingApproval ? "ready" : snapshot.completedExecutionTasks > 0 ? "complete" : "blocked", reason: snapshot.preparedChangesAwaitingApproval ? "Generated output is waiting for approval." : snapshot.completedExecutionTasks > 0 ? "Completed outputs have their required approval state." : "Prepare approved work first.", action: snapshot.preparedChangesAwaitingApproval ? action("Review Outputs", `/site-architect?${projectQuery}`, "approve") : null, ai: aiRoles.approval },
-    { key: "external_completion", label: "Publishing or External Completion", description: "Publish approved work or record verified completion.", status: snapshot.publishingComplete ? "complete" : snapshot.publishingStarted ? "in_progress" : snapshot.completedExecutionTasks > 0 ? "not_required" : "blocked", reason: snapshot.publishingComplete ? "Approved external work is complete." : snapshot.publishingStarted ? "Publishing is in progress." : snapshot.completedExecutionTasks > 0 ? "No separate external publication applies to the completed action." : "Complete and approve an output first.", action: snapshot.publishingStarted ? action("Review Publishing", `/ai-content?${projectQuery}#publishing`, "implement") : null, ai: aiRoles.publishing },
-    { key: "tracking_verification", label: "Tracking and Measurement Verification", description: "Verify connection, operation and arriving data or record a limitation.", status: trackingReady ? "complete" : verifiedExecutionOutcome ? "ready" : "blocked", reason: trackingReady ? "Tracking is verified or an authorized limitation is recorded." : "Verify that measurement works and data arrives.", action: action("Verify Tracking", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
+    { key: "external_completion", label: "Publishing or External Completion", description: "Publish approved work or record verified completion.", status: snapshot.publishingComplete || snapshot.websiteHandoffComplete ? "complete" : snapshot.publishingStarted ? "in_progress" : snapshot.completedExecutionTasks > 0 ? "not_required" : "blocked", reason: snapshot.websiteHandoffComplete ? "Website package delivered. The client applies the files before live checks." : snapshot.publishingComplete ? "Approved external work is complete." : snapshot.publishingStarted ? "Publishing is in progress." : snapshot.completedExecutionTasks > 0 ? "No separate external publication applies to the completed action." : "Complete and approve an output first.", action: snapshot.websiteHandoffComplete ? action("Review Handoff", `/site-architect?${projectQuery}&step=publish`, "review") : snapshot.publishingStarted ? action("Review Publishing", `/ai-content?${projectQuery}#publishing`, "implement") : null, ai: aiRoles.publishing },
+    { key: "tracking_verification", label: "Tracking and Measurement Verification", description: "Verify connection, operation and arriving data or record a limitation.", status: trackingReady ? "complete" : verifiedExecutionOutcome || snapshot.websiteHandoffComplete ? "ready" : "blocked", reason: trackingReady ? "Tracking is verified or an authorized limitation is recorded." : "Verify that measurement works and data arrives.", action: action("Verify Tracking", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
     { key: "reporting_learning", label: "Reporting and Learning", description: "Turn completed measurement into a report and saved learning.", status: reportingLearningComplete ? "complete" : snapshot.measurementComplete && trackingReady ? "ready" : "blocked", reason: reportingLearningComplete ? "A current report and learning record exist." : snapshot.measurementComplete ? "Generate the report and record what was learned." : "Complete a measurement checkpoint first.", action: action("Review Reports and Learning", `/growth?${projectQuery}`, "review"), ai: aiRoles.measurement },
     { key: "growth_loop_activation", label: "Continuous Growth Loop Activation", description: "Activate only after every governed prerequisite.", status: continuousGrowthReady ? "complete" : reportingLearningComplete ? "ready" : "blocked", reason: continuousGrowthReady ? "Continuous Growth Loop is active." : "Complete reporting, learning and create the current Next Best Action.", action: action("Activate Growth Loop", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
     { key: "next_best_action", label: "Next Best Action", description: "Show the one current evidence-based action.", status: continuousGrowthReady && snapshot.nextBestActionExists ? "in_progress" : "blocked", reason: continuousGrowthReady ? "A current workflow-valid Next Best Action is available." : "The Growth Loop must be ready first.", action: action("View Next Best Action", `/growth?${projectQuery}`, "review"), ai: aiRoles.growth },
@@ -676,13 +694,31 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const incompleteIntelligence = intelligence.find((item) => item.required && !["complete", "approved", "not_applicable"].includes(item.status));
   let state: WorkflowState;
   let nextBestAction: ProjectWorkflowControllerView["nextBestAction"];
-  if (snapshot.publishingComplete) {
-    state = "measurement";
-    nextBestAction = snapshot.existingWebsite && !snapshot.siteAnalysisComplete
-      ? { title: "Website Intelligence Baseline", reason: "The website is published. Create the first live crawl and measurement baseline before evaluating results.", expectedResult: "A crawl-backed baseline for the published website.", action: action("Create Website Intelligence Baseline", `/site-analysis?${projectQuery}`, "generate"), aiWill: ["Crawl the published website", "Record page, technical, content, and conversion evidence without inventing performance"], userWill: "Start the first live Website Intelligence assessment.", confidence: overallConfidence, explainability: "A new publication needs one live baseline before post-launch measurement." }
-      : snapshot.postImplementationVerificationRequired
-      ? { title: "Verify the website changes", reason: "The website is published; verify the live implementation before measuring performance.", expectedResult: "A saved live-site verification for the published release.", action: action("Verify website changes", `/site-analysis?${projectQuery}`, "generate"), aiWill: ["Check the affected live URLs and implementation evidence", "Confirm content, metadata, canonical, indexability, schema, links, and tracking where applicable"], userWill: "Run the live verification and resolve any failed checks.", confidence: overallConfidence, explainability: "Published work continues through verification and measurement; later evidence never reopens onboarding." }
-      : { title: "Review the published website and next growth action", reason: "The website is live. Continue with measurement and the next evidence-based improvement instead of returning to setup.", expectedResult: "A baseline-backed post-launch priority for the live website.", action: action("Open Growth", `/growth?${projectQuery}`, "review"), aiWill: ["Use the published release as the current baseline", "Review tracking, outcomes, and the next valid improvement"], userWill: "Review the live baseline and choose the next improvement.", confidence: overallConfidence, explainability: "The published release is the governing milestone; Business Brain, Readiness, and pre-launch planning stay complete." };
+  let websiteDeliveryStage: ProjectWorkflowControllerView["websiteDeliveryStage"];
+  if (snapshot.websiteHandoffComplete || snapshot.publishingComplete) {
+    const handoffNeedsLiveReview = snapshot.websiteHandoffComplete && !snapshot.websiteHandoffVerified;
+    const missingCrawl = snapshot.existingWebsite && !snapshot.siteAnalysisComplete;
+    if (handoffNeedsLiveReview || missingCrawl || snapshot.postImplementationVerificationRequired) {
+      state = "measurement";
+      websiteDeliveryStage = "live_checks";
+      nextBestAction = {
+        title: handoffNeedsLiveReview ? snapshot.handoffReviewStage === "confirm_applied" ? "Confirm the delivered changes are applied" : snapshot.handoffReviewStage === "review_findings" ? "Review the fresh live-site findings" : "Review the client-applied website changes" : missingCrawl ? "Website Intelligence Baseline" : "Verify the website changes",
+        reason: handoffNeedsLiveReview ? snapshot.handoffReviewStage === "review_findings" ? "A fresh assessment is complete. Review the affected pages and findings, then confirm the delivered changes are present. Unresolved changes remain in live review." : "Delivery is complete. Confirm the client or developer applied this release, run a fresh live-site assessment, then review its findings. Delivery and tracking events alone do not confirm the updates were applied." : "Check the live website and save its current assessment before continuing to growth execution.",
+        expectedResult: "A current live-site assessment for the delivered website changes.",
+        action: action(missingCrawl && !handoffNeedsLiveReview ? "Create Website Intelligence Baseline" : "Review Live Website Changes", `/site-analysis?${projectQuery}`, "review"),
+        aiWill: ["Assess the live website", "Keep delivery, live checks, and tracking evidence separate"],
+        userWill: "Confirm the files are applied, then assess and review the affected live pages.", confidence: overallConfidence,
+        explainability: "Live checks follow delivery and must use current evidence.",
+      };
+    } else if (!trackingReady) {
+      state = "measurement";
+      websiteDeliveryStage = "tracking_checks";
+      nextBestAction = { title: "Check website tracking", reason: "Live checks are complete. Confirm that the website tag is collecting activity, or record an applicable tracking limitation.", expectedResult: "Verified tracking or an authorized limitation.", action: action("Check Website Tracking", `/projects/${encodeURIComponent(snapshot.projectId)}/website/performance?view=senuke`, "review"), aiWill: ["Check tracking verification and received events"], userWill: "Check the installed tag and visit a live page to verify collection.", confidence: overallConfidence, explainability: "A saved tracking identifier is not evidence of data collection." };
+    } else {
+      state = continuousGrowthReady ? "continuous_growth" : "execution";
+      websiteDeliveryStage = "growth_execution";
+      nextBestAction = { title: "Continue Growth Execution", reason: "Website delivery and the applicable live and tracking checks are complete. Continue the approved growth work while Performance collects results.", expectedResult: "The next approved growth activity progresses through preparation, review, execution, and measurement.", action: action("Continue Growth Execution", `/growth?${projectQuery}`, "implement"), aiWill: ["Use the approved growth plan and remaining activities", "Continue measuring results alongside execution"], userWill: "Open Growth and continue the next available activity.", confidence: overallConfidence, explainability: "Initial baseline collection does not block approved growth execution. Measured reporting and learning remain required for the continuous growth loop." };
+    }
   } else if (!snapshot.discoveryComplete) {
     state = "discovery";
     nextBestAction = { title: "Complete Business Discovery", reason: "Every AI recommendation and implementation depends on verified business context.", expectedResult: "A reusable Business Brain for all modules.", action: action("Continue discovery", `/guided-projects/${snapshot.projectId}/intake`, "generate"), aiWill: ["Reuse workspace and client defaults", "Summarize business, audience, offer, goals, and assets", "Identify missing or conflicting facts"], userWill: "Confirm the factual profile.", confidence: overallConfidence, explainability: "This is first because all research, strategy, content, and fixes need verified business facts." };
@@ -802,7 +838,7 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     .filter((item) => item.evidenceAt && new Date(item.evidenceAt).getTime() > strategyCreatedAt.getTime())
     .map((item) => ({ key: item.key, label: item.label, evidenceAt: new Date(item.evidenceAt!).toISOString(), reason: item.reason, action: item.action })) : [];
   if (strategyStale && snapshot.latestEvidenceAt && !changedEvidence.length) changedEvidence.push({ key: "business_profile", label: "Business Profile or project direction", evidenceAt: snapshot.latestEvidenceAt.toISOString(), reason: "Verified project information was updated after this Strategy version was created.", action: action("Review Business Profile", `/guided-projects/${snapshot.projectId}/intake`, "review") });
-  return { version: WORKFLOW_CONTROLLER_VERSION, projectId: snapshot.projectId, state, stateLabel: stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale: false, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, strategyCreatedAt: strategyCreatedAt?.toISOString() ?? null, strategyApprovedAt: snapshot.latestStrategy?.approvedAt?.toISOString() ?? null, latestEvidenceAt: snapshot.latestEvidenceAt?.toISOString() ?? null, changedEvidence, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
+  return { version: WORKFLOW_CONTROLLER_VERSION, websiteDeliveryStage, handoffReviewStage: snapshot.handoffReviewStage, projectId: snapshot.projectId, state, stateLabel: websiteDeliveryStage === "growth_execution" ? "Growth Execution" : stateLabels[state], readinessPercent, overallProgressPercent, intelligenceReady, strategyStale, executionPlanStale: false, businessBrainVersion: 0, evidenceVersion: 0, strategyVersion: snapshot.latestStrategyVersion, executionPlanVersion: snapshot.executionPlanVersion, executionPlanStrategyVersion: snapshot.executionPlanStrategyVersion, growthBlueprintVersion: snapshot.growthBlueprintVersion, strategyCreatedAt: strategyCreatedAt?.toISOString() ?? null, strategyApprovedAt: snapshot.latestStrategy?.approvedAt?.toISOString() ?? null, latestEvidenceAt: snapshot.latestEvidenceAt?.toISOString() ?? null, changedEvidence, confidence, blockers, nextBestAction, stages, intelligenceModules: intelligence, updatedAt: new Date().toISOString() };
 }
 
 export async function getProjectWorkflowController(projectId: string): Promise<ProjectWorkflowControllerView | null> {
@@ -819,9 +855,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       strategyPlans: { orderBy: { createdAt: "desc" }, take: 1, select: { id: true, version: true, status: true, createdAt: true, approvedAt: true, businessBrainVersion: true, evidenceVersion: true, seoStrategy: true, contentStrategy: true, publishingStrategy: true } },
       executionPlans: { where: { status: "active" }, orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, planVersion: true, strategyVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       executionTasks: { where: { status: { notIn: ["cancelled", "canceled"] } }, orderBy: { updatedAt: "desc" }, select: { id: true, title: true, actionButtonLabel: true, sourceType: true, dedupeKey: true, status: true, moduleName: true, approvalSnapshotJson: true, updatedAt: true, publishedAt: true, completedAt: true } },
-      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, status: true, deployments: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, mode: true, completedAt: true } } } },
-      websitePublications: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, mode: true, target: true, publishedAt: true, completedAt: true } },
-      website: { select: { id: true, rootUrl: true, trackingSite: { select: { enabled: true, installation: true, lastVerifiedAt: true, lastEventAt: true } }, crawlJobs: { orderBy: { createdAt: "desc" }, take: 10, select: { status: true, pagesCrawled: true, createdAt: true, completedAt: true } } } },
+      websiteBuilds: { orderBy: { updatedAt: "desc" }, take: 1, select: { id: true, status: true, settingsJson: true, deployments: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, mode: true, completedAt: true } } } },
+      websitePublications: { orderBy: { createdAt: "desc" }, take: 50, select: { releaseId: true, status: true, mode: true, target: true, publishedAt: true, completedAt: true } },
+      website: { select: { id: true, rootUrl: true, trackingSite: { select: { enabled: true, installation: true, lastVerifiedAt: true, lastEventAt: true } }, crawlJobs: { orderBy: { createdAt: "desc" }, take: 10, select: { id: true, status: true, pagesCrawled: true, createdAt: true, completedAt: true } } } },
       gapAnalysisRuns: { orderBy: { createdAt: "desc" }, take: 3, select: { status: true, createdAt: true, completedAt: true } },
       competitiveIntelligenceRuns: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
       localSeoAuditJobs: { orderBy: { createdAt: "desc" }, take: 5, select: { status: true, createdAt: true, completedAt: true } },
@@ -840,7 +876,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       workflowController: { select: { businessBrainVersion: true, evidenceVersion: true } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, select: { id: true, title: true, recommendation: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
-      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.user_fact_updated", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, sourceModule: true, occurredAt: true, payloadJson: true } },
+      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.user_fact_updated", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved", "website.handoff_applied", "website.handoff_reviewed"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, sourceModule: true, occurredAt: true, payloadJson: true } },
     },
   });
   if (!project) return null;
@@ -898,13 +934,19 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const goalText = [project.projectType, project.primaryGoal, project.niche, project.businessLocation, ...(Array.isArray(project.secondaryGoals) ? project.secondaryGoals.map(String) : [])].filter(Boolean).join(" ").toLowerCase();
   const websiteLaunched = Boolean(
     project.websiteBuilds[0]?.deployments.some((deployment) => ["completed", "success", "success_with_warnings"].includes(deployment.status) && deployment.mode !== "draft")
-    || project.websitePublications.some((publication) => publication.status === "published" || (publication.status === "completed" && ["publish", "sftp", "live"].includes(publication.mode ?? ""))),
+    || project.websitePublications.some(websitePublicationIsLive),
   );
+  const deliverySettings = project.websiteBuilds[0]?.settingsJson as Record<string, unknown> | undefined;
+  const deliveryDestination = deliverySettings?.hostingHandoff as Record<string, unknown> | undefined;
+  const websiteHandoffComplete = deliveryDestination?.destination === "developer_handoff"
+    && websiteHandoffIsComplete(project.websitePublications, String(deliverySettings?.currentApprovedReleaseId || ""));
   const websiteDevelopmentStarted = project.websiteBuilds.length > 0;
   const preparedChangesAwaitingApproval = Boolean(project.websiteBuilds[0] && ["review", "needs_review", "ready_for_review"].includes(project.websiteBuilds[0].status));
-  const latestManualWebsiteImplementationAt = newest(...completedTasks
-    .filter((task) => !isWebsitePlanTask(task) && (task.moduleName === "site_architect" || task.sourceType === "website_builder_request" || task.sourceType === "site_architecture_page"))
-    .map((task) => task.publishedAt ?? task.completedAt));
+  const handedOffPublication = project.websitePublications.find(publication => publication.releaseId === String(deliverySettings?.currentApprovedReleaseId || "") && websiteHandoffIsComplete([publication], publication.releaseId));
+  const firstHandoffDelivery = project.websitePublications.filter(publication => publication.releaseId === handedOffPublication?.releaseId && websiteHandoffIsComplete([publication], publication.releaseId) && publication.completedAt).sort((a, b) => a.completedAt!.getTime() - b.completedAt!.getTime())[0];
+  const handoffReview = websiteHandoffComplete && firstHandoffDelivery?.completedAt ? resolveHandoffReview({ releaseId: firstHandoffDelivery.releaseId, websiteId: project.websiteId, deliveredAt: firstHandoffDelivery.completedAt, events: project.workflowEvents, crawls: project.website?.crawlJobs ?? [] }) : null;
+  const websiteHandoffVerified = handoffReview?.phase === "complete";
+  const latestManualWebsiteImplementationAt = latestWebsiteImplementationAt(completedTasks);
   const latestTrustedVerificationAt = newest(
     ...project.websitePublications.filter((publication) => publication.status === "published").map((publication) => publication.completedAt ?? publication.publishedAt),
     project.discoveryChecks[0]?.checkedAt,
@@ -1063,6 +1105,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     postImplementationVerificationRequired,
     publishingStarted: publishingTasks.length > 0 || project.websitePublications.length > 0,
     publishingComplete: publishedTasks.length > 0 || websiteLaunched,
+    websiteHandoffComplete,
+    websiteHandoffVerified,
+    handoffReviewStage: handoffReview?.phase,
     measurementStarted: project.measurementCheckpoints.length > 0,
     measurementComplete: project.measurementCheckpoints.some((checkpoint) => checkpoint.status === "completed"),
     reportingLearningComplete: project.growthReports.length > 0 && project.growthLearnings.length > 0,
@@ -1339,4 +1384,11 @@ export async function publishProjectWorkflowEvent(input: { projectId: string; ev
       .catch((error) => console.error("[growth-intelligence] could not enqueue event cycle", error));
   }
   return workflow;
+}
+
+
+/** Shared post-delivery action for Projects, Site Architect and Performance. */
+export async function getWebsiteWorkflowNextStep(projectId: string) {
+  const workflow = await getProjectWorkflowController(projectId);
+  return workflow?.websiteDeliveryStage ? { stage: workflow.websiteDeliveryStage, ...workflow.nextBestAction } : null;
 }

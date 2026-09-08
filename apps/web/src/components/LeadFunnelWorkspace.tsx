@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { Fragment, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -50,7 +51,7 @@ const object = (value: unknown): JsonMap => value && typeof value === "object" &
 const list = (value: unknown) => Array.isArray(value) ? value : [];
 const text = (value: unknown, fallback = "Not generated") => typeof value === "string" && value.trim() ? value : fallback;
 const label = (value: string) => value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
-const date = (value: string | null) => value ? new Date(value).toLocaleString() : "Not yet";
+const date = (value: string | null) => value ? formatDisplayDate(value) : "Not yet";
 const statusTone = (status: string) => status === "published" || status === "approved" || status === "connected" ? "bg-emerald-100 text-emerald-800" : status === "failed" || status === "changes_requested" ? "bg-rose-100 text-rose-800" : "bg-amber-100 text-amber-800";
 
 export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRequestKey = 0 }: { projectId: string; suggestedIdeas: string[]; startRequestKey?: number }) {
@@ -98,9 +99,9 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
       setSuccessDefinition(ideas.researchRun.objective.successDefinition ?? "");
       setInstructions(ideas.researchRun.objective.notes ?? "");
     }
-    setActiveId((current) => current && workspace.funnels.some((item) => item.id === current) ? current : workspace.current?.id ?? null);
+    setActiveId((current) => current && workspace.funnels.some((item) => item.id === current) ? current : workspace.funnels.find(item => item.id === searchParams.get("funnelId"))?.id ?? workspace.current?.id ?? null);
     const retainedSelection = preferNewestRecommendation ? ideas.recommendations[0] : ideas.recommendations.find((item) => item.title === selectedIdea && item.researchRunId === selectedResearchRunId) ?? ideas.recommendations[0];
-    setSelectedIdea(retainedSelection?.title ?? "");
+    setSelectedIdea(searchParams.get("topic") || retainedSelection?.title || "");
     setSelectedResearchRunId(retainedSelection?.researchRunId ?? null);
   };
   useEffect(() => { setData(null); setNotice(null); setObjective(""); setSuccessDefinition(""); setInstructions(""); setSetupStep(0); setGenerationAudience(""); setGenerationCta(""); setGenerationDetails(""); setTargetWordCount(""); setGenerationVisuals({ charts: true, images: true, diagrams: true }); setGenerationFunnelSetup({ contentMode: "sales_pitch", leadMagnetTitle: "", landingHeadline: "", landingDescription: "", ctaText: "", deliveryEmailSubject: "", deliveryEmailContent: "", conversionTarget: "5" }); setGenerationSeriesId(null); setSelectedResearchRunId(null); setAutoResearchAttempted(false); setResearchData({ recommendations: [], research: null, followUpQuestions: [], evidence: null, researchRun: null }); void load().catch((error) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load lead funnels." })); }, [projectId]);
@@ -156,7 +157,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
   }, [data, researchData.researchRun, autoResearchAttempted, busy, projectId, setupStep]);
   const generate = (recommendation?: Recommendation, setupInstructions?: string, visuals = generationVisuals) => {
     if (!researchData.researchRun) { setNotice({ tone: "error", text: "Run the AI research step before generating a lead magnet." }); return Promise.resolve(false); }
-    const idea = recommendation?.title || selectedIdea || null;
+    const idea = recommendation?.title || selectedIdea || searchParams.get("topic") || null;
     const selectedRecommendation = recommendation ?? recommendations.find((item) => item.title === idea && (!selectedResearchRunId || item.researchRunId === selectedResearchRunId));
     if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); setSelectedResearchRunId(recommendation.researchRunId ?? null); }
     let generatedFunnelId = "";
@@ -165,7 +166,7 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
       const conversionTarget = Number(generationFunnelSetup.conversionTarget);
       const optional = (value: string) => value.trim() || null;
       const funnelSetup = { contentMode: generationFunnelSetup.contentMode, leadMagnetTitle: optional(generationFunnelSetup.leadMagnetTitle), landingHeadline: optional(generationFunnelSetup.landingHeadline), landingDescription: optional(generationFunnelSetup.landingDescription), ctaText: optional(generationFunnelSetup.ctaText), deliveryEmailSubject: optional(generationFunnelSetup.deliveryEmailSubject), deliveryEmailContent: optional(generationFunnelSetup.deliveryEmailContent), conversionTarget: Number.isFinite(conversionTarget) && conversionTarget >= .1 && conversionTarget <= 100 ? conversionTarget : 5 };
-      const result = await api.post<{ funnel: { id: string } }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { researchRunId: selectedRecommendation?.researchRunId ?? researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: selectedRecommendation ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, funnelSetup, visuals });
+      const result = await api.post<{ funnel: { id: string } }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { executionTaskId: searchParams.get("taskId"), researchRunId: selectedRecommendation?.researchRunId ?? researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: selectedRecommendation ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, funnelSetup, visuals });
       generatedFunnelId = result.funnel.id;
     }, "The lead magnet, landing-page copy, registration form, thank-you copy, delivery email, and calls to action were generated for review.").then((completed) => {
       if (completed && generatedFunnelId) setActiveId(generatedFunnelId);

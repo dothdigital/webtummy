@@ -1,3 +1,4 @@
+import { startGrowthExecutionScheduler } from "./growth-execution.js";
 import { startSearchConsoleWorker } from "./google-search-console.js";
 // Worker entrypoint. Consumes crawl:start jobs and runs the crawl.
 import { Worker } from "bullmq";
@@ -97,6 +98,7 @@ worker.on("failed", (job, err) => {
   }
 });
 
+const stopGrowthExecution = startGrowthExecutionScheduler();
 const maintenanceTimer = startMaintenanceScheduler();
 const notificationEmailTimer = startNotificationEmailScheduler();
 const websiteBuilderWorker = startWebsiteBuilderWorker();
@@ -117,6 +119,7 @@ console.log(`[worker] Change Intelligence scheduler active every ${config.change
 const shutdown = async () => {
   console.log("[worker] shutting down…");
   clearInterval(maintenanceTimer);
+  stopGrowthExecution();
   clearInterval(notificationEmailTimer);
   clearInterval(growthIntelligenceTimer);
   changeIntelligenceScheduler.close();

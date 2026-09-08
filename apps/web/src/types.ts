@@ -165,6 +165,8 @@ export interface ProjectWorkflowStep {
 }
 
 export interface ProjectWorkflowController {
+  handoffReviewStage?: "confirm_applied" | "assessment" | "review_findings" | "complete";
+  websiteDeliveryStage?: "live_checks" | "tracking_checks" | "growth_execution";
   version: string;
   projectId: string;
   state: string;
@@ -260,6 +262,7 @@ export interface Opportunity {
 }
 
 export interface GuidedProject {
+  performanceAvailable?: boolean;
   id: string;
   clientId: string;
   agencyClientId?: string | null;

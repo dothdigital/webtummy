@@ -62,7 +62,7 @@ export const emptyHostingHandoff = (): HostingHandoffDraft => ({
 export function hostingHandoffMissing(draft: HostingHandoffDraft) {
   const missing: string[] = [];
   if (!draft.destination) missing.push("hosting destination");
-  if (draft.destination === "developer_handoff") {
+  if (draft.destination === "developer_handoff" && draft.accessMethod !== "manual") {
     if (!draft.technicalContactName.trim()) missing.push("receiving contact name");
     if (!draft.technicalContactEmail.trim()) missing.push("receiving contact email");
   }
@@ -78,7 +78,7 @@ export function hostingHandoffMissing(draft: HostingHandoffDraft) {
 
 export function hostingHandoffReady(draft: HostingHandoffDraft) {
   return hostingHandoffMissing(draft).length === 0
-    && (draft.destination !== "developer_handoff" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.technicalContactEmail));
+    && (draft.destination !== "developer_handoff" || draft.accessMethod === "manual" || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(draft.technicalContactEmail));
 }
 
 export function hostingHandoffDraftChanged(current: HostingHandoffDraft, saved: HostingHandoffDraft) {

@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -43,7 +44,7 @@ function formatNumber(value: number | null | undefined): string {
 
 function formatShortDate(value: string | null | undefined): string {
   if (!value) return "-";
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+  return formatDisplayDate(new Date(value));
 }
 
 function canRefreshKeyword(run: KeywordResearchRun): boolean {
@@ -70,7 +71,7 @@ function RankMovement({ change }: { change: number | null | undefined }) {
 
 function refreshBlockedLabel(run: KeywordResearchRun): string {
   const blockedUntil = run.refreshBlockedUntil ?? new Date(new Date(run.createdAt).getTime() + 24 * 60 * 60 * 1000).toISOString();
-  return `Available ${formatShortDate(blockedUntil)}`;
+  return `Available ${formatDisplayDate(blockedUntil, { includeTime: true })}`;
 }
 
 const LANGUAGE_OPTIONS = [

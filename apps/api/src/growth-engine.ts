@@ -233,8 +233,8 @@ const actionTemplates: Record<string, {
   leadCapture: {
     actionType: "lead_capture",
     route: "content",
-    title: (ctx) => `Create a focused lead magnet for ${ctx.audience}`,
-    recommendation: (ctx) => `Generate one lead magnet, opt-in page, form, delivery email, and follow-up sequence aligned with ${ctx.primaryGoal}.`,
+    title: (ctx) => `Optional: create a useful download for ${ctx.audience}`,
+    recommendation: (ctx) => `Consider a useful checklist, guide or template aligned with ${ctx.primaryGoal}. If selected, prepare the download, sign-up form and delivery message, then track sign-ups and successful delivery or downloads. Keep this separate from validating the existing Contact Us form.`,
     impact: "Turns otherwise anonymous website demand into measurable opted-in leads.",
     effort: "medium",
     risk: "low",

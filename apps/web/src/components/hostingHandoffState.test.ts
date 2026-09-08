@@ -31,6 +31,13 @@ describe("hosting handoff readiness", () => {
     expect(hostingHandoffReady(draft)).toBe(true);
   });
 
+  it("allows ZIP download through handoff without recipient or hosting credentials", () => {
+    const draft = { ...emptyHostingHandoff(), destination: "developer_handoff" as const, accessMethod: "manual" as const };
+    expect(hostingHandoffMissing(draft)).toEqual([]);
+    expect(hostingHandoffReady(draft)).toBe(true);
+    expect(hostingHandoffReady({ ...draft, accessMethod: "developer" })).toBe(false);
+  });
+
   it("requires transfer details for SFTP but accepts a previously stored credential", () => {
     const draft = {
       ...emptyHostingHandoff(),

@@ -1,15 +1,18 @@
+import { formatDisplayDate, formatTimestampValue } from "@webtummy/core/display-date";
 import { metricChange, type EmailTable } from "./email.js";
 
 const record = (value: unknown): Record<string, any> => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : {};
 const list = (value: unknown): any[] => Array.isArray(value) ? value : [];
-const display = (value: unknown) => typeof value === "string" || typeof value === "number" ? String(value) : "Not available";
+const display = (value: unknown) => typeof value === "string" || typeof value === "number" ? formatTimestampValue(String(value)) : "Not available";
+
+const reportDate = formatDisplayDate;
 
 // Read only the report's client-facing sections; never serialize internal source snapshots or notes.
 export function savedReportEmailTables(value: unknown): EmailTable[] {
   const content = record(value);
   const tables: EmailTable[] = [];
   const period = record(content.reportingPeriod);
-  tables.push({ title: "Report details", columns: ["Field", "Value"], rows: [["Project", display(record(content.project).businessName || record(content.project).name)], ["Period start", display(period.start)], ["Period end", display(period.end)], ["Generated", display(content.generatedAt)]] });
+  tables.push({ title: "Report details", columns: ["Field", "Value"], rows: [["Project", display(record(content.project).businessName || record(content.project).name)], ["Period start", reportDate(period.start)], ["Period end", reportDate(period.end)], ["Generated", reportDate(content.generatedAt)]] });
   for (const section of list(content.clientSections)) {
     const item = record(section);
     const rows: string[][] = [];

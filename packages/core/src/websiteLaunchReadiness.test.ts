@@ -153,7 +153,7 @@ describe("website launch readiness", () => {
     expect(result.checks.find((check) => check.key === "unique_metadata")?.status).toBe("blocking");
   });
 
-  it("keeps non-blocking copy recommendations without forcing a high-priority finding", () => {
+  it("does not reopen content review during launch checks", () => {
     const recommendationOnly: WebsiteModel = {
       ...validModel,
       pages: [{
@@ -169,9 +169,23 @@ describe("website launch readiness", () => {
     });
 
     expect(result.qualityGate.counts.high).toBe(0);
-    expect(result.qualityGate.status).toBe("needs_review");
-    expect(result.checks.find((check) => check.key === "quality_governance")?.status).toBe("warning");
+    expect(result.qualityGate.status).toBe("passed");
+    expect(result.qualityGate.issues).toEqual([]);
+    expect(result.qualityGate.claims).toEqual([]);
+    expect(result.checks.some((check) => check.key === "quality_governance")).toBe(false);
     expect(result.blockingCount).toBe(0);
+  });
+
+  it("does not flag approved wording or reduce the launch score for it", () => {
+    const baseline = evaluateWebsiteLaunchReadiness(validModel, { approvedReleaseId: "release", snapshotHash: "snapshot" });
+    const website = structuredClone(validModel);
+    const section = website.pages[0].sections.find(item => item.instanceId === "overview-1")!;
+    section.props.body = "Analyze the distinctions between each service option to determine the best fit for your business. Trusted experts can help you compare options.";
+    const result = evaluateWebsiteLaunchReadiness(website, { approvedReleaseId: "release", snapshotHash: "snapshot" });
+    expect(result.qualityGate.issues).toEqual([]);
+    expect(result.qualityGate.claims).toEqual([]);
+    expect(result.warningCount).toBe(baseline.warningCount);
+    expect(result.score).toBe(baseline.score);
   });
 
   it("reports large generated media without blocking its own release", () => {

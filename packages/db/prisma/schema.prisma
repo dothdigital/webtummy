@@ -1416,6 +1416,7 @@ model WebsiteTrackingEvent {
 // ─── Guided Project Foundation ──────────────────────────────────────────────
 
 model Project {
+  recaptchaCredentials WebsiteRecaptchaCredential[]
   googleSearchConsoleConnection GoogleSearchConsoleConnection?
   id                        String        @id @default(cuid())
   clientId                  String
@@ -5489,4 +5490,17 @@ model GoogleSearchConsoleSnapshot {
   sourceFetchedAt DateTime @default(now())
 
   @@index([connectionId, sourceFetchedAt])
+}
+
+// Versioned secrets stay outside build settings, AI prompts and release exports.
+model WebsiteRecaptchaCredential {
+  id               String   @id @default(cuid())
+  projectId        String
+  project          Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  siteKey          String   @db.VarChar(255)
+  hostname         String   @db.VarChar(255)
+  secretCiphertext String   @db.Text
+  createdAt        DateTime @default(now())
+
+  @@index([projectId, createdAt])
 }

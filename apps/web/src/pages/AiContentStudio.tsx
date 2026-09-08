@@ -1,3 +1,4 @@
+import { formatDisplayDate } from "@webtummy/core/display-date";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -101,7 +102,7 @@ function generationTypeForTask(task: GuidedExecutionTask): AiGenerationType {
 }
 
 function formatDate(value: string) {
-  return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
+  return formatDisplayDate(new Date(value));
 }
 
 function groupedTopic(topic: string) {
@@ -442,7 +443,7 @@ function CitationValidationPanel({ generation, onReturn }: { generation: AiConte
   const automaticPass = checks.length > 0 && checks.every((check) => check.passed);
   if (generation.validatedAt && automaticPass) {
     return <div className="mt-4 flex flex-col gap-3 rounded-xl border border-emerald-200 bg-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-      <div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Citation asset validated</div><div className="mt-1 text-sm font-black text-emerald-950">This exact saved version is ready for review and implementation.</div><div className="mt-1 text-xs text-emerald-700">Validated {new Date(generation.validatedAt).toLocaleString()}</div></div>
+      <div><div className="text-xs font-black uppercase tracking-wide text-emerald-700">Citation asset validated</div><div className="mt-1 text-sm font-black text-emerald-950">This exact saved version is ready for review and implementation.</div><div className="mt-1 text-xs text-emerald-700">Validated {formatDisplayDate(generation.validatedAt)}</div></div>
       <button type="button" onClick={onReturn} className="shrink-0 rounded-lg bg-emerald-700 px-4 py-2.5 text-sm font-black text-white hover:bg-emerald-800">Done · Return to AI Citations →</button>
     </div>;
   }

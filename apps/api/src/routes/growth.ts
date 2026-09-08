@@ -1,3 +1,6 @@
+import { reconcileGrowthExecution, requireGrowthLaunch, ensureGrowthSocialContent } from "@webtummy/db/growth-execution";
+import { growthGuide } from "@webtummy/core/growth-execution";
+import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router, type Request } from "express";
 import { z } from "zod";
 import { prisma, type Prisma } from "@webtummy/db";
@@ -900,6 +903,13 @@ async function runGrowthEngine(input: {
         selectedAt: candidate.dedupeKey === selected?.dedupeKey ? new Date() : null,
       };
       if (existingCandidate) {
+        if (existingCandidate.decision === "completed_existing_work" && existingCandidate.followupTaskId) {
+          const completedTask = await tx.executionTask.findUnique({ where: { id: existingCandidate.followupTaskId }, select: { status: true } });
+          if (completedTask?.status === "completed") {
+            candidateData.status = "completed";
+            candidateData.selectedAt = null;
+          }
+        }
         await tx.nextBestAction.update({ where: { id: existingCandidate.id }, data: candidateData });
       } else {
         await tx.nextBestAction.create({
@@ -1160,6 +1170,11 @@ async function activePlanId(tx: Prisma.TransactionClient, projectId: string) {
 }
 
 function growthTaskWorkspace(action: { actionType: string; route: string; title: string }, projectId: string) {
+  if (["strategy_conversion-path", "strategy_page-ownership", "strategy_measurement", "measurement_setup", "search_setup"].includes(action.actionType)) {
+    const guide = growthGuide({ ...action, projectId });
+    return { moduleName: action.actionType === "strategy_conversion-path" ? "website_intelligence" : action.actionType === "strategy_page-ownership" ? "seo_page_map" : "website_intelligence", relatedUrl: guide.url, actionButtonLabel: guide.button };
+  }
+
   const text = `${action.actionType} ${action.route} ${action.title}`.toLowerCase();
   if (/lead_capture|lead_nurture|retention_referral|lead magnet|follow.?up|retention|referral|enquiry|handoff/.test(text)) return {
     moduleName: "lead_magnets",
@@ -1218,6 +1233,7 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
   const policy = policyForModule("growth_marketing");
   const executionPlanId = await activePlanId(tx, input.project.id);
   const existing = await tx.executionTask.findUnique({ where: { dedupeKey: input.key } });
+  if (existing && ["next_best_action", "growth_content_opportunity"].includes(input.sourceType ?? "")) return existing;
   const data = {
     clientId: input.project.clientId,
     websiteId: input.project.websiteId,
@@ -1248,6 +1264,8 @@ async function upsertGrowthTask(tx: Prisma.TransactionClient, input: {
 }
 
 async function loadGrowthOverview(projectId: string) {
+  await reconcileProjectPlanning(projectId);
+  await prisma.$transaction(async tx => { await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${projectId}`}, 0::bigint))::text`; await ensureGrowthSocialContent(tx, projectId); }, { timeout: 30000 });
   const [diagnosis, funnelStages, experiments, channelTests, reports, blueprint, contentRoadmap, socialDistribution, evidenceSignals, candidateActions, learnings, recentRuns] = await Promise.all([
     prisma.growthDiagnosis.findFirst({ where: { projectId }, orderBy: { createdAt: "desc" } }),
     prisma.growthFunnelStage.findMany({ where: { projectId }, orderBy: { sortOrder: "asc" } }),
@@ -1491,7 +1509,7 @@ async function refreshSupportingContentPlan(
         });
     for (const item of generated.opportunities) {
       const prior = existingByKey.get(item.dedupeKey);
-      const preserveDecision = Boolean(prior && protectedStatuses.has(prior.lifecycleStatus));
+      const preserveDecision = Boolean(prior && (prior.executionTaskId || protectedStatuses.has(prior.lifecycleStatus)));
       const data = {
         title: item.title,
         contentType: "article",
@@ -1512,9 +1530,9 @@ async function refreshSupportingContentPlan(
         queue: preserveDecision ? prior!.queue : item.queue,
         lifecycleStatus: preserveDecision ? prior!.lifecycleStatus : "proposed",
         plannedPhase: preserveDecision ? prior!.plannedPhase : item.plannedPhase,
-        plannedPublishAt: preserveDecision ? prior!.plannedPublishAt : item.plannedPublishAt,
+        plannedPublishAt: prior?.plannedPublishAt ?? item.plannedPublishAt,
         conditionsJson: item.conditionsJson as Prisma.InputJsonValue,
-        evidenceJson: item.evidenceJson as Prisma.InputJsonValue,
+        evidenceJson: { ...jsonRecord(prior?.evidenceJson), ...jsonRecord(item.evidenceJson) } as Prisma.InputJsonValue,
       };
       await tx.growthContentOpportunity.upsert({
         where: { projectId_dedupeKey: { projectId: project.id, dedupeKey: item.dedupeKey } },
@@ -1532,6 +1550,7 @@ async function refreshSupportingContentPlan(
         where: {
           roadmapId: row.id,
           dedupeKey: { notIn: generatedKeys },
+          contentType: "article",
           lifecycleStatus: { in: ["proposed", "queued", "deferred"] },
         },
         data: { lifecycleStatus: "superseded" },
@@ -1586,6 +1605,57 @@ async function refreshSupportingContentPlan(
   }, { timeout: 30_000 });
   return roadmap;
 }
+
+growthRouter.get("/projects-v2/:projectId/growth/social-plan", async (req, res) => {
+  await authorizeProject(req, req.params.projectId);
+  await prisma.$transaction(async tx => { await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${req.params.projectId}`}, 0::bigint))::text`; await ensureGrowthSocialContent(tx, req.params.projectId); }, { timeout: 30000 });
+  const items = await prisma.growthContentOpportunity.findMany({ where: { projectId: req.params.projectId, contentType: "social_post", lifecycleStatus: { notIn: ["rejected", "superseded"] } }, orderBy: [{ plannedPhase: "asc" }, { createdAt: "asc" }] });
+  let launchReady = true; let launchAt: string | null = null;
+  try { launchAt = (await requireGrowthLaunch(req.params.projectId)).date.toISOString(); } catch (error) { if ((error as {code?:string}).code !== "growth_website_launch_required") throw error; launchReady = false; }
+  res.json({ items, launchReady, launchAt });
+});
+
+growthRouter.get("/projects-v2/:projectId/growth/execution", async (req, res) => {
+  await authorizeProject(req, req.params.projectId);
+  const execution = await reconcileGrowthExecution(req.params.projectId);
+  if (!execution) return res.status(404).json({ error: "Project not found." });
+  res.json({ execution });
+});
+
+growthRouter.post("/projects-v2/:projectId/growth/execution/check", async (req, res) => {
+  await authorizeProject(req, req.params.projectId, "execute_tasks");
+  res.json({ execution: await reconcileGrowthExecution(req.params.projectId) });
+});
+
+growthRouter.patch("/projects-v2/:projectId/growth/execution/calendar/:opportunityId", async (req, res) => {
+  const context = await authorizeProject(req, req.params.projectId, "execute_tasks");
+  await requireGrowthLaunch(req.params.projectId);
+  const parsed = z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) }).safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: "Choose a publication date." });
+  const dueAt = new Date(`${parsed.data.date}T00:00:00.000Z`);
+  if (!Number.isFinite(dueAt.getTime()) || dueAt.toISOString().slice(0,10) !== parsed.data.date) return res.status(400).json({ error: "Choose a valid date." });
+  await prisma.$transaction(async tx => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${req.params.projectId}`}, 0::bigint))::text`;
+    const item = await tx.growthContentOpportunity.findFirst({ where: { id: req.params.opportunityId, projectId: req.params.projectId } });
+    if (!item) throw Object.assign(new Error("Article not found."), { statusCode: 404 });
+    if (item.contentType === "social_post") {
+      const postId=jsonRecord(item.evidenceJson).socialCalendarPostId;
+      if(typeof postId === "string") {
+        const post=await tx.socialCalendarPost.findFirst({where:{id:postId,strategy:{projectId:req.params.projectId}}});
+        if(post && ["scheduled","published"].includes(post.status)) throw Object.assign(new Error("Change this post's schedule in Social so the connected platform stays in sync."),{statusCode:409});
+        if(post) await tx.socialCalendarPost.update({where:{id:post.id},data:{publishDate:dueAt}});
+      }
+    }
+
+    if (["published", "completed", "measuring", "rejected", "superseded"].includes(item.lifecycleStatus)) throw Object.assign(new Error("This article is no longer available to reschedule."), { statusCode: 409 });
+    const task = item.executionTaskId ? await tx.executionTask.findUnique({ where: { id: item.executionTaskId } }) : null;
+    if (task?.publishedAt || task && ["published", "verified"].includes(task.status)) throw Object.assign(new Error("This article has already been published."), { statusCode: 409 });
+    await tx.growthContentOpportunity.update({ where: { id: item.id }, data: { plannedPublishAt: dueAt } });
+    if (task) await tx.executionTask.update({ where: { id: task.id }, data: { dueAt } });
+    await tx.projectWorkflowEvent.create({ data: { projectId: req.params.projectId, sourceId: item.id, sourceModule: "growth_execution", eventType: "growth.content.rescheduled", idempotencyKey: `growth-reschedule:${item.id}:${Date.now()}:${context.membership.userId}`, payloadJson: { previousDate: item.plannedPublishAt?.toISOString() ?? null, date: dueAt.toISOString(), actorUserId: context.membership.userId } } });
+  });
+  res.json({ execution: await reconcileGrowthExecution(req.params.projectId) });
+});
 
 growthRouter.get("/projects-v2/:projectId/growth/overview", async (req, res) => {
   await authorizeProject(req, req.params.projectId);
@@ -1655,6 +1725,7 @@ growthRouter.post("/projects-v2/:projectId/growth/analyze", async (req, res) => 
   if (workflowBlocker) return res.status(409).json(workflowBlocker);
   await runGrowthEngine({ req, context, project, runType: "manual" });
 
+  await reconcileGrowthExecution(project.id);
   const score = scoreProject(project);
   const growth = await loadGrowthOverview(project.id);
   const growthIntelligence = await loadGrowthIntelligence(project.id);
@@ -1757,6 +1828,7 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
   const parsed = contentBatchApprovalSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const context = await authorizeProject(req, req.params.projectId, "approve");
+  await requireGrowthLaunch(req.params.projectId);
   const project = await scopedProject(req, req.params.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   const opportunities = await prisma.growthContentOpportunity.findMany({
@@ -1769,6 +1841,10 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
   const queues = [...new Set(opportunities.map((item) => item.queue))];
   const phase = queues.length === 1 ? opportunities[0].plannedPhase : "mixed_approved_batch";
   const batch = await prisma.$transaction(async (tx) => {
+    await tx.$queryRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`growth-execution:${project.id}`}, 0::bigint))::text`;
+    const current = await tx.growthContentOpportunity.findMany({ where: { id: { in: opportunities.map(item => item.id) }, projectId: project.id } });
+    if (current.some(item => item.executionTaskId || !["proposed", "deferred"].includes(item.lifecycleStatus))) throw Object.assign(new Error("An article task already exists. Refresh Growth Execution to continue it."), { statusCode: 409 });
+    if (current.some(item => item.queue === "conditional")) throw Object.assign(new Error("Complete the requirements in the content plan before starting this article."), { statusCode: 409 });
     const roadmap = await tx.growthContentRoadmap.findUnique({ where: { projectId: project.id } });
     if (!roadmap) throw Object.assign(new Error("Generate the Supporting Content Plan before approving a batch."), { statusCode: 409 });
     const row = await tx.growthContentBatch.create({
@@ -1786,6 +1862,8 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
       },
     });
     for (const opportunity of opportunities) {
+      const isLeadMagnet = opportunity.contentType === "lead_magnet";
+      const isSocial = opportunity.contentType === "social_post";
       const manualInstructions = [
         "Approved Supporting Content Plan brief:",
         `Title: ${opportunity.title}`,
@@ -1798,19 +1876,19 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
         opportunity.expectedImpact ? `Expected impact: ${opportunity.expectedImpact}` : "",
         opportunity.targetUrl ? `Target supporting destination: ${opportunity.targetUrl}` : "",
         opportunity.internalLinkTargetUrl ? `Required internal-link destination: ${opportunity.internalLinkTargetUrl}` : "",
-        "Create one original, useful supporting article. Do not create near-duplicate city variants or invent claims, people, credentials, statistics, or sources.",
+        isSocial ? "Choose the platform and prepare one social post using the saved brief. Check facts, approve the post, and publish only when the destination article is live. Track visits and enquiries." : isLeadMagnet ? "Create the suggested useful download, sign-up form and delivery message. Track landing visits, sign-ups, and successful delivery or downloads. Review and approve before publication. Keep the existing Contact Us form separate." : "Create one original, useful supporting article. Do not create near-duplicate city variants or invent claims, people, credentials, statistics, or sources.",
       ].filter(Boolean).join("\n");
       const task = await upsertGrowthTask(tx, {
         project,
         sourceType: "growth_content_opportunity",
         sourceId: opportunity.id,
         key: `growth-content-opportunity:${opportunity.id}`,
-        title: `Create supporting content: ${opportunity.title}`,
+        title: `Prepare ${isSocial ? "social post" : isLeadMagnet ? "lead magnet" : "article"}: ${opportunity.title}`,
         description: opportunity.businessPurpose,
         priority: opportunity.priorityScore >= 80 ? "high" : opportunity.priorityScore >= 55 ? "medium" : "low",
         automationLevel: "prepare",
         safetyCategory: "review_required",
-        moduleName: "content",
+        moduleName: isSocial ? "social_strategy" : isLeadMagnet ? "lead_magnet" : "content",
         relatedModule: "growth_marketing",
         actionButtonLabel: "Generate with AI",
         relatedUrl: `/ai-content?projectId=${project.id}`,
@@ -1831,7 +1909,7 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
           },
         } as Prisma.InputJsonValue,
       });
-      const relatedUrl = `/ai-content?projectId=${project.id}&taskId=${task.id}&open=1`;
+      const relatedUrl = isSocial ? `/social-strategy?projectId=${project.id}&growthTaskId=${task.id}` : isLeadMagnet ? `/lead-magnets?projectId=${project.id}&taskId=${task.id}&start=1&topic=${encodeURIComponent(opportunity.title)}` : `/ai-content?projectId=${project.id}&taskId=${task.id}&open=1`;
       await tx.executionTask.update({ where: { id: task.id }, data: { relatedUrl } });
       await tx.growthContentOpportunity.update({
         where: { id: opportunity.id },
@@ -1855,6 +1933,7 @@ growthRouter.post("/projects-v2/:projectId/growth/content-roadmap/batches/approv
     });
     return row;
   }, { timeout: 30_000 });
+  await reconcileGrowthExecution(project.id);
   res.json({ batch, growth: await loadGrowthOverview(project.id) });
 });
 
@@ -1973,6 +2052,7 @@ growthRouter.post("/growth/experiments/:experimentId/approve", async (req, res) 
   });
   if (!experiment) return res.status(404).json({ error: "experiment not found" });
   const context = await authorizeProject(req, experiment.projectId, "approve");
+  await requireGrowthLaunch(experiment.projectId);
   if (!["planned", "draft"].includes(experiment.status)) return res.status(409).json({ error: "Only a planned or draft experiment can be approved." });
   if (parsed.data.sourceStatus !== "AVAILABLE") return res.status(409).json({ error: "A verified available baseline is required before this experiment can start. Record or reconnect the source first." });
   const updated = await prisma.$transaction(async (tx) => {
@@ -2016,6 +2096,7 @@ growthRouter.post("/growth/experiments/:experimentId/start", async (req, res) =>
   });
   if (!experiment) return res.status(404).json({ error: "experiment not found" });
   const context = await authorizeProject(req, experiment.projectId, "execute_tasks");
+  await requireGrowthLaunch(experiment.projectId);
   const project = await scopedProject(req, experiment.projectId);
   if (!project) return res.status(404).json({ error: "project not found" });
   if (!["approved", "paused"].includes(experiment.status)) return res.status(409).json({ error: "Approve the experiment and its baseline before starting it." });
@@ -2363,6 +2444,10 @@ growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", a
   const input = parsed.data;
   const accepted = input.decision === "accepted" || input.decision === "edited";
   if (accepted) context = await authorizeProject(req, req.params.projectId, "approve");
+  if (accepted) await requireGrowthLaunch(project.id);
+  if (accepted && ["completed", "superseded", "rejected", "dismissed"].includes(action.status)) return res.status(409).json({ error: "This suggestion is already closed. Review its recorded result." });
+  if (accepted && Array.isArray(action.dependencyIdsJson) && action.dependencyIdsJson.length) return res.status(409).json({ error: "Finish this suggestion's requirements before starting it." });
+
   const reviewAfter = input.decision === "deferred"
     ? new Date(Date.now() + (input.deferDays ?? 7) * 86_400_000)
     : null;
@@ -2466,6 +2551,7 @@ growthRouter.post("/projects-v2/:projectId/growth/actions/:actionId/decision", a
   if (input.decision === "alternatives") {
     await runGrowthEngine({ req, context, project, runType: "event", excludeDedupeKeys: action.dedupeKey ? [action.dedupeKey] : [] });
   }
+  await reconcileGrowthExecution(project.id);
   res.json({ nextBestAction: updated, growth: await loadGrowthOverview(project.id) });
 });
 

@@ -1,3 +1,4 @@
+import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { Prisma, prisma } from "@webtummy/db";
@@ -1642,6 +1643,7 @@ gapAnalysisRouter.get(gapRoutes(), (req, res) => routeAction(res, async () => {
   const context = await workspaceContext(req);
   if (!(await canAccessProject(context, req.params.projectId))) throw new Error("project unavailable");
   const project = await scopedProject(req, req.params.projectId);
+  await reconcileProjectPlanning(project.id);
   const clientViewerOnly = context.roles.size === 1 && context.roles.has("client_viewer");
   const [fixes, legacyLocalProfile, canonicalLocalProfile, aiQueries, authority, reports, wp, demo, adSuggestions, ecommerceGuides, citationGaps, tasks, latestCompletedCrawl, latestGapRun, latestCapabilityRun] = await Promise.all([
     prisma.seoFixQueueItem.findMany({ where: { projectId: project.id }, orderBy: [{ approvalStatus: "asc" }, { createdAt: "desc" }], take: 50 }),

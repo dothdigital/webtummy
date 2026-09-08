@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import { Button, Card } from "../components/ui.js";
-import type { BillingPlan } from "../types.js";
+import type { BillingPlan, BillingStatus } from "../types.js";
 import { sanitizeHtml } from "../sanitize-html.js";
 
 export default function Pricing() {
@@ -10,19 +10,33 @@ export default function Pricing() {
   const paymentUnsuccessful = useMemo(() => searchParams.get("payment") === "unsuccessful" || searchParams.get("checkout") === "cancelled", [searchParams]);
   const paymentRequired = useMemo(() => searchParams.get("payment") === "required", [searchParams]);
   const [plans, setPlans] = useState<BillingPlan[]>([]);
+  const [billing, setBilling] = useState<BillingStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyPlan, setBusyPlan] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [interval, setInterval] = useState<"monthly" | "annual">("monthly");
 
   useEffect(() => {
-    api.get<{ plans: BillingPlan[] }>("/api/billing/pricing/workspace")
-      .then((result) => setPlans(result.plans))
+    Promise.all([
+      api.get<{ plans: BillingPlan[] }>("/api/billing/pricing/workspace"),
+      api.get<BillingStatus>("/api/billing/status"),
+    ])
+      .then(([result, status]) => {
+        setPlans(result.plans);
+        setBilling(status);
+        const billingInterval = status.commercial?.subscription?.billingInterval;
+        if (billingInterval === "monthly" || billingInterval === "annual") setInterval(billingInterval);
+      })
       .catch((error) => setMessage(error instanceof Error ? error.message : "Could not load plans"))
       .finally(() => setLoading(false));
   }, []);
 
+  const subscription = billing?.commercial?.subscription;
+  const currentPlanCode = subscription && ["active", "cancel_at_period_end", "past_due"].includes(subscription.status)
+    ? subscription.plan.code : null;
+
   const checkout = async (plan: BillingPlan) => {
+    if (plan.code === currentPlanCode) return;
     const available = plan.prices?.filter((price) => price.billingInterval === interval && price.status === "active") ?? [];
     const price = available.find((item) => item.priceClass === "founding") ?? available.find((item) => item.priceClass === "standard") ?? available[0];
     if (!price) {
@@ -64,6 +78,7 @@ export default function Pricing() {
       ) : (
         <div className="grid gap-4 lg:grid-cols-3">
           {plans.map((plan) => {
+            const isCurrentPlan = plan.code === currentPlanCode;
             const popular = plan.code === "business";
             const prices = plan.prices?.filter((price) => price.billingInterval === interval && price.status === "active") ?? [];
             const price = prices.find((item) => item.priceClass === "founding") ?? prices.find((item) => item.priceClass === "standard") ?? prices[0];
@@ -81,9 +96,10 @@ export default function Pricing() {
                 </div>
                 <div className="mt-1 text-xs text-charcoal-400">{price?.priceClass === "founding" ? "Founding price" : "Standard price"} · billed {interval}</div>
                 <div className="mt-4 rounded-lg bg-charcoal-50 px-3 py-2 text-sm font-semibold text-charcoal-800">{plan.helperMonthlyLimit.toLocaleString()} AI Capacity released monthly</div>
-                <Button onClick={() => checkout(plan)} disabled={busyPlan === plan.code || !price} className="mt-5 w-full">
-                  {busyPlan === plan.code ? "Opening..." : `Get ${plan.name}`}
+                <Button onClick={() => checkout(plan)} disabled={isCurrentPlan || busyPlan === plan.code || !price} className="mt-5 w-full">
+                  {isCurrentPlan ? "Current plan" : busyPlan === plan.code ? "Opening..." : `Get ${plan.name}`}
                 </Button>
+                {isCurrentPlan && <div className="mt-2 text-center text-sm text-charcoal-500">Your subscription is billed {subscription?.billingInterval}. <Link to="/billing" className="font-semibold text-brand-700 underline">Manage subscription</Link></div>}
                 <div className="mt-5 space-y-2 text-sm text-charcoal-600">
                   {plan.features.map((feature) => <div key={feature}>✓ {feature}</div>)}
                 </div>

@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./project-goals": "./src/projectGoals.ts",
     "./workspace-permissions": "./src/workspacePermissions.ts",
+    "./display-date": "./src/displayDate.ts",
     "./reporting": "./src/reporting.ts",
     "./approvals": "./src/approvals.ts",
     "./website-model": "./src/websiteModel.ts",
@@ -19,7 +20,8 @@
     "./agency-documents": "./src/agency-documents.ts",
     "./backlink-provider": "./src/backlinkProvider.ts",
     "./object-storage": "./src/objectStorage.ts",
-    "./safe-public-fetch": "./src/safePublicFetch.ts"
+    "./safe-public-fetch": "./src/safePublicFetch.ts",
+    "./growth-execution": "./src/growthExecution.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1116.0",

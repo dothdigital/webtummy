@@ -1,3 +1,4 @@
+import GrowthSocialPlan from "../components/GrowthSocialPlan.js";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
@@ -385,7 +386,8 @@ function SocialPublisher({ websiteId, projectId, strategy, providerAccounts, ini
     setTimezone(profile.timezone);
     setSelectedFacebookAccountId(accounts.find((account) => account.platform === "facebook" && profile.accountIds.includes(account.id))?.id ?? "");
     setSelectedInstagramAccountId(accounts.find((account) => account.platform === "instagram" && profile.accountIds.includes(account.id))?.id ?? "");
-    const firstPost = strategy?.posts[0];
+    const requestedPostId = new URLSearchParams(window.location.search).get("postId");
+    const firstPost = strategy?.posts.find(post=>post.id===requestedPostId) ?? strategy?.posts[0];
     setSelectedPostId(firstPost?.id ?? "");
     setCreatedPostId(firstPost?.externalPostId ?? "");
     if (firstPost) {
@@ -813,7 +815,7 @@ export default function SocialStrategy() {
   const [editingCompetitorIndex, setEditingCompetitorIndex] = useState<number | null>(null);
   const [competitorDraft, setCompetitorDraft] = useState<SocialCompetitorProfile>(emptyCompetitor());
   const [strategies, setStrategies] = useState<SocialStrategyType[]>([]);
-  const [selectedCampaignId, setSelectedCampaignId] = useState("");
+  const [selectedCampaignId, setSelectedCampaignId] = useState(searchParams.get("campaignId") || "");
   const [contentSources, setContentSources] = useState<SocialContentSource[]>([]);
   const [repurposingBatches, setRepurposingBatches] = useState<SocialRepurposingBatch[]>([]);
   const [performanceSummary, setPerformanceSummary] = useState<SocialPerformanceSummary>(EMPTY_PERFORMANCE);
@@ -827,6 +829,8 @@ export default function SocialStrategy() {
   const [postingActionBusy, setPostingActionBusy] = useState("");
   const [repurposingChannels, setRepurposingChannels] = useState<string[]>(Object.keys(REPURPOSING_LABELS));
   const [intelligence, setIntelligence] = useState<SocialStrategyResponse["intelligence"]>(null);
+  const [growthOpportunityIds, setGrowthOpportunityIds] = useState<string[]>([]);
+  const [loadingGrowthPlan, setLoadingGrowthPlan] = useState(false);
   const [campaignEditorOpen, setCampaignEditorOpen] = useState(false);
   const [campaignSetupStep, setCampaignSetupStep] = useState<1 | 2 | 3>(1);
   const [campaignConfigured, setCampaignConfigured] = useState(false);
@@ -853,7 +857,7 @@ export default function SocialStrategy() {
   const [targetKeywords, setTargetKeywords] = useState("");
   const [targetUrls, setTargetUrls] = useState("");
   const [selectedPlatforms, setSelectedPlatforms] = useState<string[]>(ENABLED_CAMPAIGN_PLATFORMS);
-  const [mode, setMode] = useState<"posting" | "strategy" | "performance">("strategy");
+  const [mode, setMode] = useState<"posting" | "strategy" | "performance">(searchParams.get("mode") === "posting" ? "posting" : "strategy");
   const [quickPostOpen, setQuickPostOpen] = useState(false);
   const [step, setStep] = useState<WizardStep>("strategy");
   const [loading, setLoading] = useState(true);
@@ -1521,6 +1525,7 @@ export default function SocialStrategy() {
   };
 
   const openNewCampaign = () => {
+    setGrowthOpportunityIds([]);
     setCampaignSetupStep(1);
     setEditingCampaignId(null);
     setCampaignName("");
@@ -1549,7 +1554,30 @@ export default function SocialStrategy() {
     setCampaignEditorOpen(true);
   };
 
+  const loadGrowthCampaign = async () => {
+    if (!selectedProject) return;
+    setLoadingGrowthPlan(true); setPageError("");
+    try {
+      const result = await api.get<{items:Array<{id:string;title:string;primaryKeyword:string;targetUrl:string|null;internalLinkTargetUrl:string|null;lifecycleStatus:string;executionTaskId:string|null;plannedPhase:string}>;launchReady:boolean;launchAt:string|null}>(`/api/projects-v2/${selectedProject.id}/growth/social-plan`);
+      const available = result.items.filter(item=>["proposed","deferred"].includes(item.lifecycleStatus)&&!item.executionTaskId);
+      if (!available.length) { setWorkflowMessage(result.items.length ? "Your Growth social suggestions already have tasks or saved posts. Continue them in Your Growth social plan above." : "Create the Growth content roadmap first, then load its social suggestions here."); return; }
+      openNewCampaign();
+      setGrowthOpportunityIds(available.map(item=>item.id));
+      setCampaignName(`${selectedProject.businessName || selectedProject.name} — Growth social plan`.slice(0,180));
+      setGoal((selectedProject.primaryGoal || "Bring interested people to the website").slice(0,160));
+      setPostingFrequency("Custom monthly count");setCustomMonthlyPostCount("4");
+      setTargetKeywords([...new Set(available.map(item=>item.primaryKeyword))].join(", "));
+      setTargetUrls([...new Set(available.map(item=>item.targetUrl||item.internalLinkTargetUrl).filter(Boolean))].join(", "));
+      setProductServiceFocus(available.map(item=>item.title).join("\n").slice(0,4000));
+      const start = result.launchAt ? new Date(result.launchAt) : new Date(`${campaignDate(1)}T00:00:00Z`);
+      setCampaignStartAt(start.toISOString().slice(0,10));setCampaignEndAt(new Date(start.getTime()+179*86400000).toISOString().slice(0,10));
+      setWorkflowMessage(`Loaded ${available.length} Growth social suggestions. Review the campaign dates and platforms. The plan suggests four posts per month; generation requires verified website launch.`);
+    } catch (error) { setPageError(error instanceof Error ? error.message : "Could not load the Growth Strategy."); }
+    finally { setLoadingGrowthPlan(false); }
+  };
+
   const openExistingCampaign = (strategy: SocialStrategyType) => {
+    setGrowthOpportunityIds(Array.isArray(strategy.intelligenceSnapshotJson?.growthOpportunityIds) ? strategy.intelligenceSnapshotJson.growthOpportunityIds.filter((id): id is string => typeof id === "string") : []);
     setCampaignSetupStep(1);
     setSelectedCampaignId(strategy.id);
     setEditingCampaignId(strategy.id);
@@ -1620,6 +1648,7 @@ export default function SocialStrategy() {
     setPageError("");
     try {
       const result = await api.post<SocialStrategyResponse & { campaign: SocialStrategyType }>("/api/social-strategy/campaigns", {
+        growthOpportunityIds,
         websiteId,
         projectId: selectedProject.id,
         campaignId: editingCampaignId,
@@ -1684,6 +1713,7 @@ export default function SocialStrategy() {
     setPageError("");
     try {
       const result = await api.post<SocialStrategyResponse & { strategy: SocialStrategyType }>("/api/social-strategy/generate", {
+        growthOpportunityIds: savedCampaign ? (Array.isArray(savedCampaign.intelligenceSnapshotJson?.growthOpportunityIds) ? savedCampaign.intelligenceSnapshotJson.growthOpportunityIds.filter((id): id is string => typeof id === "string") : []) : growthOpportunityIds,
         websiteId,
         projectId: selectedProject?.id ?? null,
         campaignId: savedCampaign?.id ?? editingCampaignId,
@@ -1835,6 +1865,7 @@ export default function SocialStrategy() {
         </label>
       </div>
 
+      {selectedProject && <GrowthSocialPlan projectId={selectedProject.id} taskId={searchParams.get("growthTaskId")}/>}
       {pageError && <div className="order-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700">{pageError}</div>}
       {workflowMessage && <div className="order-2 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-800">{workflowMessage}</div>}
 
@@ -2247,7 +2278,7 @@ export default function SocialStrategy() {
                 <h2 className="mt-1 text-lg font-semibold text-charcoal-800">Campaign Planning & Strategy</h2>
                 <p className="mt-1 text-sm leading-6 text-charcoal-500">Create a Facebook and Instagram campaign from your dates, topics, keywords, and frequency. AI prepares the posts and images for preview, approval, and scheduling.</p>
               </div>
-              <Button className="shrink-0" onClick={openNewCampaign}>Create campaign strategy</Button>
+              <div className="flex flex-wrap gap-2"><Button variant="ghost" disabled={!selectedProject || loadingGrowthPlan || generating} onClick={()=>void loadGrowthCampaign()}>{loadingGrowthPlan ? "Loading Growth Strategy…" : "Load existing Growth Strategy"}</Button><Button className="shrink-0" onClick={openNewCampaign}>Create campaign strategy</Button></div>
             </div>
             {intelligence && <div className="mb-5 rounded-xl border border-brand-200 bg-brand-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><div className="font-bold text-brand-900">Project intelligence loaded</div><span className="rounded-full bg-white px-2.5 py-1 text-xs font-bold text-brand-700">{intelligence.sourceCount} reusable content sources</span></div><div className="mt-3 grid gap-3 text-xs sm:grid-cols-2 lg:grid-cols-4"><div><b className="block text-brand-800">Business</b><span className="text-brand-700">{intelligence.businessName}</span></div><div><b className="block text-brand-800">Audience</b><span className="text-brand-700">{intelligence.audience || "Review needed"}</span></div><div><b className="block text-brand-800">Markets</b><span className="text-brand-700">{intelligence.targetMarkets.join(", ") || "Not location-dependent"}</span></div><div><b className="block text-brand-800">Evidence</b><span className="text-brand-700">{intelligence.keywords.length} keywords · {intelligence.sourceTypes.length} source types</span></div></div></div>}
             <div className="mt-6 overflow-hidden rounded-xl border border-slate-200">

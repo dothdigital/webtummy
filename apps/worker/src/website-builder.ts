@@ -1,3 +1,4 @@
+import { websiteImagePreferencePrompt } from "@webtummy/core/website-generation";
 import { UnrecoverableError, Worker } from "bullmq";
 import { createHmac } from "node:crypto";
 import { Prisma, prisma } from "@webtummy/db";
@@ -19,6 +20,7 @@ import {
   ensurePageSpecificFirstH2,
   ensureSeoFocusedHeroHeading,
   WEBSITE_HOME_HERO_COPY_DIRECTION,
+  WEBSITE_FAQ_ANSWER_DIRECTION,
   fitWebsiteAiChatRequest,
   fitWebsiteComponentsToWordBudget,
   strictWebsiteJsonResponseFormat,
@@ -432,7 +434,7 @@ const interpretedBusinessContext = (seoPlan: unknown, project: { name?: string |
   const projectName = project.name?.trim() || "";
   const plannedNameIsAgencyLeak = Boolean(plannedBusinessName && agencyName && projectName && plannedBusinessName.toLocaleLowerCase() === agencyName.toLocaleLowerCase() && projectName.toLocaleLowerCase() !== agencyName.toLocaleLowerCase());
   return {
-    businessName: String((plannedNameIsAgencyLeak ? "" : plannedBusinessName) || businessIdentity(project) || "").trim() || null,
+    businessName: String(record(project).websiteBusinessName || (plannedNameIsAgencyLeak ? "" : plannedBusinessName) || businessIdentity(project) || "").trim() || null,
     industry: String(context.industry || "").trim(),
     coreBusinessValue: String(context.coreBusinessValue || "").trim(),
     primaryServices: strings(context.primaryServices),
@@ -622,6 +624,7 @@ Missing or weak items: ${promptJson(requirements, 18_000)}
 Additional instruction: ${promptText(instructions || "none", 2_000)}
 For every page, the governing order is approved intake facts, approved keyword owner, page purpose and intent, then Strategy and Gap requirements. Do not write from the niche alone.
 Return one update for every supplied requirement. Do not rewrite the complete page. Preserve all copy not named in a requirement.
+${WEBSITE_FAQ_ANSWER_DIRECTION}
 For a dedicated FAQ page, return 8–12 verified question-and-answer pairs rather than generic article copy, and keep the visible answers synchronized with FAQPage schema when schema is requested.
 For Contact and About pages, use the verified Project Intake evidence above. Omit or flag missing or conflicting facts; never invent them.
 Return currentValue, proposedValue, and implementationNotes as text; serialize FAQ or schema JSON as text.` },
@@ -1239,7 +1242,7 @@ Current SEO: ${promptJson(currentSeo, 5_000)}
 Existing visible FAQs to preserve or improve: ${promptJson(currentFaqs, 8_000)}
 Metadata already used by sibling pages: ${promptJson(reservedMetadata, 10_000)}
 Rules:
-- Return ${minimumFaqs}${policy.archetype === "faq" ? "–12" : "–6"} complete, distinct, page-specific FAQs. Each answer must be useful and at least 25 characters.
+- Return ${minimumFaqs}${policy.archetype === "faq" ? "–12" : "–6"} complete, distinct, page-specific FAQs. ${WEBSITE_FAQ_ANSWER_DIRECTION}
 - SEO title target: 50–60 characters. Include the primary keyword naturally, near the beginning where practical; match the search intent; keep it clear and persuasive; and avoid keyword stuffing. If it exceeds 60 characters, shorten it naturally without reducing quality. The range is a quality target, not an absolute technical restriction, and a strong 61-character title is acceptable.
 - Meta description target: 140–160 characters. Include the primary keyword naturally, explain this page's value, match search intent, encourage the appropriate click, and avoid keyword stuffing. If it exceeds 160 characters, shorten it naturally without reducing quality. The range is a quality target, not an absolute technical restriction.
 - Do not repeat a sibling page's title or description.
@@ -1591,7 +1594,7 @@ Depth requirements:
 - The first post-hero H2 must name this page's exact topic or intent and differ from every sibling page. Never use generic headings such as “A solution aligned to your goals”, “How we can help”, “What we offer”, “Overview”, or “Why choose us”.
 - Keep the first post-hero overview concise at 70–130 words in 2–3 short paragraphs. Other rich-text bodies should normally use 120–220 words.
 - Service, benefit, process, and proof item descriptions should normally use 25–55 useful words each.
-- FAQ answers should normally use 35–70 words.
+- ${WEBSITE_FAQ_ANSWER_DIRECTION}
 - Hero and CTA copy must be concise and specific.
 - Respect every registered maxLength and maxItems constraint. Introductions must not exceed 240 characters.
 ${includeSeo ? "- Meta description: unique 120–160 characters explaining this exact page's value and next step. Never use generic lists of capabilities, process, proof, or FAQs." : ""}
@@ -1889,7 +1892,7 @@ Page uniqueness contract: return an original SEO title, H1, first post-hero H2, 
   let previousFailure = "";
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI - AI Growth Operating System website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- When the blueprint contains an FAQ block, return 4–6 complete, distinct, page-specific FAQs; return 8–12 for a dedicated FAQ page. Use every relevant approved faqTopics item from the SEO Plan, Growth Plan, Gap requirements, or mapped page brief first. When no approved topics exist, derive useful buyer questions from the assigned intent and verified evidence only. Never invent prices, guarantees, credentials, insurance coverage, medical outcomes, service availability, policies, or other unsupported facts. Keep the visible FAQ set synchronized with FAQPage schema.\n- Return a unique SEO title, H1, and meta description. SEO title target: 50–60 characters; include the primary keyword naturally near the beginning where practical, match intent, stay clear and persuasive, and avoid keyword stuffing. If it exceeds 60 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction, and a strong 61-character title is acceptable. Meta description target: 140–160 characters; include the primary keyword naturally, clearly explain page value, match intent, encourage the appropriate click, and avoid keyword stuffing. If it exceeds 160 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
+      const response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", signal: AbortSignal.timeout(180_000), headers: { Authorization: `Bearer ${config.openaiApiKey}`, "Content-Type": "application/json" }, body: JSON.stringify(fitWebsiteAiChatRequest({ model: config.openaiModel, response_format: strictWebsiteJsonResponseFormat("website_page_model", basic), temperature: 0.35, max_tokens: 8000, messages: [{ role: "system", content: `You are the SEnuke AI - AI Growth Operating System website development worker. Follow the approved SEO content plan as the controlling specification. Return structured JSON only. Generate only component IDs, versions, variants, and fields present in the supplied SENuke Component Registry. Never generate arbitrary components, scripts, PHP, WordPress code, fake claims, metrics, testimonials, credentials, offices, addresses, service availability, response times, local statistics, business relationships, awards, guarantees, or citations. Write only for the assigned intent owner and do not target prohibited competing keywords. Write a complete useful page section by section using the supplied registered-component blueprint. Every page needs one primary keyword, one dominant intent, exactly one hero headline mapped to H1, a specific CTA, appropriate schema, internal links, and image alt text. Use FAQs and process sections only when they serve the page intent. Local content must use only supplied evidence IDs, be meaningfully specific, and must not be a city-name swap. A failed or thin response is invalid; never return placeholder copy.` }, { role: "user", content: `Return the same JSON structure as this page blueprint, but rewrite every sample content value with original page-specific copy: ${promptJson(basic, 42_000)}\nActive Component Registry: ${promptJson(activeRegistry, 24_000)}\nPage composition policy: ${promptJson(policy, 4_000)}\nBusiness: ${businessContext.businessName || "business name not approved"}\nIndustry: ${businessContext.industry}\nCore customer value: ${businessContext.coreBusinessValue}\nApproved services: ${businessContext.primaryServices.join(", ")}\nAudience: ${businessContext.audience}\nLocations: ${promptStrings(project.targetLocations, 12, 200).join(", ")}\nBrand: ${promptJson(promptBrand(brand), 4_000)}\nRelevant approved SEO evidence: ${promptJson(relevantSeoEvidence(seoPlan, page), 14_000)}\nMapped page brief: ${promptJson(mappedBrief, 24_000)}\nAssigned primary intent: ${String(mappedSeoPlan.primaryIntent || page.searchIntent)}\nIntent owner: ${String(mappedSeoPlan.intentOwner || `/${page.slug}`)}\nAllowed local evidence IDs: ${promptStrings(mappedSeoPlan.localEvidenceIds, 16, 200).join(", ") || "none"}\nRequired internal links: ${promptStrings(mappedSeoPlan.requiredInternalLinks, 20, 500).join(", ") || "approved page map only"}\nProhibited competing keywords: ${promptStrings(mappedSeoPlan.prohibitedCompetingKeywords, 20, 300).join(", ") || "none supplied"}\nReserved titles, H1s, and meta descriptions already used by other planned or crawled pages: ${promptJson(uniquenessSignals, 20_000)}\nPage: ${page.title}\nPage type: ${page.pageType}\nPrimary keyword: ${page.primaryKeyword}\nSecondary: ${promptStrings(page.secondaryKeywords, 20, 300).join(", ")}\nIntent: ${page.searchIntent}\nSlug: ${page.slug}\nInstructions: ${promptText(instructions || "Build a complete conversion-focused page.", 4_000)}\nRequirements:\n- Write useful, substantive content up to ${policy.maximumWords} words across ${policy.minimumComponentCount}–10 registered component instances. Treat ${policy.minimumWords} words as a planning target, not permission to add filler.\n- Follow this page-specific direction: ${policy.guidance}\n- Keep the selected section sequence and rewrite every field with substantive page-specific content.\n- Give service, benefit, process, and proof item descriptions useful depth when those sections are selected.\n- When the blueprint contains an FAQ block, return 4–6 complete, distinct, page-specific FAQs; return 8–12 for a dedicated FAQ page. Use every relevant approved faqTopics item from the SEO Plan, Growth Plan, Gap requirements, or mapped page brief first. When no approved topics exist, derive useful buyer questions from the assigned intent and verified evidence only. Never invent prices, guarantees, credentials, insurance coverage, medical outcomes, service availability, policies, or other unsupported facts. ${WEBSITE_FAQ_ANSWER_DIRECTION}\n- Return a unique SEO title, H1, and meta description. SEO title target: 50–60 characters; include the primary keyword naturally near the beginning where practical, match intent, stay clear and persuasive, and avoid keyword stuffing. If it exceeds 60 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction, and a strong 61-character title is acceptable. Meta description target: 140–160 characters; include the primary keyword naturally, clearly explain page value, match intent, encourage the appropriate click, and avoid keyword stuffing. If it exceeds 160 characters, try to shorten it naturally without reducing quality; this is an optimization target, not an absolute technical restriction. None may duplicate any reserved value above. Never write “Explore ... Review capabilities, process, proof, FAQs, and next steps.”\n- Do not copy any sentence from the supplied blueprint.\n- content.components is the complete and only editable page-content model. Do not return duplicate hero, section, or CTA fields outside content.components.` }, ...(previousCandidate ? [{ role: "user", content: `Expand and correct this prior candidate rather than starting over. Preserve valid component IDs and rewrite thin props with substantive copy.\nValidation failure: ${promptText(previousFailure, 2_000)}\nPrior candidate: ${promptJson(previousCandidate, 30_000)}` }] : [])] })) });
       const body = record(await response.json());
       if (!response.ok) throw new Error(String(record(body.error).message || `OpenAI returned HTTP ${response.status}.`));
       const choice = record(Array.isArray(body.choices) ? body.choices[0] : null);
@@ -2221,6 +2224,7 @@ type VisualPlan = {
 type VisualPageContext = { title: string; pageType: string; primaryKeyword: string; searchIntent: string; slug?: string };
 
 type VisualProjectContext = {
+  imagePreferences?: unknown;
   name: string;
   businessName: string | null;
   agencyClient?: { name: string } | null;
@@ -2306,6 +2310,7 @@ function visualGrounding(
       relevantMarkets: locations,
       pageSpecificLocation: pageLocation || null,
     },
+    imagePreferences: websiteImagePreferencePrompt(project.imagePreferences),
     safeguards: intake.evidenceRule,
   };
 }
@@ -2315,10 +2320,10 @@ function pageVisualDirection(page: VisualPageContext, grounding: ReturnType<type
   const index = [...key].reduce((total, character) => (total * 31 + character.charCodeAt(0)) >>> 0, 7);
   const cameraDirections = [
     "documentary wide scene with the environment clearly supporting the story",
-    "medium environmental portrait focused on a real task rather than a posed subject",
-    "close editorial detail of the relevant product, tool, material, or hands in action",
-    "over-the-shoulder process view with a clear subject and purposeful depth",
-    "side-angle customer journey moment with natural movement and candid interaction",
+    "medium view focused on the relevant product, environment, or process",
+    "close detail of the relevant product, tool, or material",
+    "process view with a clear subject and purposeful depth",
+    "side-angle view showing a relevant use case or service setting",
   ];
   const journeyRole = page.searchIntent === "transactional"
     ? "show the concrete decision or next-step moment that helps a ready visitor act"
@@ -2351,7 +2356,7 @@ function groundedImagePrompt(planPrompt: string, grounding: ReturnType<typeof vi
     primaryKeyword: String(page.primaryKeyword || ""),
     searchIntent: String(page.searchIntent || ""),
   }, grounding);
-  return `${planPrompt.trim()}
+  return `${grounding.imagePreferences}\n\n${planPrompt.trim()}
 
 MANDATORY VISUAL GROUNDING
 - Business type and purpose: ${promptText(business.summary, 1_200) || promptText(business.productsAndServices, 1_200)}
@@ -2413,7 +2418,7 @@ function fallbackVisualPlan(
   const pageEvidence = record(grounding.page);
   const locationEvidence = record(grounding.location);
   const placement: VisualPlacement = "hero";
-  const prompt = `Create an original, premium editorial website image for ${business}'s ${page.title} page. The scene must directly communicate ${promptText(pageEvidence.h1, 300) || page.primaryKeyword} to ${promptText(record(grounding.business).audience, 500) || "the intended customer"}. Show the real-world service, product, customer need, or outcome described by this page in a specific and believable environment. ${promptText(locationEvidence.pageSpecificLocation, 160) ? `Use ${promptText(locationEvidence.pageSpecificLocation, 160)} only as subtle environmental context, without unverified landmarks or signage.` : "Do not force a geographic landmark into the scene."} Professional photographic art direction, authentic people and details where appropriate, natural light, cohesive brand mood, wide 3:2 composition, clear focal subject, useful negative space, no text or logos.`;
+  const prompt = `Create an original, premium editorial website image for ${business}'s ${page.title} page. The scene must directly communicate ${promptText(pageEvidence.h1, 300) || page.primaryKeyword} to ${promptText(record(grounding.business).audience, 500) || "the intended customer"}. Show the real-world service, product, customer need, or outcome described by this page in a specific and believable environment. ${promptText(locationEvidence.pageSpecificLocation, 160) ? `Use ${promptText(locationEvidence.pageSpecificLocation, 160)} only as subtle environmental context, without unverified landmarks or signage.` : "Do not force a geographic landmark into the scene."} Use the selected visual medium and people preference, cohesive brand mood, wide 3:2 composition, clear focal subject, useful negative space, no text or logos.`;
   return {
     placement,
     prompt: groundedImagePrompt(prompt, grounding),
@@ -2524,7 +2529,7 @@ function additionalHomeVisualPlans(
       key: "services",
       plan: {
         placement: "banner",
-        prompt: groundedImagePrompt(`Create an original premium homepage image for ${business} that visually explains the range and practical value of its approved products or services. Choose a concrete service or customer-use scene supported by the page sections. It must complement—but not repeat—the hero subject, people, action, or composition. Professional editorial photography, wide 3:2 composition, natural light and detail, useful negative space.`, grounding),
+        prompt: groundedImagePrompt(`Create an original premium homepage image for ${business} that visually explains the range and practical value of its approved products or services. Choose a concrete service or customer-use scene supported by the page sections. It must complement—but not repeat—the hero subject, people, action, or composition. Use the selected visual medium, wide 3:2 composition, clear detail, useful negative space.`, grounding),
         altText: `${business} services supporting ${page.primaryKeyword}`,
         rationale: "A second homepage visual introduces the main service range below the hero.",
         componentVariants: [],
@@ -2534,7 +2539,7 @@ function additionalHomeVisualPlans(
       key: "process",
       plan: {
         placement: "inline",
-        prompt: groundedImagePrompt(`Create an original premium supporting homepage image for ${business} showing a verified step in the customer's decision, service, or delivery journey. Use a different composition and scene from both the hero and service-range image. Emphasize clarity, human guidance, and a credible next step appropriate to ${page.searchIntent} intent. Realistic editorial photography, wide 3:2 composition and brand-appropriate light.`, grounding),
+        prompt: groundedImagePrompt(`Create an original premium supporting homepage image for ${business} showing a verified step in the customer's decision, service, or delivery journey. Use a different composition and scene from both the hero and service-range image. Emphasize clarity and a credible next step appropriate to ${page.searchIntent} intent. Use the selected visual medium, wide 3:2 composition and brand-appropriate light.`, grounding),
         altText: `${business} customer process for ${page.primaryKeyword}`,
         rationale: "A third homepage visual supports the process and conversion section.",
         componentVariants: [],
@@ -2543,8 +2548,9 @@ function additionalHomeVisualPlans(
   ];
 }
 
-async function generateVisual(plan: VisualPlan) {
+async function generateVisual(plan: VisualPlan, preferences?: unknown) {
   if (plan.placement === "none" || plan.placement === "library" && !plan.prompt) return null;
+  plan = { ...plan, prompt: `${websiteImagePreferencePrompt(preferences)}\n\n${plan.prompt}` };
   if (!config.openaiApiKey) throw new Error("Configure OPENAI_API_KEY before the background worker generates website images.");
   const response = await fetch("https://api.openai.com/v1/images/generations", {
     method: "POST",
@@ -2691,7 +2697,7 @@ function importStoredComponents(
 export async function executeWebsiteBuildJob(jobId: string) {
   const job = await prisma.websiteBuildJob.findUnique({ where: { id: jobId }, include: { build: { include: { pages: { orderBy: { sortOrder: "asc" }, include: { mediaAssets: true } }, project: { include: { businessProfile: true, agencyClient: true } } } } } });
   if (!job || ["completed", "cancelled"].includes(job.status)) return;
-  const build = job.build, project = build.project, input = record(job.inputJson), instructions = String(input.instructions || ""), seoPlan = input.seoPlan || record(build.settingsJson).seoPlan || {};
+  const build = job.build, project = { ...build.project, imagePreferences: record(build.settingsJson).imagePreferences, businessName: String(record(build.brandJson).businessName || build.project.businessName || "").trim() || null, websiteBusinessName: String(record(build.brandJson).businessName || "").trim() }, input = record(job.inputJson), instructions = String(input.instructions || ""), seoPlan = input.seoPlan || record(build.settingsJson).seoPlan || {};
   const mode = String(input.mode || "website_development");
   const contentPhase = String(input.phase || "all");
   const websiteGeneration = ["website_generation", "website_development"].includes(mode);
@@ -2772,7 +2778,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
         const placement = ["hero", "banner", "inline", "library"].includes(asset.role) ? asset.role as VisualPlacement : asset.id === `${page.id}-hero` ? "hero" : "library";
         await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { stage: `generating_image:${page.slug || "home"}`.slice(0, 80), progress: Math.max(10, Math.round((completedAssets / requestedAssets.length) * 85)) } });
         const prompt = [asset.prompt, instructions].filter(Boolean).join("\n");
-        const sourceUrl = await generateVisual({ placement, prompt, altText: asset.altText || page.title, rationale: "User-requested website image regeneration.", componentVariants: [] });
+        const sourceUrl = await generateVisual({ placement, prompt, altText: asset.altText || page.title, rationale: "User-requested website image regeneration.", componentVariants: [] }, project.imagePreferences);
         if (!sourceUrl) throw new Error(`AI did not return the requested image for ${page.title}.`);
         const stored = sourceUrl.startsWith("data:")
           ? await storeWorkerWebsiteImage({ workspaceId: job.workspaceId, projectId: job.projectId, mediaAssetId: asset.id, dataUrl: sourceUrl, filename: asset.fileName || `${page.slug || "home"}-${placement}.png`, altText: asset.altText || page.title })
@@ -3048,7 +3054,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
           const existingAsset = input.regenerateImages === true
             ? null
             : page.mediaAssets.find((asset) => asset.id === `${page.id}-hero` && asset.sourceUrl && asset.role !== "none");
-          visualSource = savedHeroImage?.artifactUrl || existingAsset?.sourceUrl || await generateVisual(visualPlan);
+          visualSource = savedHeroImage?.artifactUrl || existingAsset?.sourceUrl || await generateVisual(visualPlan, project.imagePreferences);
           if (savedHeroImage?.artifactUrl || existingAsset?.sourceUrl) imagesReusedCount += 1;
           else if (visualSource) {
             imagesGeneratedCount += 1;
@@ -3077,7 +3083,7 @@ export async function executeWebsiteBuildJob(jobId: string) {
               ? null
               : page.mediaAssets.find((asset) => asset.id === assetId && asset.sourceUrl && asset.role !== "none");
             const savedImage = await loadPageCheckpoint(checkpoint, checkpointKey);
-            const sourceUrl = savedImage?.artifactUrl || existingAsset?.sourceUrl || await generateVisual(visual.plan);
+            const sourceUrl = savedImage?.artifactUrl || existingAsset?.sourceUrl || await generateVisual(visual.plan, project.imagePreferences);
             if (!sourceUrl) throw new Error(`AI did not return the required ${visual.key} image for ${page.title}.`);
             if (savedImage?.artifactUrl || existingAsset?.sourceUrl) imagesReusedCount += 1;
             else {

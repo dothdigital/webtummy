@@ -82,6 +82,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
   const projectId = params.get("projectId") ?? "";
   const requestedPageId = params.get("pageId") ?? "";
   const embedded = params.get("embedded") === "1";
+  const focusInternalLinks = params.get("section") === "internal-links";
   const [response, setResponse] = useState<Response | null>(null);
   const [pageId, setPageId] = useState(requestedPageId);
   const [pageDetails, setPageDetails] = useState<Record<string, Page>>({});
@@ -188,7 +189,9 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
     return /^https:\/\//i.test(url) ? [{ network, url }] : [];
   });
   const socialSignature = socialProfiles.map((profile) => `${profile.network}:${profile.url}`).join("|");
-  const config = useMemo(() => createSenukePuckConfig(themeInput, page?.mediaAssets ?? [], { businessName, previewMode: view, logoUrl, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialProfiles, menu: websiteMenu, footerMenu: footerWebsiteMenu, onNavigate: setPageId }), [themeInput.primary, themeInput.secondary, themeInput.accent, themeInput.background, themeInput.text, themeInput.mutedText, themeInput.headingFont, themeInput.bodyFont, themeInput.radius, mediaSignature, chromeSignature, logoUrl, businessName, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialSignature, view]);
+  const linkPages = activePages.filter(item => item.id !== page?.id).map(({ id, title, slug }) => ({ id, title, slug }));
+  const linkPagesSignature = JSON.stringify(linkPages);
+  const config = useMemo(() => createSenukePuckConfig(themeInput, page?.mediaAssets ?? [], { businessName, previewMode: view, logoUrl, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialProfiles, menu: websiteMenu, footerMenu: footerWebsiteMenu, linkPages, onNavigate: setPageId }), [themeInput.primary, themeInput.secondary, themeInput.accent, themeInput.background, themeInput.text, themeInput.mutedText, themeInput.headingFont, themeInput.bodyFont, themeInput.radius, mediaSignature, chromeSignature, linkPagesSignature, logoUrl, businessName, contactEmail, contactPhone, businessAddress, copyrightText, footerAboutText, socialSignature, view]);
   const theme = themeVariables(themeInput);
 
   useEffect(() => {
@@ -272,6 +275,7 @@ export default function WebsiteVisualEditor({ mode }: { mode: "editor" | "previe
         key={`${page.id}:${page.version}`}
         config={config}
         data={draft}
+        ui={focusInternalLinks && page.id === requestedPageId && draft.content.some(item => item.type === "content.link_section") ? { itemSelector: { index: draft.content.findIndex(item => item.type === "content.link_section") }, rightSideBarVisible: true } : undefined}
         onChange={(data) => setDraft(data as Data<PuckRecord>)}
         headerTitle={`${page.title} · visual draft`}
         headerPath={`/${page.slug}`}

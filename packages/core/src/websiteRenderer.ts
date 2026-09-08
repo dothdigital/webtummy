@@ -8,6 +8,8 @@ import {
   type WebsitePageModel,
 } from "./websiteModel.js";
 import { load } from "cheerio";
+import { createWebsitePhpFormFiles } from "./websitePhpForms.js";
+export { WEBSITE_PHP_MAIL_REQUIREMENTS } from "./websitePhpForms.js";
 import type { WebsiteQualityEnvironment } from "./websiteQualityGovernance.js";
 
 export type WebsiteRenderFile = {
@@ -27,6 +29,7 @@ export type WebsiteRenderOptions = {
   assetUrls?: Record<string, string>;
   internalUrlMap?: Record<string, string>;
   formAction?: string;
+  phpForms?: boolean;
   tracking?: { siteId: string; scriptUrl: string; releaseId?: string; ga4MeasurementId?: string };
   /** Approved Website Development technical files. Draft files must never be passed here. */
   siteFiles?: { sitemap?: string; robots?: string; llms?: string };
@@ -344,11 +347,28 @@ export function renderWebsiteComponentHtml(
   }
 }
 
+/** Pair adjacent editorial images and copy, preserving authored column layouts. */
+function withSideBySideContent(page: WebsitePageModel): WebsitePageModel {
+  const sections: WebsiteComponentInstance[] = [];
+  for (let index = 0; index < page.sections.length; index++) {
+    const first = page.sections[index], second = page.sections[index + 1];
+    const image = first.componentId === "media.image" ? first : second?.componentId === "media.image" ? second : undefined;
+    const copy = first.componentId === "content.rich_text" ? first : second?.componentId === "content.rich_text" ? second : undefined;
+    if (image && copy) {
+      sections.push({ instanceId: `${image.instanceId}-content-layout`, componentId: "layout.section", componentVersion: "1.0.0", variant: "two_equal",
+        props: { spacing: "comfortable", columnOne: [image] as unknown as JsonValue, columnTwo: [copy] as unknown as JsonValue } });
+      index++;
+    } else sections.push(first);
+  }
+  return { ...page, sections };
+}
+
 export function renderWebsitePageBodyHtml(
   model: WebsiteModel,
   page: WebsitePageModel,
   options: WebsiteRenderOptions = {},
 ) {
+  page = withSideBySideContent(page);
   const contactPage = model.pages.find((candidate) => candidate.pageType === "contact" || candidate.pageType === "conversion" || /\b(contact|get in touch|request a quote)\b/i.test(candidate.name));
   const contactPath = contactPage ? websitePagePublicationPath(model, contactPage) : "";
   const internalUrlMap = {
@@ -444,6 +464,7 @@ export function renderWebsitePageWordPressBlocks(
   page: WebsitePageModel,
   options: WebsiteRenderOptions = {},
 ) {
+  page = withSideBySideContent(page);
   let body = renderWebsitePageBodyHtml(model, page, options);
   const heroIndex = page.sections.findIndex((component) => component.componentId === "hero.local_service");
   const secondFoldIndex = page.sections.findIndex((component, index) => index > heroIndex && Boolean(propString(component, "heading")));
@@ -745,6 +766,14 @@ export function renderWebsitePageDocument(
   const homeHref = options.internalUrlMap?.["/"] || "/";
   const hasComponentFormAction = model.pages.some((page) => flattenWebsiteComponents(page.sections).some((section) =>
     section.componentId === "conversion.contact_form" && typeof section.props.submissionUrl === "string" && section.props.submissionUrl.length > 0));
+  const recaptcha = production ? model.recaptcha : undefined;
+  const recaptchaScript = recaptcha ? `<script>
+window.senukeRecaptchaReady=function(){document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
+  var widget=document.createElement("div");widget.className="senuke-recaptcha";widget.style.margin="16px 0";
+  var button=form.querySelector('button[type="submit"]');if(button)button.before(widget);else form.appendChild(widget);
+  form.dataset.senukeRecaptchaWidget=String(grecaptcha.render(widget,{sitekey:${JSON.stringify(recaptcha.siteKey).replace(/</g, "\\u003c")}}));
+});};
+</script><script src="https://www.google.com/recaptcha/api.js?onload=senukeRecaptchaReady&render=explicit" async defer></script>` : "";
   const formDeliveryScript = options.formAction || hasComponentFormAction
     ? `<script>
 document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
@@ -756,13 +785,16 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
     if(status){status.hidden=false;status.classList.remove("senuke-form-error");status.textContent="Sending…";}
     try{
       var payload={};
+      ${recaptcha ? 'if(!window.grecaptcha||form.dataset.senukeRecaptchaWidget===undefined)throw new Error("Spam protection is loading. Please wait and try again.");var captchaToken=grecaptcha.getResponse(Number(form.dataset.senukeRecaptchaWidget));if(!captchaToken)throw new Error("Please complete the I am not a robot check.");payload["g-recaptcha-response"]=captchaToken;' : ""}
       new FormData(form).forEach(function(value,key){
         var field=form.elements.namedItem(key);
         payload[key]=field&&field.type==="checkbox"?field.checked:String(value);
       });
+      payload._senuke_form_id=form.dataset.senukeFormId||"";
       var response=await fetch(form.action,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)});
       var result=await response.json().catch(function(){return {};});
       if(!response.ok)throw new Error(result.error||"We could not send your enquiry. Please try again.");
+      ${options.phpForms ? 'if(new URL(form.action).pathname.endsWith("/senuke-contact.php")&&typeof result.message!=="string")throw new Error("Email delivery is unavailable. Please contact the business directly.");' : ""}
       form.reset();
       if(status)status.textContent=result.message||"Thank you. Your enquiry has been received.";
       document.dispatchEvent(new CustomEvent("senuke:track",{detail:{eventName:"form_success",metadata:{formId:form.dataset.senukeFormId||form.id||"form"}}}));
@@ -770,6 +802,7 @@ document.querySelectorAll("[data-senuke-managed-form]").forEach(function(form){
       if(status){status.classList.add("senuke-form-error");status.textContent=error instanceof Error?error.message:"We could not send your enquiry. Please try again.";}
       document.dispatchEvent(new CustomEvent("senuke:track",{detail:{eventName:"form_error",metadata:{formId:form.dataset.senukeFormId||form.id||"form"}}}));
     }finally{
+      ${recaptcha ? 'if(window.grecaptcha&&form.dataset.senukeRecaptchaWidget!==undefined)grecaptcha.reset(Number(form.dataset.senukeRecaptchaWidget));' : ""}
       if(button)button.disabled=false;
     }
   });
@@ -806,6 +839,7 @@ ${googleAnalyticsScript}
 <header class="senuke-site-header"><a class="senuke-brand" href="${escapeHtml(homeHref)}">${brandMarkup}</a><div class="senuke-header-navigation">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div><details class="senuke-mobile-menu"><summary aria-label="Open navigation menu"><span class="senuke-menu-icon" aria-hidden="true"><i></i><i></i><i></i></span><span class="senuke-visually-hidden">Menu</span></summary><div class="senuke-mobile-menu-panel">${navigationHtml(model, options)}${utilityNavigationHtml(model, options)}</div></details></header>
 <main>${renderWebsitePageBodyHtml(model, page, { ...options, mediaAssets: options.mediaAssets || model.mediaAssets })}</main>
 <footer class="senuke-site-footer"><div class="senuke-footer-main"><section class="senuke-footer-brand"><a class="senuke-footer-logo" href="${escapeHtml(homeHref)}">${brandMarkup}</a>${businessSummary ? `<p>${escapeHtml(businessSummary)}</p>` : ""}${socialNavigationHtml(model)}</section><div class="senuke-footer-navigation-column">${footerNavigationHtml(model, options)}</div><section class="senuke-footer-contact-column"><h2>Get in touch</h2>${contactItems.length ? `<div class="senuke-footer-contact">${contactItems.join("")}</div>` : ""}</section></div>${disclaimerText ? `<div class="senuke-footer-disclaimer">${escapeHtml(disclaimerText)}</div>` : ""}<div class="senuke-footer-bottom"><p class="senuke-footer-copyright">${escapeHtml(copyrightText)}</p>${footerLegalNavigationHtml(model, options)}</div></footer>
+${recaptchaScript}
 ${formDeliveryScript}
 ${testimonialSliderScript}
 </body>
@@ -1052,6 +1086,8 @@ body{background:linear-gradient(180deg,var(--senuke-background),var(--senuke-sur
 .senuke-cta{position:relative;overflow:hidden;margin-block:3rem 5rem;background:linear-gradient(135deg,var(--senuke-secondary),color-mix(in srgb,var(--senuke-secondary) 76%,var(--senuke-primary)));box-shadow:0 28px 80px color-mix(in srgb,var(--senuke-secondary) 35%,transparent)}
 .senuke-faq{width:min(920px,calc(100% - 2rem))}.senuke-faq details{box-shadow:0 10px 30px rgba(15,23,42,.05)}
 .senuke-blog-index{width:min(var(--senuke-layout-max,1120px),calc(100% - var(--senuke-layout-inset,2rem)));margin:clamp(2.5rem,6vw,5rem) auto}.senuke-blog-index-heading{max-width:720px;margin-bottom:1.75rem}.senuke-blog-index-heading h2{margin:.25rem 0 .7rem;font-size:clamp(2rem,4vw,3rem)}.senuke-blog-index-heading>p:last-child{color:var(--senuke-muted)}.senuke-eyebrow,.senuke-blog-topic{margin:0;color:var(--senuke-primary);font-size:.75rem;font-weight:900;letter-spacing:.12em;text-transform:uppercase}.senuke-blog-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,280px),1fr));gap:1.25rem}.senuke-blog-card{overflow:hidden;border:1px solid color-mix(in srgb,var(--senuke-muted) 18%,transparent);border-radius:1.15rem;background:var(--senuke-surface);box-shadow:0 16px 45px rgba(15,23,42,.07)}.senuke-blog-card>div{padding:1.35rem}.senuke-blog-card h3{margin:.35rem 0 .65rem;font-size:1.35rem}.senuke-blog-card h3 a{color:inherit;text-decoration:none}.senuke-blog-card p{color:var(--senuke-muted)}.senuke-blog-card-image{display:block;aspect-ratio:16/9;overflow:hidden}.senuke-blog-card-image img{width:100%;height:100%;object-fit:cover}.senuke-blog-read-more{display:inline-flex;gap:.35rem;color:var(--senuke-primary);font-weight:850;text-decoration:none}
+.senuke-component h1,.senuke-component h2,.senuke-component h3,.senuke-component h4,.senuke-component h5,.senuke-component h6{margin-left:auto!important;margin-right:auto!important;text-align:center!important}
+.senuke-layout-column>.senuke-rich-text p{text-align:left}
 @media(max-width:860px){.senuke-rich-text{padding-block:2.75rem}.senuke-site-header{position:sticky!important}.senuke-hero{padding-block:4rem}}
 `;
 
@@ -1096,6 +1132,7 @@ export function createStaticWebsiteFiles(
       path: path === "/" ? "index.html" : `${path.replace(/^\/|\/$/g, "")}/index.html`,
       content: renderWebsitePageDocument(model, page, {
         ...options,
+        ...(options.phpForms ? { formAction: `${relativeRoot}senuke-contact.php` } : {}),
         stylesheetHref: `${relativeRoot}assets/senuke.css`,
         mediaAssets: model.mediaAssets,
         assetUrls: pageAssetUrls,
@@ -1140,6 +1177,7 @@ export function createStaticWebsiteFiles(
   return [
     ...pageFiles,
     ...mediaFiles,
+    ...(options.phpForms ? createWebsitePhpFormFiles(model) : []),
     { path: "assets/senuke.css", content: `${SENUKE_STATIC_CSS}\n${SENUKE_PROFESSIONAL_CSS}`, mimeType: "text/css" },
     { path: "sitemap.xml", content: approvedSitemap || `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${sitemapUrls}</urlset>`, mimeType: "application/xml" },
     { path: "robots.txt", content: options.environmentType === "production"

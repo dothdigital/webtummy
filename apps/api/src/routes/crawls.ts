@@ -1,3 +1,5 @@
+import { getWebsiteHandoffReview } from "../website-handoff-review.js";
+import { canAccessProject, hasWorkspacePermission, workspaceContext } from "../workspace-access.js";
 // Crawl routes: start a crawl, poll status, read results — all tenant-scoped.
 import { Router } from "express";
 import { z } from "zod";
@@ -33,6 +35,7 @@ async function getScopedCrawl(req: import("express").Request, crawlId: string) {
 }
 
 const startSchema = z.object({
+  handoffReview: z.object({ projectId: z.string().min(1), releaseId: z.string().min(1) }).optional(),
   pageLimit: z.number().int().min(1).max(50000).optional(),
   maxDepth: z.number().int().min(0).max(50).optional(),
   includePatterns: z.array(z.string()).default([]),
@@ -83,7 +86,17 @@ crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
     orderBy: { completedAt: "desc" },
     select: { id: true, status: true, pagesCrawled: true, siteScore: true, completedAt: true, createdAt: true },
   });
-  if (recentCompleted) {
+  let requiresHandoffAssessment = false;
+  if (o.handoffReview) {
+    const context = await workspaceContext(req);
+    if (!hasWorkspacePermission(context, "run_ai_analysis") || !await canAccessProject(context, o.handoffReview.projectId)) return res.status(403).json({ error: "Project analysis access is required." });
+    const handoff = await getWebsiteHandoffReview(o.handoffReview.projectId);
+    if (!handoff || handoff.websiteId !== website.id || handoff.releaseId !== o.handoffReview.releaseId) return res.status(409).json({ error: "The handoff or live website changed. Reload the current review." });
+    if (!handoff.appliedAt) return res.status(409).json({ error: "Confirm the delivered changes are applied before starting their assessment." });
+    // Only the first successful assessment after confirmed application bypasses the routine cooldown.
+    requiresHandoffAssessment = handoff.phase === "assessment";
+  }
+  if (recentCompleted && !requiresHandoffAssessment) {
     const availableAt = new Date((recentCompleted.completedAt ?? recentCompleted.createdAt).getTime() + CRAWL_REFRESH_COOLDOWN_MS);
     return res.status(409).json({
       error: "recent crawl already completed",
@@ -102,6 +115,7 @@ crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
         includePatterns: o.includePatterns,
         excludePatterns: o.excludePatterns,
         respectRobots: o.respectRobots,
+        ...(o.handoffReview ? { handoffReview: o.handoffReview } : {}),
       },
     },
   });

@@ -34,7 +34,7 @@ it("builds an action email with a CTA and branded signature", () => {
   const email = actionEmail({ title: "Work is ready", message: "Review the generated content.", ctaLabel: "Review now", ctaUrl: "https://app.senuke.com/review", previewText: "Review your completed work.", completedAt: "2026-08-25T16:30:00.000Z", preferencesUrl: "https://app.senuke.com/reports", supportEmail: "support@senuke.com" });
   expect(email.text).toContain("Review now: https://app.senuke.com/review");
   expect(email.text).toContain("The SEnuke AI Team");
-  expect(email.text).toContain("Update recorded: 2026-08-25 16:30:00 UTC");
+  expect(email.text).toContain("Update recorded: August 25, 2026");
   expect(email.text).toContain("Manage notification preferences: https://app.senuke.com/reports");
   expect(email.html).toContain("Review your completed work.");
   expect(email.html).toContain(">Review now</a>");
@@ -68,3 +68,19 @@ it("selects a useful primary CTA for each notification family", () => {
    expect(email.text).toContain("Next action");
    expect(email.html).not.toContain("Completed at");
  });
+
+ it("gives subscription lifecycle emails a billing action", () => {
+  for (const type of ["billing_subscription_cancellation", "billing_subscription_ended"]) {
+    expect(notificationPresentation(type).ctaLabel).toBe("Review billing");
+  }
+});
+
+it("uses date-only headers and report values in both HTML and plain-text emails", () => {
+ const email = actionEmail({title:"Report ready",message:"Publishing is scheduled for 2:00 PM UTC.",ctaLabel:"View report",ctaUrl:"https://app.senuke.com/reports",occurredAt:"2026-09-07T02:01:17.831Z",tables:[{title:"Report details",columns:["Field","Value"],rows:[["Generated","2026-09-07T02:01:17.831Z"],["Amount","147.00"]]}]});
+ for(const output of [email.html,email.text]) {
+  expect(output).toContain("September 7, 2026");
+  expect(output).not.toContain("02:01:17");
+  expect(output).toContain("2:00 PM UTC");
+  expect(output).toContain("147.00");
+ }
+});

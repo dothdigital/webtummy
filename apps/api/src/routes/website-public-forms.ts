@@ -1,3 +1,4 @@
+import { verifyWebsiteRecaptcha } from "../website-recaptcha.js";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { Router, type Request } from "express";
 import { prisma } from "@webtummy/db";
@@ -87,6 +88,7 @@ publicWebsiteFormsRouter.post("/website-forms/:releaseId/:token", async (req, re
       select: {
         id: true,
         snapshotHash: true,
+        projectId: true,
         immutableSnapshot: true,
       },
     });
@@ -100,6 +102,10 @@ publicWebsiteFormsRouter.post("/website-forms/:releaseId/:token", async (req, re
     }
 
     const model = release.immutableSnapshot as unknown as WebsiteModel;
+    if (model.recaptcha) {
+      const credential = await prisma.websiteRecaptchaCredential.findFirst({ where: { id: model.recaptcha.credentialId, projectId: release.projectId, siteKey: model.recaptcha.siteKey, hostname: model.recaptcha.hostname } });
+      if (!credential || !await verifyWebsiteRecaptcha(String(input["g-recaptcha-response"] || ""), credential)) return res.status(400).json({ error: "Complete the reCAPTCHA check and try again." });
+    }
     const form = model.forms?.[0];
     const destination = z.string().email().safeParse(form?.destination || model.identity?.contactEmail || "");
     if (!form || !destination.success) {
