@@ -1,3 +1,4 @@
+import { keywordEvidenceList } from "../keyword-evidence.js";
 import { Agent } from "@mastra/core/agent";
 import { createOpenAI } from "@ai-sdk/openai";
 import { prisma } from "@webtummy/db";
@@ -114,13 +115,13 @@ export async function loadProjectAgentEvidence(projectId: string) {
       error: true,
       createdAt: true,
       completedAt: true,
-      ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 12, select: { keyword: true, avgMonthlySearches: true, competition: true, competitionIndex: true, cpc: true } },
+      ideas: { orderBy: [{ avgMonthlySearches: "desc" }, { keyword: "asc" }], take: 12, select: { keyword: true, rawJson: true, avgMonthlySearches: true, competition: true, competitionIndex: true, cpc: true } },
       competitors: { orderBy: { rank: "asc" }, take: 8, select: { rank: true, domain: true, title: true, contentScore: true } },
     },
   });
   const activities = await prisma.workspaceActivity.findMany({ where: { projectId }, orderBy: { createdAt: "desc" }, take: 30, select: { id: true, action: true, entityType: true, previousJson: true, nextJson: true, metadataJson: true, createdAt: true } });
   const workflowController = await getProjectWorkflowController(projectId);
-  return { project, latestCrawl, keywordResearchRuns, activities, workflowController };
+  return { project, latestCrawl, keywordResearchRuns: keywordResearchRuns.map(run => ({ ...run, classification: "Strategic Supporting Topic", ideas: keywordEvidenceList(run.ideas) })), activities, workflowController };
 }
 
 type SemanticSource = { sourceType: string; sourceId: string; title: string; content: string; metadata?: Record<string, unknown> };

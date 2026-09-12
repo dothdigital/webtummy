@@ -1,5 +1,6 @@
+import { KeywordResearchConfirmModal, type KeywordResearchEstimate } from "../components/KeywordResearchConfirmModal.js";
 import { formatDisplayDate } from "@webtummy/core/display-date";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedProject, KeywordResearchRun, Website } from "../types.js";
@@ -8,7 +9,7 @@ import { ActionIconButton, ActionIconLink, Button, Card, Input } from "../compon
 import { COUNTRY_OPTIONS, buildLocationNames, buildProjectMarketLocationNames, defaultLocationParts, normalizeCountryMarket, projectAnalysisLocations } from "../locationOptions.js";
 import { isBackgroundJobFinished, registerBackgroundJob } from "../background-jobs.js";
 import { keywordRunsForProjectLocations, latestSuccessfulKeywordRuns } from "../keyword-runs.js";
-import { incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
+import { KEYWORD_RESEARCH_MAX_SELECTED_CHECKS, KEYWORD_RESEARCH_SELECTION_LIMIT_MESSAGE, selectKeywordResearchChecks, incompleteApprovedKeywordResearchChecks, keywordResearchRequestIdentity, normalizeKeywordPhrase, selectKeywordAnalysisLocations, splitKeywordEntries } from "@webtummy/core";
 import { geographicTargetMarkets } from "../utils/projectLocations.js";
 
 type KeywordSuggestion = {
@@ -174,7 +175,25 @@ export default function KeywordReports() {
   const [keywordLimit, setKeywordLimit] = useState("25");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
-  const [capacityUnitEstimate, setCapacityUnitEstimate] = useState<number | null>(null);
+  const [researchConfirmation, setResearchConfirmation] = useState<{ estimate: KeywordResearchEstimate | null; error: string | null } | null>(null);
+  const confirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
+  const estimateRequestVersion = useRef(0);
+  const closeResearchConfirmation = (confirmed: boolean) => {
+    estimateRequestVersion.current += 1;
+    confirmationResolver.current?.(confirmed);
+    confirmationResolver.current = null;
+    setResearchConfirmation(null);
+  };
+  const confirmKeywordResearch = (checks: Array<{ seedKeyword: string; locationName: string; languageCode: string; device: string; targetUrl?: string | null; targetDomain?: string | null }>) => new Promise<boolean>((resolve) => {
+    confirmationResolver.current?.(false);
+    confirmationResolver.current = resolve;
+    const version = ++estimateRequestVersion.current;
+    setResearchConfirmation({ estimate: null, error: null });
+    void api.post<KeywordResearchEstimate>("/api/keyword-research/batch/estimate", { projectId: guidedProject?.id ?? null, websiteId: websiteId || null, checks })
+      .then((estimate) => { if (version === estimateRequestVersion.current) setResearchConfirmation({ estimate, error: null }); })
+      .catch((error) => { if (version === estimateRequestVersion.current) setResearchConfirmation({ estimate: null, error: error instanceof Error ? error.message : "Could not calculate AI consumption. Please try again." }); });
+  });
+  useEffect(() => () => { estimateRequestVersion.current += 1; confirmationResolver.current?.(false); }, []);
   const [savingMarkets, setSavingMarkets] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
   const [showAddKeyword, setShowAddKeyword] = useState(searchParams.get("add") === "1");
@@ -188,6 +207,7 @@ export default function KeywordReports() {
   const [editingSuggestion, setEditingSuggestion] = useState<string | null>(null);
   const [editingSuggestionValue, setEditingSuggestionValue] = useState("");
   const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
+  const [selectedCheckIds, setSelectedCheckIds] = useState<string[] | null>(null);
   const [retryQueueMode, setRetryQueueMode] = useState(false);
   const [formError, setFormError] = useState<FormError | null>(null);
   const [message, setMessage] = useState("");
@@ -349,9 +369,7 @@ export default function KeywordReports() {
 
   useEffect(() => {
     load();
-    void api.get<{ features: Array<{ featureKey: string; defaultCreditCost: number }> }>("/api/usage/feature-costs")
-      .then((result) => setCapacityUnitEstimate(result.features.find((feature) => feature.featureKey === "keyword_research_batch")?.defaultCreditCost ?? null))
-      .catch(() => setCapacityUnitEstimate(null));
+
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -396,7 +414,7 @@ export default function KeywordReports() {
         }
         setQueuedKeywords(submittedKeywords);
       }
-      const checks = submittedKeywords.flatMap((queued) => queued.locationNames.map((locationName) => ({
+      const availableChecks = submittedKeywords.flatMap((queued) => queued.locationNames.map((locationName) => ({
         seedKeyword: queued.keyword,
         targetUrl: queued.targetUrl || null,
         targetDomain: queued.targetDomain || null,
@@ -406,9 +424,10 @@ export default function KeywordReports() {
         serpDepth: Number(queued.serpDepth) || 20,
         keywordLimit: Number(queued.keywordLimit) || 25,
       })));
-      // The explicit Start button, visible check count, and capacity estimate
-      // already provide informed confirmation. Browser-native confirm dialogs
-      // may be suppressed, making a valid click appear to do nothing.
+      const checks = selectKeywordResearchChecks(availableChecks.filter((check) => !exactResearchMarketIssue(check.locationName)), selectedBatchIdentities);
+      if (!checks.length) throw new Error("Select at least one keyword-location check to run.");
+      if (!await confirmKeywordResearch(checks)) return;
+      if (checks.length > KEYWORD_RESEARCH_MAX_SELECTED_CHECKS) throw new Error(KEYWORD_RESEARCH_SELECTION_LIMIT_MESSAGE);
       setMessage(`Starting ${checks.length} keyword-location check${checks.length === 1 ? "" : "s"}…`);
       const result = await api.post<{
         accepted: Array<{ run: KeywordResearchRun; requestedLocation: string; resolvedLocation: string; reused: boolean; retried: boolean }>;
@@ -723,6 +742,8 @@ export default function KeywordReports() {
     }
   };
 
+  useEffect(() => { setSelectedCheckIds(null); }, [guidedProject?.id, websiteId]);
+
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? (guidedProject ? undefined : websites[0]);
   const projectRuns = guidedProject ? runs.filter((run) => run.projectId === guidedProject.id) : selectedWebsite ? runs.filter((run) => run.websiteId === selectedWebsite.id) : runs;
   const visibleRuns = latestSuccessfulKeywordRuns(
@@ -743,7 +764,20 @@ export default function KeywordReports() {
   const blockedQueuedChecks = queuedKeywords.flatMap((item) => item.locationNames
     .map((location) => ({ keyword: item.keyword, location, reason: exactResearchMarketIssue(location) }))
     .filter((check): check is { keyword: string; location: string; reason: string } => Boolean(check.reason)));
-  const runnableQueuedCheckCount = Math.max(0, queuedCheckCount - blockedQueuedChecks.length);
+  const availableBatchChecks = queuedKeywords.flatMap((item) => item.locationNames.filter((location) => !exactResearchMarketIssue(location)).map((locationName) => ({ seedKeyword: item.keyword, locationName, languageCode: item.languageCode, device: item.device, targetUrl: item.targetUrl || null, targetDomain: item.targetDomain || null })));
+  const selectedBatchChecks = selectKeywordResearchChecks(availableBatchChecks, selectedCheckIds);
+  const checkIdentity = (check: { seedKeyword: string; locationName: string; languageCode: string; device: string }) => keywordResearchRequestIdentity({ keyword: check.seedKeyword, location: check.locationName, languageCode: check.languageCode, device: check.device });
+  const selectedBatchIdentities = selectedBatchChecks.map(checkIdentity);
+  const runnableQueuedCheckCount = selectedBatchChecks.length;
+  const selectionOverLimit = runnableQueuedCheckCount > KEYWORD_RESEARCH_MAX_SELECTED_CHECKS;
+  const toggleBatchCheck = (identity: string) => {
+    if (selectedBatchIdentities.includes(identity)) setSelectedCheckIds(selectedBatchIdentities.filter((id) => id !== identity));
+    else if (runnableQueuedCheckCount >= KEYWORD_RESEARCH_MAX_SELECTED_CHECKS) {
+      const attempted = availableBatchChecks.find((check) => checkIdentity(check) === identity);
+      if (attempted) void confirmKeywordResearch([...selectedBatchChecks, attempted]);
+    }
+    else setSelectedCheckIds([...selectedBatchIdentities, identity]);
+  };
   const blockedMarketIssues = [...new Map(blockedQueuedChecks.map((check) => [check.location.toLocaleLowerCase(), check])).values()];
   const analyzedSeedCount = new Set(projectRuns.map((run) => run.seedKeyword.trim().toLowerCase())).size;
   const reportKeywordOptions = [...new Map(visibleRuns.map((run) => [run.seedKeyword.trim().toLowerCase(), run.seedKeyword.trim()])).values()].sort((a, b) => a.localeCompare(b));
@@ -859,6 +893,11 @@ export default function KeywordReports() {
         {showAddKeyword && (
           <div className="border-b border-charcoal-100 bg-white">
             <form onSubmit={createRun} className="space-y-4 p-5">
+              <div className="space-y-3 rounded-xl border-2 border-amber-300 bg-amber-50 p-4" role="note">
+                <p className="text-base font-bold leading-6 text-amber-950">Each selected or added targeted location will automatically create keyword checks for that location.</p>
+                <p className="rounded-lg bg-amber-100 px-3 py-2 text-base font-black text-amber-950">100 keywords maximum per run, counting each targeted location separately.</p>
+                <p className="text-sm leading-6 text-amber-900">Example: 20 keywords × 5 locations = 100 keyword-location checks. Review the estimated AI credit consumption in the confirmation popup before starting.</p>
+              </div>
               <div className="grid grid-cols-1 overflow-hidden rounded-xl border border-slate-200 bg-slate-50 text-sm sm:grid-cols-3">
                 <div className={`px-4 py-3 font-semibold ${keywordStep === "select" ? "bg-brand-600 text-white" : "text-slate-500"}`}>
                   <span className="mr-2">1</span>Select or add keywords
@@ -1063,19 +1102,27 @@ export default function KeywordReports() {
               </>}
 
               {keywordStep === "review" && <>
+              <div className="rounded-xl border border-blue-200 bg-blue-50 p-4" role="status">
+                <h3 className="font-bold text-blue-950">{runnableQueuedCheckCount} / {KEYWORD_RESEARCH_MAX_SELECTED_CHECKS} checks selected for this run</h3>
+                <p className="mt-2 text-sm leading-6 text-blue-900">One keyword researched in one location is one check. When all keywords use the same locations: <b>keywords × locations = checks</b>. For example, <b>20 keywords × 5 locations = 100 checks</b>; 50 keywords × 2 locations also equals 100.</p>
+                <p className="mt-2 text-sm leading-6 text-blue-900">Your selection contains <b>{new Set(selectedBatchChecks.map((check) => normalizeKeywordPhrase(check.seedKeyword))).size} keywords</b> across <b>{new Set(selectedBatchChecks.map((check) => check.locationName)).size} locations</b>, totaling <b>{runnableQueuedCheckCount} exact checks</b>. A keyword that names a location only uses matching locations. Completed checks are excluded from the remaining-analysis queue.</p>
+                <p className="mt-2 text-sm leading-6 text-blue-900"><b>AI credits:</b> Each new keyword-location check uses AI credits, and each batch containing new checks has a base credit charge. Country checks and local checks have different credit costs. <b>The 100-check limit is not a 100-credit allowance.</b> Researching the same keyword in five locations counts as five checks. Splitting new checks into multiple batches adds a base charge for each batch.</p>
+                <p className="mt-2 text-xs leading-5 text-blue-800">Select up to 100 checks below. Up to the first 100 available checks are selected initially. Unselected checks stay in your project for another run; deselecting a check does not delete its keyword.</p>
+                <div className="mt-3 flex gap-3"><button type="button" disabled={creating} onClick={() => setSelectedCheckIds(null)} className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-bold text-blue-900">Select first 100 checks</button><button type="button" disabled={creating} onClick={() => setSelectedCheckIds([])} className="rounded-lg border border-blue-300 bg-white px-3 py-2 text-xs font-bold text-blue-900">Clear selection</button></div>
+              </div>
               {retryMode && <div className="flex flex-col gap-3 rounded-xl border border-rose-200 bg-gradient-to-r from-rose-50 via-white to-amber-50 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <div className="text-sm font-black text-rose-950">Failed-check retry queue ready</div>
                   <p className="mt-1 text-xs leading-5 text-rose-800">{queuedCheckCount} exact keyword-location check{queuedCheckCount === 1 ? " is" : "s are"} ready. Completed research will not be rerun.</p>
                 </div>
-                <Button type="submit" disabled={creating || queuedCheckCount === 0}>{creating ? "Retrying…" : `Retry ${queuedCheckCount} failed check${queuedCheckCount === 1 ? "" : "s"}`}</Button>
+                <Button type="submit" disabled={creating || runnableQueuedCheckCount === 0 || selectionOverLimit}>{creating ? "Retrying…" : `Retry ${runnableQueuedCheckCount} selected check${runnableQueuedCheckCount === 1 ? "" : "s"}`}</Button>
               </div>}
               {!retryMode && searchParams.get("remaining") === "1" && <div className="flex flex-col gap-3 rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4 sm:flex-row sm:items-center sm:justify-between">
                 <div>
                   <div className="text-sm font-black text-charcoal-950">{selectedTargetMarkets.length === 0 ? "Choose target areas to calculate the analysis" : targetMarketsDirty ? "Save the selected target areas" : blockedQueuedChecks.length ? "Some analysis locations need correction" : "Remaining analysis queue ready"}</div>
                   <p className="mt-1 text-xs leading-5 text-charcoal-700">{selectedTargetMarkets.length === 0 ? `${queuedKeywords.length} approved keyword${queuedKeywords.length === 1 ? " is" : "s are"} preserved. Add one or more exact cities, regions, or countries below; the required check total will be calculated after you save.` : targetMarketsDirty ? `Save the selected project markets below to recalculate the exact checks for all ${queuedKeywords.length} approved keywords.` : blockedQueuedChecks.length ? `${runnableQueuedCheckCount} valid check${runnableQueuedCheckCount === 1 ? " is" : "s are"} ready. ${blockedQueuedChecks.length} check${blockedQueuedChecks.length === 1 ? " is" : "s are"} blocked by an unsupported location and will be skipped.` : `${queuedCheckCount} keyword-location check${queuedCheckCount === 1 ? " is" : "s are"} ready across ${queuedKeywords.length} approved keyword${queuedKeywords.length === 1 ? "" : "s"}. Review the markets below, then start the missing analysis. Completed research will not be rerun.`}</p>
                 </div>
-                {selectedTargetMarkets.length > 0 && !targetMarketsDirty && <Button type="submit" disabled={creating || runnableQueuedCheckCount === 0}>{creating ? "Starting…" : runnableQueuedCheckCount ? `Start ${runnableQueuedCheckCount} valid check${runnableQueuedCheckCount === 1 ? "" : "s"}` : "Correct blocked location"}</Button>}
+                {selectedTargetMarkets.length > 0 && !targetMarketsDirty && <Button type="submit" disabled={creating || runnableQueuedCheckCount === 0 || selectionOverLimit}>{creating ? "Starting…" : runnableQueuedCheckCount ? `Start ${runnableQueuedCheckCount} valid check${runnableQueuedCheckCount === 1 ? "" : "s"}` : "Correct blocked location"}</Button>}
               </div>}
               {guidedProject && <div className="rounded-xl border border-brand-200 bg-gradient-to-r from-brand-50 via-white to-emerald-50 p-4">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1126,12 +1173,18 @@ export default function KeywordReports() {
                     {queuedKeywords.map((item) => (
                       <div key={item.id} className="flex w-full items-start justify-between gap-3 rounded-lg border border-emerald-100 bg-emerald-50 px-3 py-2 text-left">
                         <span className="min-w-0">
-                          <span className="block text-sm font-bold text-emerald-900">{item.keyword}</span>
+                          <span className="block text-sm font-bold text-emerald-900">{item.keyword}</span><span className="block text-xs text-emerald-800">Strategic Supporting Topic — seed awaiting provider research</span>
                           <span className="mt-0.5 block text-xs leading-5 text-emerald-700">
                             {item.locationNames.length ? item.locationNames.join(" | ") : "Waiting for target area selection"} · {item.languageCode} · {item.device} · top {item.serpDepth}
                             {item.targetUrl ? ` · URL: ${item.targetUrl}` : ""}
                             {item.targetDomain ? ` · Domain: ${item.targetDomain}` : ""}
                           </span>
+                          <span className="mt-2 flex flex-wrap gap-2">{item.locationNames.map((location) => {
+                            const identity = checkIdentity({ seedKeyword: item.keyword, locationName: location, languageCode: item.languageCode, device: item.device });
+                            const selected = selectedBatchIdentities.includes(identity);
+                            const blocked = Boolean(exactResearchMarketIssue(location));
+                            return <label key={location} className="flex items-center gap-2 rounded border border-emerald-200 bg-white px-2 py-1 text-xs text-emerald-950"><input type="checkbox" checked={selected} disabled={creating || blocked} onChange={() => toggleBatchCheck(identity)} aria-label={`Research ${item.keyword} in ${location}`} />{location} · 1 check</label>;
+                          })}</span>
                         </span>
                         <button type="button" onClick={() => void removeQueuedKeyword(item)} className="shrink-0 rounded-md px-2 py-1 text-xs font-black text-rose-700 hover:bg-rose-50" aria-label={`Delete ${item.keyword} before analysis`}>Delete keyword</button>
                       </div>
@@ -1155,7 +1208,7 @@ export default function KeywordReports() {
                   <div className="flex-1 rounded-xl border border-brand-100 bg-brand-50 px-4 py-3 text-sm text-brand-900">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <div className="font-semibold">Keyword intelligence is running</div>
+                        <div className="font-semibold">{researchConfirmation ? "Review AI consumption" : "Preparing keyword research"}</div>
                         <div className="mt-0.5 text-xs text-brand-800">Fetching search demand, SERP competitors, and ranking visibility. This can take a moment.</div>
                       </div>
                       <div className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-600" />
@@ -1167,7 +1220,7 @@ export default function KeywordReports() {
                 ) : (
                   <Button type="button" variant="ghost" onClick={() => setKeywordStep("select")}>Go back</Button>
                 )}
-                <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0 || runnableQueuedCheckCount === 0 || targetMarketsDirty}>
+                <Button type="submit" disabled={creating || (!websiteId && !guidedProject) || queuedKeywords.length === 0 || runnableQueuedCheckCount === 0 || selectionOverLimit || targetMarketsDirty}>
                   {creating ? "Running..." : selectedTargetMarkets.length === 0 ? "Choose target areas first" : targetMarketsDirty ? "Save target areas first" : runnableQueuedCheckCount ? `Start keyword analysis (${runnableQueuedCheckCount} valid checks)` : blockedQueuedChecks.length ? "Correct blocked location" : "Start keyword analysis"}
                 </Button>
               </div>
@@ -1233,6 +1286,7 @@ export default function KeywordReports() {
           </div>
         ))}
       </Card>
+      {researchConfirmation && <KeywordResearchConfirmModal estimate={researchConfirmation.estimate} error={researchConfirmation.error} onCancel={() => closeResearchConfirmation(false)} onConfirm={() => closeResearchConfirmation(true)} />}
     </div>
   );
 }

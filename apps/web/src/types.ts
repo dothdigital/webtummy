@@ -999,6 +999,14 @@ export interface HealthReport {
 }
 
 export interface KeywordIdea {
+  classification?: string;
+  intent?: string;
+  relevance?: string;
+  recommendedUse?: string;
+  growthOpportunity?: number | null;
+  currentRanking?: number | null;
+  trend?: Array<{ year: number; month: number; search_volume: number }> | null;
+  evidence?: { provider: string | null; market: string | null; language: string | null; checkedAt: string | null; sourceFetchedAt?: string | null; difficultyMarket?: string | null; gsc?: unknown };
   id: string;
   keyword: string;
   avgMonthlySearches: number | null;

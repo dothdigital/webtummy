@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { displaySearchProviderLocation, keywordIdeaRelevance, matchSearchProviderLocation, parseKeywordIdea, resolveExactSearchLocation, resolveSearchLocation, retryableSearchProviderError } from "./routes/keyword-research.js";
+import { providerRetryDelay, displaySearchProviderLocation, keywordIdeaRelevance, matchSearchProviderLocation, parseKeywordIdea, resolveExactSearchLocation, resolveSearchLocation, retryableSearchProviderError } from "./routes/keyword-research.js";
 
 describe("keyword provider resilience", () => {
   it("retries transient provider and network failures", () => {
@@ -83,4 +83,15 @@ describe("keyword metric normalization", () => {
     await expect(resolveExactSearchLocation("nearby neighbourhoods, Canada")).rejects.toThrow(/unambiguous provider location/i);
     await expect(resolveExactSearchLocation("surrounding areas")).rejects.toThrow(/unambiguous provider location/i);
   });
+});
+
+it("rejects blank, negative and fractional volumes while preserving an explicit provider zero", () => {
+  for (const value of ["", " ", -1, 1.5]) expect(parseKeywordIdea({ keyword: "roof repair", search_volume: value })?.avgMonthlySearches).toBeNull();
+  expect(parseKeywordIdea({ keyword: "roof repair", search_volume: 0 })?.avgMonthlySearches).toBe(0);
+});
+
+it("recognizes the provider's plural rates-limit error and waits for its minute window", () => {
+  const message = "The rates limit per minute has been exceeded: 12 >= 12.";
+  expect(retryableSearchProviderError(message)).toBe(true);
+  expect(providerRetryDelay(message, 1)).toBeGreaterThanOrEqual(60000);
 });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  selectKeywordResearchChecks,
   approvedKeywordEntries,
   clusterKeywordDirections,
   expectedApprovedKeywordResearchChecks,
@@ -56,6 +57,27 @@ describe("shared keyword normalization", () => {
     ];
     expect(unresolvedApprovedKeywordResearchChecks(groups, runs)).toEqual([]);
     expect(missingApprovedKeywordResearch(groups, runs)).toEqual([]);
+  });
+
+  it("clears legacy failures when retries use canonical market labels and defaults", () => {
+    const groups = [{ status: "approved", keywords: ["physiotherapy clinic"] }];
+    const runs = [
+      { id: "old", status: "failed", seedKeyword: "physiotherapy clinic", locationName: "Milton", createdAt: "2026-08-04T10:00:00Z" },
+      { id: "retry", status: "completed", seedKeyword: "physiotherapy clinic", locationName: "Milton, Ontario, Canada", languageCode: "en", device: "desktop", createdAt: "2026-08-04T11:00:00Z" },
+    ];
+    expect(unresolvedApprovedKeywordResearchChecks(groups, runs)).toEqual([]);
+    expect(missingApprovedKeywordResearch(groups, runs, ["Milton, Ontario, Canada"])).toEqual([]);
+  });
+
+  it("does not block the selected markets with failures from a removed market", () => {
+    const groups = [{ status: "approved", keywords: ["physiotherapy clinic"] }];
+    const runs = [
+      { id: "old", status: "failed", seedKeyword: "physiotherapy clinic", locationName: "Milton" },
+      { id: "current", status: "completed", seedKeyword: "physiotherapy clinic", locationName: "Toronto" },
+    ];
+    expect(unresolvedApprovedKeywordResearchChecks(groups, runs, ["Toronto"])).toEqual([]);
+    expect(unresolvedApprovedKeywordResearchChecks(groups, runs, ["Milton"]).map((run) => run.id)).toEqual(["old"]);
+    expect(incompleteApprovedKeywordResearchChecks(groups, runs, ["Toronto"])).toEqual([]);
   });
 
   it("keeps every approved keyword in the required analysis denominator", () => {
@@ -225,5 +247,28 @@ describe("shared keyword normalization", () => {
       keyword: "super visa insurance",
       location: "Brampton",
     }));
+  });
+});
+
+
+describe("selecting keyword-location checks", () => {
+  const checks = Array.from({ length: 21 }, (_, keyword) => Array.from({ length: 5 }, (_, location) => ({ seedKeyword: `service ${keyword}`, locationName: `City ${location}`, languageCode: "en", device: "desktop" }))).flat();
+  const identity = (check: typeof checks[number]) => keywordResearchRequestIdentity({ keyword: check.seedKeyword, location: check.locationName, languageCode: check.languageCode, device: check.device });
+  it("counts twenty keywords across five locations as one hundred checks", () => {
+    const selected = selectKeywordResearchChecks(checks);
+    expect(selected).toHaveLength(100);
+    expect(new Set(selected.map((check) => check.seedKeyword)).size).toBe(20);
+    expect(checks).toHaveLength(105);
+  });
+  it("allows an explicit subset of locations and preserves a cleared selection", () => {
+    const ids = [identity(checks[0]), identity(checks[104])];
+    expect(selectKeywordResearchChecks(checks, ids)).toEqual([checks[0], checks[104]]);
+    expect(selectKeywordResearchChecks(checks, [])).toEqual([]);
+  });
+  it("does not count a duplicate keyword-location check twice", () => {
+    expect(selectKeywordResearchChecks([checks[0], checks[0]])).toHaveLength(1);
+  });
+  it("does not replace selected checks with new checks when the available queue changes", () => {
+    expect(selectKeywordResearchChecks(checks.slice(1), [identity(checks[0])])).toEqual([]);
   });
 });

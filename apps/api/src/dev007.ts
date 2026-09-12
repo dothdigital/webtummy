@@ -34,11 +34,6 @@ const splitOfferTopics = (value: string) => value.split(/[,;|\n\r]+/).filter((pa
   const compound = normalized.split(/\s+and\s+/i).map(canonicalServiceTopic).filter(Boolean);
   return compound.length === 2 && compound.every((item) => item.split(/\s+/).length >= 2) ? compound : [normalized];
 }).filter(Boolean);
-const shortAudience = (value: string) => {
-  const first = value.split(/[,;|]/)[0]?.split(/\b(?:who|that|plus)\b/i)[0]?.trim() || "customers";
-  const commonAudience = first.match(/\b(homeowners?|buyers?|sellers?|agencies|agents?|business owners?|consumers?|customers?|patients?|students?|professionals?)\b/i)?.[0];
-  return commonAudience || first.split(/\s+/).slice(0, 6).join(" ");
-};
 const isInstruction = (value: string) => /^(find|explore|create|suggest|expand|generate)\b/i.test(value) && /\b(keywords?|topics?|ideas?)\b/i.test(value) && value.split(/\s+/).length > 6;
 const unique = (values: string[], limit = 10) => [...new Map(splitKeywordEntries(values).map((value) => [value.toLowerCase(), value])).values()].filter((value) => value.length >= 3 && !isInstruction(value)).slice(0, limit);
 
@@ -65,28 +60,6 @@ function customerFacingTopics(project: KeywordProjectInput, extraTopic?: string 
   return validTopics(project.niche);
 }
 
-const pluralTopic = (topic: string) => /\b(?:accounts|benefits|options|products|services|solutions)$/.test(topic);
-const informationalKeywords = (topic: string) => [
-  `${pluralTopic(topic) ? "how do" : "how does"} ${topic} work`,
-  `${topic} guide`,
-  `${topic} benefits`,
-];
-const buyerKeywords = (topic: string) => {
-  if (/\binsurance\b/.test(topic)) return [`${topic} quotes`, `${topic} broker`, `${topic} advisor`, `compare ${topic} options`];
-  if (/\b(?:financial planning|investment|rrsp|tfsa|fhsa)\b/.test(topic)) return [`${topic} services`, `${topic} advisor`, `best ${topic} advisor`, `${topic} consultation`];
-  return [`best ${topic}`, `${topic} services`, `${topic} company`, `${topic} cost`];
-};
-const supportingKeywords = (topic: string) => {
-  if (/\binsurance\b/.test(topic)) return [`${topic} options`, `${topic} coverage`, `${topic} eligibility`, `${topic} comparison`];
-  if (/\b(?:financial planning|investment|rrsp|tfsa|fhsa)\b/.test(topic)) return [`${topic} options`, `${topic} fees`, `${topic} process`, `${topic} comparison`];
-  return [`${topic} options`, `${topic} process`, `${topic} requirements`, `${topic} comparison`];
-};
-const questionKeywords = (topic: string) => [
-  `${pluralTopic(topic) ? "what are" : "what is"} ${topic}`,
-  pluralTopic(topic) ? `${topic} fees` : `how much does ${topic} cost`,
-  `what to look for in ${topic}`,
-];
-
 export function keywordIntakeSufficient(project: KeywordProjectInput) {
   return customerFacingTopics(project).length > 0;
 }
@@ -97,41 +70,12 @@ export function buildKeywordGroups(project: KeywordProjectInput, extraTopic?: st
   // page owners unless the user approves them and runs Keyword Analysis.
   const offerTerms = customerFacingTopics(project, extraTopic).map((item) => item.toLowerCase());
   if (!offerTerms.length) return [];
-  const audience = clean(project.businessProfile?.targetAudience) || "customers";
-  const audienceTerm = shortAudience(audience).toLowerCase();
-  const markets = list(project.targetLocations);
-  const locations = unique([...markets, clean(project.businessLocation)].filter(Boolean));
-  const goal = clean(project.primaryGoal) || "business growth";
-  const secondaryGoals = list(project.secondaryGoals);
-  const competitors = list(project.competitors);
-  const businessType = clean(project.projectType);
-  const topics = offerTerms;
-  const topic = topics[0];
-  const softwareLike = /\b(?:software|platform|app|application|saas|marketplace|portal|tool)\b/i.test(topic);
-  const rows: Record<string, string[]> = {
-    primary: unique([...topics, ...(softwareLike ? [`${topic} platform`] : [])], 20),
-    buyer_intent: unique(softwareLike
-      ? [`best ${topic}`, `${topic} pricing`, `${topic} demo`, `${topic} reviews`, `${topic} for ${audienceTerm}`, `compare ${topic}`]
-      : topics.flatMap(buyerKeywords)).slice(0, 10),
-    // Fill the limited local group with balanced service/market pairs before
-    // adding modifier variants. Topic-major ordering used to exhaust the
-    // 10-keyword cap halfway through a market pair (for example, RMT in
-    // Mississauga with no corresponding Brampton direction).
-    local: unique([
-      ...topics.flatMap((item) => locations.map((location) => `${item} ${location}`)),
-      ...topics.flatMap((item) => locations.map((location) => `${item} near me ${location}`)),
-    ]),
-    informational: unique(topics.flatMap(informationalKeywords)),
-    supporting: softwareLike ? [`${topic} features`, `${topic} solutions`, `${topic} examples`, `${topic} alternatives`, ...competitors.map((competitor) => `${topic} vs ${competitor}`)] : unique([...topics.flatMap(supportingKeywords), ...secondaryGoals.flatMap((secondaryGoal) => topics.map((item) => `${item} ${secondaryGoal.toLowerCase()}`)), ...competitors.flatMap((competitor) => topics.map((item) => `${item} vs ${competitor}`)), businessType ? `${businessType.replaceAll("_", " ")} ${topic}` : ""]),
-    questions: unique(topics.flatMap(questionKeywords)),
-    long_tail: unique(topics.flatMap((item) => [`${item} for ${audienceTerm}`, locations[0] ? `best ${item} in ${locations[0]}` : "", `how to choose ${item} provider`])),
-  };
-  return KEYWORD_GROUP_DEFINITIONS.map(([category, title]) => ({
-    category, title, keywords: unique(rows[category], category === "primary" ? 20 : 10),
-    explanation: `${title} are recommended from the confirmed intake products/services, audience, and target markets.`,
-    expectedValue: category === "buyer_intent" ? "Prioritizes searches closest to a purchase or enquiry." : category === "local" ? "Connects the offer to the markets where customers are being targeted." : "Builds relevant search coverage around the project direction.",
-    goalSupport: `Supports the primary goal: ${goal}.`,
-  })).filter((group) => group.keywords.length > 0);
+  return [{
+    category: "primary", title: "Primary Keywords", keywords: unique(offerTerms, 20),
+    explanation: "Strategic Supporting Topics — intake seeds for provider research, not verified search-demand keywords.",
+    expectedValue: "Research these topics in the selected markets before using demand to prioritize them.",
+    goalSupport: `Supports the primary goal: ${clean(project.primaryGoal) || "business growth"}.`,
+  }];
 }
 
 export function normalizeKeywordList(value: unknown) {

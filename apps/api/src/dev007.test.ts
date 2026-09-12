@@ -4,25 +4,13 @@ import { buildKeywordGroups, isCustomerSearchKeyword, keywordIntakeSufficient, n
 describe("DEV-007 Keyword Intelligence", () => {
   const project = { name: "Acme SEO", niche: "Roofing", primaryGoal: "Generate More Leads", businessLocation: "Toronto", targetLocations: ["Toronto", "Mississauga"], businessProfile: { offerSummary: "Roof repair", targetAudience: "Homeowners" }, opportunities: [{ status: "selected", name: "Local lead growth" }] };
   it("uses intake rather than requiring a manual seed", () => expect(keywordIntakeSufficient(project)).toBe(true));
-  it("creates distinct standard groups with local markets and goal explanations", () => {
+  it("returns intake seeds without manufacturing service-location or audience combinations", () => {
     const groups = buildKeywordGroups(project);
-    expect(new Set(groups.map((group) => group.category)).size).toBe(7);
-    expect(groups.find((group) => group.category === "local")?.keywords).toContain("roof repair Toronto");
+    expect(groups).toHaveLength(1);
+    expect(groups[0].keywords).toContain("roof repair");
+    expect(groups[0].keywords.some(keyword => /Toronto|near me|best|pricing/.test(keyword))).toBe(false);
+    expect(groups[0].explanation).toContain("Strategic Supporting Topics");
     expect(groups[0].goalSupport).toContain("Generate More Leads");
-  });
-  it("keeps local service directions balanced across markets before adding near-me variants", () => {
-    const groups = buildKeywordGroups({
-      ...project,
-      businessLocation: "Mississauga",
-      targetLocations: ["Mississauga", "Brampton"],
-      businessProfile: { offerSummary: "Physiotherapy, Massage therapy, RMT services", targetAudience: "Local patients" },
-    });
-    const local = groups.find((group) => group.category === "local")?.keywords ?? [];
-    expect(local).toEqual(expect.arrayContaining([
-      "physiotherapy Mississauga", "physiotherapy Brampton",
-      "massage therapy Mississauga", "massage therapy Brampton",
-      "rmt services Mississauga", "rmt services Brampton",
-    ]));
   });
   it("suggests comma-separated niche terms individually only when intake has no offer", () => {
     const groups = buildKeywordGroups({ ...project, niche: "Insurtech, Insurance CRM", businessProfile: { offerSummary: null, targetAudience: "Insurance agencies" }, opportunities: [] });
@@ -38,7 +26,7 @@ describe("DEV-007 Keyword Intelligence", () => {
     const buyerIntent = groups.find((group) => group.category === "buyer_intent")?.keywords ?? [];
     expect(primary).toContain("self-serve homeowner auction software");
     expect(primary.join(" ")).not.toContain("per-listing fee");
-    expect(buyerIntent).toContain("self-serve homeowner auction software pricing");
+    expect(buyerIntent).toEqual([]);
     expect(buyerIntent.join(" ")).not.toContain("hire self-serve homeowner auction software expert");
   });
   it("keeps the confirmed intake offer authoritative over niche and AI direction text", () => {
@@ -65,7 +53,7 @@ describe("DEV-007 Keyword Intelligence", () => {
     });
     const keywords = groups.flatMap((group) => group.keywords);
     expect(groups.find((group) => group.category === "primary")?.keywords).toEqual(["insurance", "financial planning", "registered investment products"]);
-    expect(groups.find((group) => group.category === "buyer_intent")?.keywords).toEqual(expect.arrayContaining(["insurance quotes", "insurance broker", "financial planning advisor"]));
+    expect(groups.find((group) => group.category === "buyer_intent")).toBeUndefined();
     expect(keywords.some((keyword) => /build a|lead-generation website|hire insurance|buy insurance|insurance pricing/.test(keyword))).toBe(false);
     expect(isCustomerSearchKeyword("Build a trustworthy insurance brand and lead-generation website")).toBe(false);
   });

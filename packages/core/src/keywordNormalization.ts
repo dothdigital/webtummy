@@ -160,26 +160,15 @@ export function approvedKeywordEntries(groups: KeywordGroupEvidenceInput[]): str
 export function unresolvedApprovedKeywordResearchChecks(
   groups: KeywordGroupEvidenceInput[],
   runs: KeywordResearchEvidenceInput[],
+  locations: string[] = [],
 ): KeywordResearchEvidenceInput[] {
   const approved = new Set(approvedKeywordEntries(groups).map(normalizeKeywordPhrase));
-  const latest = [...runs]
-    .filter((run) => approved.has(normalizeKeywordPhrase(run.seedKeyword ?? "")))
-    .sort((left, right) => {
-      const leftTime = left.createdAt ? new Date(left.createdAt).getTime() : 0;
-      const rightTime = right.createdAt ? new Date(right.createdAt).getTime() : 0;
-      return rightTime - leftTime;
-    })
-    .reduce((checks, run) => {
-      const identity = [
-        normalizeKeywordPhrase(run.seedKeyword ?? ""),
-        normalizeKeywordPhrase(run.locationName ?? ""),
-        (run.languageCode ?? "").trim().toLowerCase(),
-        (run.device ?? "").trim().toLowerCase(),
-      ].join("::");
-      if (!checks.has(identity)) checks.set(identity, run);
-      return checks;
-    }, new Map<string, KeywordResearchEvidenceInput>());
-  return [...latest.values()].filter((run) => ["failed", "cancelled", "canceled"].includes((run.status ?? "").toLowerCase()));
+  const required = locations.length ? new Set(expectedApprovedKeywordResearchChecks(groups, locations).map((check) => check.identity)) : null;
+  return [...latestKeywordResearchChecks(runs).entries()]
+    .filter(([identity, run]) => approved.has(normalizeKeywordPhrase(run.seedKeyword ?? ""))
+      && (!required || required.has(identity))
+      && ["failed", "cancelled", "canceled"].includes((run.status ?? "").toLowerCase()))
+    .map(([, run]) => run);
 }
 
 /** Returns approved keywords that do not yet have complete governed analysis. */
@@ -484,4 +473,16 @@ export function keywordResearchRequestIdentity(input: {
     normalizeKeywordPhrase(input.languageCode ?? "en"),
     normalizeKeywordPhrase(input.device ?? "desktop"),
   ].join("|");
+}
+
+
+export const KEYWORD_RESEARCH_MAX_SELECTED_CHECKS = 100;
+export const KEYWORD_RESEARCH_SELECTION_LIMIT_MESSAGE = "Select up to 100 keyword-location checks per run. Each keyword in each location counts as one check: 20 keywords × 5 locations = 100 checks. Run remaining checks in another batch.";
+
+/** Deduplicate exact checks, then default to the first batch or preserve explicit selection. */
+export function selectKeywordResearchChecks<T extends { seedKeyword: string; locationName: string; languageCode?: string; device?: string }>(checks: T[], selectedIdentities: readonly string[] | null = null): T[] {
+  const unique = [...new Map(checks.map((check) => [keywordResearchRequestIdentity({ keyword: check.seedKeyword, location: check.locationName, languageCode: check.languageCode, device: check.device }), check])).entries()];
+  if (selectedIdentities === null) return unique.slice(0, KEYWORD_RESEARCH_MAX_SELECTED_CHECKS).map(([, check]) => check);
+  const selected = new Set(selectedIdentities);
+  return unique.filter(([identity]) => selected.has(identity)).map(([, check]) => check);
 }

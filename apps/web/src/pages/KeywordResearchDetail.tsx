@@ -1,3 +1,4 @@
+import KeywordEvidenceTable from "../components/KeywordEvidenceTable.js";
 import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
@@ -7,7 +8,7 @@ import { ActionIconButton, Button, Card, StatusPill } from "../components/ui.js"
 import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function formatNumber(value: number | null | undefined): string {
-  return value == null ? "Data unavailable" : new Intl.NumberFormat().format(value);
+  return value == null ? "No verified data" : new Intl.NumberFormat().format(value);
 }
 
 function formatShortDate(value: string | null | undefined): string {
@@ -53,12 +54,12 @@ function NoWebsiteKeywordReport({ run, projectId, backUrl, refreshing, onRefresh
     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
       <StatCard label="Keyword opportunities" value={run.keywordCount} detail="Related demand discovered" />
       <StatCard label="Average search volume" value={formatNumber(run.averageVolume)} detail={run.locationName} />
-      <StatCard label="Average CPC" value={averageCpc == null ? "Data unavailable" : `$${averageCpc.toFixed(2)}`} detail="Commercial value signal" />
-      <StatCard label="Competition index" value={competitionIndex ?? "Data unavailable"} detail={`${run.competitorCount} SERP competitors reviewed`} />
+      <StatCard label="Organic SERP competitors" value={run.competitorCount} detail="Pages observed in Google" />
+      <StatCard label="Organic difficulty" value={competitionIndex ?? "Data unavailable"} detail={`${run.competitorCount} SERP competitors reviewed`} />
     </div>
 
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1.25fr)_minmax(320px,0.75fr)]">
-      <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><h2 className="font-bold text-charcoal-900">Highest-demand keyword opportunities</h2><p className="mt-1 text-sm text-charcoal-500">Use these as evidence for keyword grouping and page planning—not as automatic one-page-per-keyword instructions.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[680px] text-sm"><thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400"><tr><th className="px-5 py-2">Keyword</th><th className="px-5 py-2">Volume</th><th className="px-5 py-2">Competition</th><th className="px-5 py-2">CPC</th></tr></thead><tbody>{ideas.slice(0, 10).map((idea) => <tr key={idea.id} className="border-t border-charcoal-100"><td className="px-5 py-3 font-semibold text-charcoal-800">{idea.keyword}</td><td className="px-5 py-3 text-charcoal-600">{formatNumber(idea.avgMonthlySearches)}</td><td className="px-5 py-3 text-charcoal-600">{idea.competition ?? idea.competitionIndex ?? "-"}</td><td className="px-5 py-3 text-charcoal-600">{money(idea.cpc, idea.currency)}</td></tr>)}</tbody></table></div></Card>
+      <Card className="overflow-hidden"><div className="border-b border-charcoal-100 px-5 py-4"><h2 className="font-bold text-charcoal-900">Keyword evidence and supporting topics</h2><p className="mt-1 text-sm text-charcoal-500">Use these as evidence for keyword grouping and page planning—not as automatic one-page-per-keyword instructions.</p></div><KeywordEvidenceTable ideas={ideas.slice(0, 10)} /></Card>
       <div className="space-y-5">
         <Card className="p-5"><div className="text-xs font-bold uppercase tracking-wide text-violet-700">SERP benchmarks</div><h2 className="mt-2 font-bold text-charcoal-900">Pages currently winning</h2><p className="mt-1 text-sm text-charcoal-500">These competitors inform the future page format, depth, proof and content requirements.</p><div className="mt-4 space-y-3">{competitors.slice(0, 5).map((competitor) => <a key={competitor.id} href={competitor.url} target="_blank" rel="noreferrer" className="block rounded-lg border border-charcoal-100 p-3 hover:border-brand-200 hover:bg-brand-50"><div className="text-xs font-bold text-brand-700">#{competitor.rank} · {competitor.domain}</div><div className="mt-1 line-clamp-2 text-sm font-semibold text-charcoal-800">{competitor.title || competitor.url}</div></a>)}</div></Card>
       </div>
@@ -1071,35 +1072,10 @@ export default function KeywordResearchDetail() {
       {tab === "keywords" && <Card className="overflow-hidden">
         <div className="border-b border-charcoal-100 px-5 py-3">
           <div className="font-semibold text-charcoal-700">Keyword research analytics</div>
-          <div className="mt-0.5 text-xs text-charcoal-400">Demand, CPC, competition, and bid range.</div>
+          <div className="mt-0.5 text-xs text-charcoal-400">Verified organic demand, intent, relevance and opportunity. Paid metrics are optional details.</div>
           {focusedIdea && <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 rounded-lg border border-brand-200 bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-800"><span>Selected keyword: {focusedIdea.keyword}</span><span>Market: {run.locationName}</span><span>Parent analysis: {run.seedKeyword}</span></div>}
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full min-w-[900px] text-sm">
-            <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
-              <tr>
-                <th className="px-5 py-2">Keyword</th>
-                <th className="px-5 py-2">Volume</th>
-                <th className="px-5 py-2">Competition</th>
-                <th className="px-5 py-2">Index</th>
-                <th className="px-5 py-2">CPC</th>
-                <th className="px-5 py-2">Bid range</th>
-              </tr>
-            </thead>
-            <tbody>
-              {ideas.map((idea) => (
-                <tr key={idea.id} className={`border-t border-charcoal-50 ${focusedIdea?.id === idea.id ? "bg-brand-50 ring-1 ring-inset ring-brand-200" : ""}`}>
-                  <td className="px-5 py-3 font-medium text-charcoal-800">{idea.keyword}</td>
-                  <td className="px-5 py-3 text-charcoal-600">{formatNumber(idea.avgMonthlySearches)}</td>
-                  <td className="px-5 py-3 text-charcoal-600">{idea.competition ?? "-"}</td>
-                  <td className="px-5 py-3 text-charcoal-600">{idea.competitionIndex ?? "-"}</td>
-                  <td className="px-5 py-3 text-charcoal-600">{money(idea.cpc, idea.currency)}</td>
-                  <td className="px-5 py-3 text-charcoal-600">{money(idea.lowTopOfPageBid, idea.currency)} - {money(idea.highTopOfPageBid, idea.currency)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <KeywordEvidenceTable ideas={ideas} />
       </Card>}
 
       {tab === "competitors" && <Card className="overflow-hidden">

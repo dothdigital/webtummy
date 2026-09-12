@@ -1,3 +1,4 @@
+import { keywordEvidenceList } from "../keyword-evidence.js";
 import { requireGrowthLaunch } from "@webtummy/db/growth-execution";
 import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router, type Request, type Response } from "express";
@@ -3003,7 +3004,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
               locationName: true,
               averageVolume: true,
               competitorCount: true,
-              ideas: { take: 100, select: { keyword: true, avgMonthlySearches: true, competitionIndex: true } },
+              ideas: { take: 100, select: { keyword: true, rawJson: true, avgMonthlySearches: true, competitionIndex: true } },
             },
           },
           opportunities: { where: { status: { in: ["selected", "confirmed", "approved"] } }, orderBy: { createdAt: "desc" }, take: 1, select: { id: true, name: true, targetAudience: true, problemSolved: true, recommendedOffer: true, businessModel: true, opportunityScore: true, seoScore: true, monetizationScore: true, executionScore: true, userFitScore: true } },
@@ -3303,8 +3304,8 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     ...(localProfile ? confirmedServiceCities.map((location) => ({ id: `local-profile-${localProfile.id}-${location.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-")}`, location, type: "approved Local SEO service-area profile", verified: true })) : []),
   ];
   const keywordSignals = task.project.keywordResearchRuns.flatMap((run) => [
-    { keyword: run.seedKeyword, location: run.locationName, searchVolume: run.averageVolume, competitionIndex: null, competitorCount: run.competitorCount },
-    ...run.ideas.map((idea) => ({ keyword: idea.keyword, location: run.locationName, searchVolume: idea.avgMonthlySearches, competitionIndex: idea.competitionIndex, competitorCount: run.competitorCount })),
+    { keyword: run.seedKeyword, classification: "Strategic Supporting Topic", location: run.locationName, searchVolume: null, competitionIndex: null, competitorCount: run.competitorCount },
+    ...keywordEvidenceList(run.ideas).map((idea) => ({ keyword: idea.keyword, classification: idea.classification, location: run.locationName, searchVolume: idea.avgMonthlySearches, competitionIndex: idea.competitionIndex, competitorCount: run.competitorCount })),
   ]);
   const keywordNormalization = await normalizeKeywordsWithAi({
     keywords: approvedKeywords,

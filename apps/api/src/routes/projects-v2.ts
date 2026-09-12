@@ -1,3 +1,5 @@
+import { keywordEvidenceList, keywordIntent } from "../keyword-evidence.js";
+import { keywordListSchema, keywordGroupUpdateSchema } from "../keyword-input.js";
 import { getWebsiteHandoffReview } from "../website-handoff-review.js";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
@@ -88,8 +90,8 @@ const createProjectSchema = z.object({
   businessDescription: z.string().max(10000).optional().nullable(),
   targetAudience: z.string().max(10000).optional().nullable(),
   productsServices: z.string().max(10000).optional().nullable(),
-  primaryKeywords: z.array(z.string().trim().min(2).max(255)).max(50).default([]),
-  secondaryKeywords: z.array(z.string().trim().min(2).max(255)).max(100).default([]),
+  primaryKeywords: keywordListSchema.default([]),
+  secondaryKeywords: keywordListSchema.default([]),
   conversationTranscript: z.array(z.object({ role: z.enum(["user", "assistant"]), text: z.string().trim().min(1).max(5000) })).max(250).default([]),
 });
 
@@ -111,7 +113,7 @@ const conversationalDraftUpdateSchema = z.object({
   targetAudience: z.string().trim().max(10000).optional(), productsServices: z.string().trim().max(10000).optional(),
   businessLocation: z.object({ country: z.string().trim().max(120), stateProvince: z.string().trim().max(120), city: z.string().trim().max(120), streetAddress: z.string().trim().max(255), postalCode: z.string().trim().max(40) }).optional(),
   targetMarkets: z.array(z.string().trim().min(1).max(180)).max(50).optional(), primaryGoal: z.string().trim().max(255).optional(), secondaryGoals: z.array(z.string().trim().min(1).max(255)).max(20).optional(),
-  primaryKeywords: z.array(z.string().trim().min(2).max(255)).max(50).optional(), secondaryKeywords: z.array(z.string().trim().min(2).max(255)).max(100).optional(),
+  primaryKeywords: keywordListSchema.optional(), secondaryKeywords: keywordListSchema.optional(),
   competitors: z.array(z.string().trim().min(1).max(512)).max(50).optional(), brandVoice: z.string().trim().max(5000).optional(), preferredOutputs: z.array(z.string().trim().max(80)).max(30).optional(), targetLaunchTimeline: z.string().trim().max(80).optional(),
   advancedIntake: z.record(z.union([z.string().trim().max(10000), z.array(z.string().trim().max(1000)).max(50)])).optional(),
   aiConversationSessionId: z.string().trim().optional(),
@@ -165,7 +167,6 @@ const keywordExpansionPreviewSchema = z.object({
   supportingOnly: z.boolean().optional().default(false),
   groupIds: z.array(z.string().trim().min(1)).max(20).optional(),
 });
-const keywordGroupUpdateSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(100), reason: z.string().trim().max(1000).optional().nullable() });
 const keywordManualSchema = z.object({ keywords: z.array(z.string().trim().min(2).max(255)).min(1).max(50), category: z.string().trim().min(2).max(60).default("supporting"), groupId: z.string().trim().min(1).optional().nullable() });
 const leadMagnetTypeSchema = z.enum(["Checklist", "Guide", "Comparison", "Buyer's Guide", "Mini eBook (1,000–2,000 words)", "eBook", "PDF Report", "Template", "Worksheet", "Cheat Sheet", "Email Course", "Toolkit", "Resource List", "Case Study", "Free Trial", "Coupon or Discount", "Quiz", "Calculator"]);
 const leadRecommendationValueSchema = z.object({
@@ -1746,7 +1747,7 @@ function semanticKeywordPrompt(input: {
     "Do not use the project name, business-building objective, website scope, page types, content format, CTA, consultation request, form, funnel, follow-up process, branding task, marketing deliverable, or internal workflow as a keyword unless it is explicitly sold to customers as a service.",
     "Do not invent services. Do not turn sentences or comma fragments into keywords. Never mechanically append company, services, pricing, buy, hire, or expert to every phrase.",
     "Correct obvious grammar and speech-to-text errors only when the intended service is clear. Preserve regulated product names and common acronyms such as RRSP, TFSA, FHSA, and RRIF.",
-    "Local keywords must combine one real service with one selected market; never return a city or region alone.",
+    "Do not assemble service, business name, audience and location phrases. Markets are provider targeting parameters. All generated phrases are unverified strategic seeds, never verified search demand.",
     "Return 5-20 primary phrases when the intake supports them and up to 10 useful phrases for each other category. Prefer quality and natural intent over filling a quota.",
     `Industry/niche: ${project.niche ?? "not provided"}`,
     `Business description: ${project.businessProfile?.businessSummary ?? "not provided"}`,
@@ -1777,7 +1778,7 @@ function completeSemanticKeywordGroups(
       category,
       title,
       keywords,
-      explanation: `${title} are recommended by interpreting the confirmed intake services, target audience, and customer search intent.`,
+      explanation: `Strategic Supporting Topics — ${title} are unverified seeds interpreted from intake. Run provider research before treating them as search demand.`,
       expectedValue: fallback?.expectedValue ?? (category === "buyer_intent" ? "Prioritizes searches closest to a purchase or enquiry." : category === "local" ? "Connects the offer to the markets where customers are being targeted." : "Builds relevant search coverage around the confirmed services."),
       goalSupport: fallback?.goalSupport ?? "Supports the confirmed project goal.",
     }];
@@ -2316,9 +2317,10 @@ function avgNumber(values: (number | null | undefined)[]) {
 }
 
 function keywordRunView(run: Prisma.KeywordResearchRunGetPayload<{ include: { website: { select: { id: true; domain: true; rootUrl: true } }; ideas: true; competitors: true } }>) {
+  run = { ...run, ideas: keywordEvidenceList(run.ideas) };
   const avgDifficulty = avgNumber(run.ideas.map((idea) => idea.competitionIndex));
   const avgCpc = avgNumber(run.ideas.map((idea) => idea.cpc));
-  const avgSearchVolume = avgNumber(run.ideas.map((idea) => idea.avgMonthlySearches)) ?? run.averageVolume;
+  const avgSearchVolume = avgNumber(keywordEvidenceList(run.ideas).map((idea) => idea.avgMonthlySearches));
   const opportunityScore = keywordOpportunityScore(avgSearchVolume, avgDifficulty);
   return {
     ...run,
@@ -2326,7 +2328,7 @@ function keywordRunView(run: Prisma.KeywordResearchRunGetPayload<{ include: { we
     avgCpc,
     avgSearchVolume,
     opportunityScore,
-    intent: run.ideas.some((idea) => (idea.competition ?? "").toLowerCase().includes("high")) ? "Commercial" : "Research",
+    intent: keywordIntent(run.seedKeyword),
   };
 }
 
@@ -4248,7 +4250,12 @@ async function performStrategyGeneration(req: Request, res: Response) {
   const personalNoApproval = context.workspace.workspaceType === "personal" && !generateInput.data.forceReview;
   const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
   const strategyAiRoute = await modelRouteForFeature("strategy_generate", client?.plan, config.openaiModel);
+  const verifiedKeywordRuns = await prisma.keywordResearchRun.findMany({ where: { projectId: project.id, status: "completed" }, orderBy: { completedAt: "desc" }, include: { ideas: true } });
+  const strategyKeywordEvidence = verifiedKeywordRuns.flatMap(run => keywordEvidenceList(run.ideas).map(idea => ({ ...idea, runId: run.id, market: run.locationName, language: run.languageCode })));
   const strategyEvidence = {
+    keywordEvidencePolicy: "Approved groups are strategic topic directions. Only per-keyword provider evidence establishes demand; never assign run averages to seeds, estimate missing volume, or derive intent from paid competition.",
+    keywordEvidence: strategyKeywordEvidence,
+
     project: {
       id: project.id,
       name: ctx.name,
@@ -4282,7 +4289,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
       protectedActionsRequireApproval: context.workspace.workspaceType !== "personal",
     },
     selectedOpportunity: selectedOpportunity ? { name: selectedOpportunity.name, summary: selectedOpportunity.summary, targetAudience: selectedOpportunity.targetAudience, problemSolved: selectedOpportunity.problemSolved, recommendedOffer: selectedOpportunity.recommendedOffer, businessModel: selectedOpportunity.businessModel, scores: { opportunity: selectedOpportunity.opportunityScore, seo: selectedOpportunity.seoScore, monetization: selectedOpportunity.monetizationScore, execution: selectedOpportunity.executionScore, userFit: selectedOpportunity.userFitScore } } : null,
-    approvedKeywords: approvedKeywordGroups.map((group) => ({ title: group.title, category: group.category, keywords: normalizeKeywordList(group.keywords), gaps: normalizeKeywordList(group.gapKeywords), explanation: group.explanation, goalSupport: group.goalSupport })),
+    approvedKeywords: approvedKeywordGroups.map((group) => ({ classification: "Strategic Supporting Topic", title: group.title, category: group.category, keywords: normalizeKeywordList(group.keywords), gaps: normalizeKeywordList(group.gapKeywords), explanation: group.explanation, goalSupport: group.goalSupport })),
     siteAndGapAnalysis: advanced.analyses.filter((item) => item.applicable).map((item) => ({ key: item.key, title: item.title, evidenceType: item.evidenceType, priority: item.priority, impact: item.impact, confidence: item.confidence, finding: item.why, evidence: item.evidence, affectedPages: item.affectedPages, expectedImpact: item.expectedImpact, destination: item.destination })),
     approvedGapActions: approvedGapRecommendations.map((item) => ({ category: item.category, title: item.title, priority: item.priority, explanation: item.explanation, evidence: item.evidenceJson, action: item.recommendedAction, expectedImpact: item.expectedImpact })),
     executionState: {
@@ -5306,11 +5313,11 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
     ]);
     const targetMarkets = cleanLocations(Array.isArray(project.targetLocations) ? project.targetLocations.filter((item): item is string => typeof item === "string") : [], project.targetLocation);
     const keywordEvidence = keywordRuns.flatMap((run) => [
-      { keyword: run.seedKeyword, monthlySearches: run.averageVolume ?? 0, intent: "Seed topic", geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research seed" },
-      ...run.ideas.map((idea) => ({ keyword: idea.keyword, monthlySearches: idea.avgMonthlySearches ?? 0, intent: idea.competition ?? "Research", geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research idea" })),
+      { keyword: run.seedKeyword, classification: "Strategic Supporting Topic", monthlySearches: null, intent: "Seed topic", geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research seed" },
+      ...keywordEvidenceList(run.ideas).map((idea) => ({ keyword: idea.keyword, classification: idea.classification, monthlySearches: idea.avgMonthlySearches, intent: idea.intent, geography: canonicalGeographicLocationLabel(run.locationName), source: "keyword research idea" })),
     ]);
     const allDedupedKeywords = [...new Map(keywordEvidence.map((item) => [item.keyword.trim().toLowerCase(), item])).values()]
-      .sort((a, b) => b.monthlySearches - a.monthlySearches);
+      .sort((a, b) => (b.monthlySearches ?? -1) - (a.monthlySearches ?? -1));
     const dedupedKeywords = allDedupedKeywords.slice(0, 40);
     const approvedKeywordGroups = project.keywordGroups.filter((group) => group.status === "approved").map((group) => ({
       category: group.category,
@@ -5364,10 +5371,10 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
         alternativeKeywords: researchInput.researchMode === "refresh"
           ? [
             ...allDedupedKeywords.slice(40, 100),
-            ...approvedKeywordGroups.flatMap((group) => group.gapKeywords.map((keyword) => ({ keyword, monthlySearches: 0, intent: `Gap keyword · ${group.category}`, geography: targetMarkets.join(", "), source: "approved keyword group gap" }))),
+            ...approvedKeywordGroups.flatMap((group) => group.gapKeywords.map((keyword) => ({ keyword, classification: "Strategic Supporting Topic", monthlySearches: null, intent: `Gap keyword · ${group.category}`, geography: targetMarkets.join(", "), source: "approved keyword group gap" }))),
           ].slice(0, 80)
           : [],
-        hasMeasuredDemand: dedupedKeywords.some((item) => item.monthlySearches > 0),
+        hasMeasuredDemand: dedupedKeywords.some((item) => (item.monthlySearches ?? 0) > 0),
       },
       refreshHistory: researchInput.researchMode === "refresh" ? {
         previousRunCount: previousResearchRuns.length,
@@ -5559,8 +5566,8 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
     };
     const keywordContext = keywordRuns.map((run) => ({
       seedKeyword: run.seedKeyword,
-      intent: run.ideas.some((idea) => (idea.competition ?? "").toLowerCase().includes("high")) ? "Commercial" : "Research",
-      avgSearchVolume: avgNumber(run.ideas.map((idea) => idea.avgMonthlySearches)) ?? run.averageVolume,
+      intent: keywordIntent(run.seedKeyword),
+      avgSearchVolume: avgNumber(keywordEvidenceList(run.ideas).map((idea) => idea.avgMonthlySearches)),
       opportunityScore: null,
       ideas: run.ideas,
     }));

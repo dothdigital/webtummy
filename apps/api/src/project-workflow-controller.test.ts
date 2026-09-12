@@ -716,3 +716,13 @@ describe("website review completion does not restart live verification", () => {
     expect(latestWebsiteImplementationAt([review, { ...built, sourceType: "seo_plan" }])).toBeNull();
   });
 });
+
+
+it("routes corrected keyword evidence through review even when an older Strategy is approved", () => {
+  const approvedAt = new Date("2026-08-01T12:00:00Z");
+  const result = resolveProjectWorkflow(snapshot({ keywordEvidenceCorrectionPending: true, approvedKeywords: false,
+    latestStrategy: { id: "old", status: "approved", createdAt: approvedAt, approvedAt }, latestStrategyVersion: 1,
+  }));
+  expect(result.nextBestAction.title).toBe("Review corrected keyword evidence");
+  expect(result.nextBestAction.action.url).toBe("/keywords?projectId=project-1");
+});

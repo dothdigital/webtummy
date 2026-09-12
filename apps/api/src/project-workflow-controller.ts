@@ -283,6 +283,7 @@ export type WorkflowEvidenceSnapshot = {
   keywordResearchInProgress: boolean;
   keywordResearchFailed: boolean;
   keywordEvidenceAt: Date | null;
+  keywordEvidenceCorrectionPending?: boolean;
   siteAnalysisComplete: boolean;
   siteAnalysisInProgress: boolean;
   siteAnalysisFailed: boolean;
@@ -824,6 +825,19 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     nextBestAction = continuousGrowthReady ? { title: "Review the Next Best Action", reason: "Continuous Growth Loop requirements are complete.", expectedResult: "A ranked experiment or improvement based on measured evidence.", action: action("Open Next Best Action", `/growth?${projectQuery}`, "review"), aiWill: [aiRoles.growth.suggestion, aiRoles.growth.implementation], userWill: aiRoles.growth.humanRole, confidence: overallConfidence, explainability: "The loop activates only after every governed prerequisite is satisfied." } : { title: "Complete the remaining Growth Loop requirements", reason: "An execution or approval requirement is still incomplete.", expectedResult: "All activation requirements completed without bypassing approvals.", action: action("Review project workflow", `/guided-projects/${snapshot.projectId}`, "review"), aiWill: ["Show the exact incomplete requirement"], userWill: "Complete the highlighted approval or action.", confidence: overallConfidence, explainability: "Measurement alone never activates the loop." };
   }
 
+  if (snapshot.keywordEvidenceCorrectionPending) {
+    const reviewKeywords = !snapshot.approvedKeywords;
+    const nextAction = reviewKeywords ? action("Review corrected keywords", `/keywords?${projectQuery}`, "review")
+      : !intelligenceReady && incompleteIntelligence?.action ? incompleteIntelligence.action
+      : action("Refresh Strategy from corrected evidence", `/strategy?${projectQuery}`, "generate");
+    nextBestAction = { title: reviewKeywords ? "Review corrected keyword evidence" : "Refresh Strategy from corrected keyword evidence",
+      reason: "The launch keyword evidence correction invalidated demand assumptions used by earlier recommendations.",
+      expectedResult: "A replacement Strategy and Next Best Action based on traceable keywords or clearly labelled supporting topics.",
+      action: nextAction, aiWill: ["Use corrected provider evidence", "Preserve previous Strategy and approval history"],
+      userWill: "Review corrected topics and approve the replacement Strategy through the existing workflow.",
+      confidence: overallConfidence, explainability: "This is a data-quality correction, not ordinary evidence aging. Earlier approved plans remain recorded but must not supply new keyword-demand assumptions." };
+  }
+
   const blockers = strategyApproved ? [] : intelligence.filter((item) => item.required && ["blocked", "failed", "not_started", "needs_attention"].includes(item.status)).map((item) => ({ key: item.key, title: item.label, reason: item.reason, action: item.action }));
   // A stale Execution Plan is tracked in its own governed workflow stage and
   // becomes actionable when the project reaches Execution. It is not a global
@@ -876,7 +890,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       growthBlueprint: { select: { status: true, currentVersion: true, businessBrainVersion: true, evidenceVersion: true, updatedAt: true } },
       workflowController: { select: { businessBrainVersion: true, evidenceVersion: true } },
       nextBestActions: { where: { status: { in: ["proposed", "recommended", "selected", "approved", "accepted", "in_progress"] } }, orderBy: [{ selectedAt: "desc" }, { priorityScore: "desc" }, { createdAt: "desc" }], take: 10, select: { id: true, title: true, recommendation: true, reasoningSummary: true, expectedImpact: true, confidence: true, route: true, evidenceJson: true, status: true } },
-      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.user_fact_updated", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved", "website.handoff_applied", "website.handoff_reviewed"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, sourceModule: true, occurredAt: true, payloadJson: true } },
+      workflowEvents: { where: { eventType: { in: ["module.not_applicable", "module.waived", "module.deferred", "module.resumed", "business_brain.user_fact_updated", "business_brain.approved", "readiness.completed", "findings.reviewed", "tracking.limitation_recorded", "execution_plan.approved", "website.handoff_applied", "website.handoff_reviewed", "intelligence.keyword_corrected"] } }, orderBy: { occurredAt: "desc" }, select: { eventType: true, sourceId: true, sourceModule: true, occurredAt: true, payloadJson: true } },
     },
   });
   if (!project) return null;
@@ -972,9 +986,9 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const keywordAnalysisLocations = projectAnalysisLocationLabels(project.targetLocations, businessLocationJson);
   const incompleteKeywordResearchChecks = incompleteApprovedKeywordResearchChecks(project.keywordGroups, governedKeywordRuns, keywordAnalysisLocations);
   const missingKeywordResearch = missingApprovedKeywordResearch(project.keywordGroups, governedKeywordRuns, keywordAnalysisLocations);
-  const failedKeywordResearchChecks = unresolvedApprovedKeywordResearchChecks(project.keywordGroups, governedKeywordRuns);
+  const failedKeywordResearchChecks = unresolvedApprovedKeywordResearchChecks(project.keywordGroups, governedKeywordRuns, keywordAnalysisLocations);
   const latestGovernedKeywordChecks = latestKeywordResearchChecks(governedKeywordRuns);
-  const activeKeywordResearchChecks = [...latestGovernedKeywordChecks.values()].filter((run) => ["queued", "running", "in_progress"].includes(run.status));
+  const activeKeywordResearchChecks = incompleteKeywordResearchChecks.flatMap((check) => { const run = latestGovernedKeywordChecks.get(check.identity); return run && ["queued", "running", "in_progress"].includes(run.status) ? [run] : []; });
   const failedKeywordResearch = [...new Set(failedKeywordResearchChecks.map((run) => run.seedKeyword ?? "").filter(Boolean))];
   const approvedKeywords = approvedKeywordList.length > 0 && missingKeywordResearch.length === 0;
   const keywordEvidenceAt = newest(
@@ -1047,6 +1061,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     failedKeywordResearchKeywords: failedKeywordResearch,
     failedKeywordResearchCheckCount: failedKeywordResearchChecks.length,
     keywordResearchActiveCheckCount: activeKeywordResearchChecks.length,
+    keywordEvidenceCorrectionPending: project.workflowEvents.some(event => event.eventType === "intelligence.keyword_corrected" && (!latestStrategy || latestStrategy.createdAt < event.occurredAt)),
     keywordResearchInProgress: activeKeywordResearchChecks.length > 0,
     keywordResearchFailed: failedKeywordResearchChecks.length > 0 && activeKeywordResearchChecks.length === 0,
     keywordEvidenceAt,
