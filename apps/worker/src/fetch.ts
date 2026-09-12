@@ -1,6 +1,7 @@
 // HTTP fetch layer using undici. Captures status, redirect chain, timing, headers.
 import { request } from "undici";
 import type { FetchResult, CrawlOptions } from "@webtummy/core";
+import { assertSafePublicHttpUrl } from "@webtummy/core/safe-public-fetch";
 
 export async function fetchUrl(url: string, opts: CrawlOptions): Promise<FetchResult> {
   const started = performance.now();
@@ -9,6 +10,7 @@ export async function fetchUrl(url: string, opts: CrawlOptions): Promise<FetchRe
 
   try {
     for (let hop = 0; hop <= opts.maxRedirects; hop++) {
+      await assertSafePublicHttpUrl(current);
       // undici.request() does NOT support `maxRedirections` (it throws). Its default
       // is no-follow, which is what we want — we follow redirects manually below to
       // record the chain.
@@ -56,6 +58,7 @@ export async function fetchUrl(url: string, opts: CrawlOptions): Promise<FetchRe
  */
 export async function checkStatus(url: string, opts: CrawlOptions): Promise<number> {
   const hit = async (method: "HEAD" | "GET", target: string) => {
+    await assertSafePublicHttpUrl(target);
     const res = await request(target, {
       method,
       headersTimeout: opts.requestTimeoutMs,

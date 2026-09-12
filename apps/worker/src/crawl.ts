@@ -13,6 +13,9 @@ import {
   isAllowed,
   normalizeForDedup,
   dedupKey,
+  fileUrlWithoutTrailingSlash,
+  logicalPageIdentityKeys,
+  urlAliasKey,
   detectPageIssues,
   type CrawlOptions,
   type DetectedIssue,
@@ -32,10 +35,11 @@ export async function runCrawl(crawlJobId: string, options: CrawlOptions): Promi
   });
   if (!job) throw new Error(`crawl job ${crawlJobId} not found`);
 
-  await prisma.crawlJob.update({
-    where: { id: crawlJobId },
+  const started = await prisma.crawlJob.updateMany({
+    where: { id: crawlJobId, status: { in: [CrawlStatus.queued, CrawlStatus.running] } },
     data: { status: CrawlStatus.running, startedAt: new Date() },
   });
+  if (!started.count) return;
 
   const rootUrl = job.website.rootUrl;
   const allIssues: DetectedIssue[] = [];
@@ -61,6 +65,8 @@ export async function runCrawl(crawlJobId: string, options: CrawlOptions): Promi
 
     // Process the frontier in concurrency-bounded waves.
     while (frontier.length > 0 && pagesCrawled < options.maxPages) {
+      const liveJob = await prisma.crawlJob.findUnique({ where: { id: crawlJobId }, select: { status: true } });
+      if (!liveJob || liveJob.status !== CrawlStatus.running) throw new Error("Site analysis was stopped before completion.");
       const batch: FrontierItem[] = [];
       while (batch.length < concurrency && frontier.length > 0 && pagesCrawled + batch.length < options.maxPages) {
         const item = frontier.shift()!;
@@ -100,10 +106,12 @@ export async function runCrawl(crawlJobId: string, options: CrawlOptions): Promi
 
     // ── post-crawl passes ─────────────────────────────────────────────────────
     // Resolves broken links, detects duplicates, computes per-page + site scores.
-    const siteScore = await postCrawl(crawlJobId, options);
+    const jobBeforePostCrawl = await prisma.crawlJob.findUnique({ where: { id: crawlJobId }, select: { status: true } });
+    if (!jobBeforePostCrawl || jobBeforePostCrawl.status !== CrawlStatus.running) throw new Error("Site analysis was stopped before completion.");
+    const siteScore = await postCrawl(crawlJobId, options, rootUrl);
 
-    await prisma.crawlJob.update({
-      where: { id: crawlJobId },
+    const completed = await prisma.crawlJob.updateMany({
+      where: { id: crawlJobId, status: CrawlStatus.running },
       data: {
         status: CrawlStatus.completed,
         completedAt: new Date(),
@@ -112,9 +120,16 @@ export async function runCrawl(crawlJobId: string, options: CrawlOptions): Promi
         siteScore,
       },
     });
+    if (!completed.count) return;
+    const crawlProjectIds = await prisma.project.findMany({ where: { websiteId: job.websiteId }, select: { id: true } });
+    for (const project of crawlProjectIds) await prisma.projectWorkflowEvent.upsert({
+      where: { idempotencyKey: `site-analysis.completed:${crawlJobId}:${project.id}` },
+      update: {},
+      create: { projectId: project.id, eventType: "intelligence.site_analysis_completed", sourceModule: "site_analysis", sourceId: crawlJobId, idempotencyKey: `site-analysis.completed:${crawlJobId}:${project.id}`, payloadJson: { pagesCrawled, errorCount, siteScore } },
+    });
   } catch (err) {
-    await prisma.crawlJob.update({
-      where: { id: crawlJobId },
+    await prisma.crawlJob.updateMany({
+      where: { id: crawlJobId, status: CrawlStatus.running },
       data: {
         status: CrawlStatus.failed,
         completedAt: new Date(),
@@ -535,7 +550,7 @@ function isHtmlContent(contentType: string | null): boolean {
  *  3. duplicate title / meta / H1 / exact content detection
  *  4. per-page scores (100 - issue deductions) + site score (avg of page scores)
  */
-async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number> {
+async function postCrawl(crawlJobId: string, opts: CrawlOptions, rootUrl: string): Promise<number> {
   const pages = await prisma.page.findMany({
     where: { crawlJobId },
     select: { id: true, url: true, normalizedUrl: true, statusCode: true, depth: true },
@@ -553,6 +568,7 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number
       placement: true,
     },
   });
+  const logicalPageKeys = await logicalPageKeysForCrawl(crawlJobId);
 
   // 1. inlink counts + internal linking score
   const inlinkCounts = new Map<string, number>();
@@ -611,11 +627,14 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number
     bodyOutgoingCounts,
     weakAnchorCounts,
     knownStatus,
-  });
+  }, rootUrl, logicalPageKeys);
 
-  // 3. duplicate detection across the crawl (title / meta / H1)
-  await detectDuplicates(crawlJobId);
-  await detectExactDuplicateContent(crawlJobId);
+  // 3. URL-alias and duplicate detection across the crawl. Aliases such as
+  // www/apex and /index.html/root are one canonicalization problem, not four
+  // separate duplicate-content problems.
+  await detectUrlAliases(crawlJobId, rootUrl, logicalPageKeys);
+  await detectDuplicates(crawlJobId, logicalPageKeys);
+  await detectExactDuplicateContent(crawlJobId, logicalPageKeys);
 
   // 3a. sitemap coverage + status issues
   await auditSitemapUrls(crawlJobId, knownStatus, byNorm, opts);
@@ -637,6 +656,20 @@ async function postCrawl(crawlJobId: string, opts: CrawlOptions): Promise<number
     await prisma.page.update({ where: { id: p.id }, data: { score } });
   }
   return pages.length > 0 ? Math.round(scoreSum / pages.length) : 0;
+}
+
+async function logicalPageKeysForCrawl(crawlJobId: string): Promise<Map<string, string>> {
+  const pages = await prisma.page.findMany({
+    where: { crawlJobId },
+    select: { id: true, url: true, finalUrl: true, seo: { select: { canonicalUrl: true, contentSimhash: true } } },
+  });
+  return logicalPageIdentityKeys(pages.map((page) => ({
+    id: page.id,
+    url: page.url,
+    finalUrl: page.finalUrl,
+    canonicalUrl: page.seo?.canonicalUrl,
+    contentFingerprint: page.seo?.contentSimhash,
+  })));
 }
 
 async function fillKnownStatuses(targets: string[], knownStatus: Map<string, number>, opts: CrawlOptions, concurrency = 20): Promise<void> {
@@ -682,6 +715,24 @@ async function auditSitemapUrls(
     });
 
     if (status != null && (status === 0 || status >= 400)) {
+      const likelyLiveUrl = fileUrlWithoutTrailingSlash(entry.url);
+      if (likelyLiveUrl) {
+        const likelyLiveKey = dedupKey(likelyLiveUrl);
+        if (!knownStatus.has(likelyLiveKey)) await fillKnownStatuses([likelyLiveKey], knownStatus, opts);
+        const likelyLiveStatus = knownStatus.get(likelyLiveKey) ?? null;
+        if (likelyLiveStatus != null && likelyLiveStatus >= 200 && likelyLiveStatus < 400) {
+          issues.push({
+            crawlJobId,
+            issueType: "sitemap_file_trailing_slash_mismatch",
+            category: "indexability",
+            severity: Severity.high,
+            weightImpact: 4,
+            message: `Sitemap URL returns ${status || "no response"}, but the matching file URL is live: ${entry.url} → ${likelyLiveUrl} (${likelyLiveStatus}).`,
+            recommendation: `Replace ${entry.url} with ${likelyLiveUrl} in sitemap.xml, upload the revised sitemap, and rerun Site Analysis.`,
+          });
+          continue;
+        }
+      }
       issues.push({
         crawlJobId,
         issueType: "sitemap_url_error",
@@ -729,7 +780,21 @@ async function scoreInternalLinks(
     weakAnchorCounts: Map<string, number>;
     knownStatus: Map<string, number>;
   },
+  rootUrl: string,
+  logicalPageKeys: Map<string, string>,
 ): Promise<void> {
+  const preferredHost = hostname(rootUrl);
+  const pagesByAlias = new Map<string, InternalPage[]>();
+  const representativeByAlias = new Map<string, InternalPage>();
+  for (const page of pages.filter((item) => item.statusCode === 200)) {
+    const key = logicalPageKeys.get(page.id) ?? urlAliasKey(page.url);
+    const aliases = pagesByAlias.get(key) ?? [];
+    aliases.push(page);
+    pagesByAlias.set(key, aliases);
+    const current = representativeByAlias.get(key);
+    if (!current || aliasPagePreference(page, preferredHost) > aliasPagePreference(current, preferredHost)) representativeByAlias.set(key, page);
+  }
+  const representativePageIds = new Set([...representativeByAlias.values()].map((page) => page.id));
   const linksBySource = new Map<string, InternalLink[]>();
   for (const link of internalLinks) {
     const links = linksBySource.get(link.sourcePageId);
@@ -743,8 +808,24 @@ async function scoreInternalLinks(
   }[] = [];
 
   for (const page of pages) {
-    const incoming = metrics.inlinkCounts.get(page.id) ?? 0;
-    const contextualIncoming = metrics.contextualInlinkCounts.get(page.id) ?? 0;
+    if (page.statusCode !== 200 || !representativePageIds.has(page.id)) {
+      await prisma.page.update({
+        where: { id: page.id },
+        data: {
+          inlinkCount: 0,
+          outgoingInternalLinkCount: 0,
+          brokenInternalLinkCount: 0,
+          weakAnchorCount: 0,
+          internalLinkScore: null,
+          internalLinkGrade: null,
+          isOrphan: false,
+        },
+      });
+      continue;
+    }
+    const aliasPages = pagesByAlias.get(logicalPageKeys.get(page.id) ?? urlAliasKey(page.url)) ?? [page];
+    const incoming = aliasPages.reduce((sum, alias) => sum + (metrics.inlinkCounts.get(alias.id) ?? 0), 0);
+    const contextualIncoming = aliasPages.reduce((sum, alias) => sum + (metrics.contextualInlinkCounts.get(alias.id) ?? 0), 0);
     const outgoing = metrics.outgoingCounts.get(page.id) ?? 0;
     const bodyOutgoing = metrics.bodyOutgoingCounts.get(page.id) ?? 0;
     const weakAnchors = metrics.weakAnchorCounts.get(page.id) ?? 0;
@@ -803,6 +884,23 @@ async function scoreInternalLinks(
   }
 
   if (issues.length > 0) await prisma.issue.createMany({ data: issues.slice(0, 1000) });
+}
+
+function hostname(value: string) {
+  try { return new URL(value).hostname.toLowerCase(); } catch { return ""; }
+}
+
+function aliasPagePreference(page: { url: string; depth?: number }, preferredHost = "") {
+  try {
+    const url = new URL(page.url);
+    return (preferredHost && url.hostname.toLowerCase() === preferredHost ? 1000 : 0)
+      + (!/\/index\.(?:html?|php)$/i.test(url.pathname) ? 100 : 0)
+      + (url.search ? 0 : 20)
+      + Math.max(0, 10 - (page.depth ?? 0))
+      - Math.min(20, url.pathname.length);
+  } catch {
+    return 0;
+  }
 }
 
 function internalLinkScore(input: {
@@ -941,22 +1039,30 @@ async function createSiteIssue(
 }
 
 /** Find pages sharing a title / meta description / H1 and raise duplicate issues. */
-async function detectDuplicates(crawlJobId: string): Promise<void> {
+async function detectDuplicates(crawlJobId: string, logicalPageKeys: Map<string, string>): Promise<void> {
   const seos = await prisma.pageSeo.findMany({
-    where: { page: { crawlJobId } },
-    select: { pageId: true, title: true, metaDescription: true, h1Text: true },
+    where: { page: { crawlJobId, statusCode: 200 } },
+    select: { pageId: true, title: true, metaDescription: true, h1Text: true, page: { select: { url: true } } },
   });
 
   const groupBy = (key: (s: (typeof seos)[number]) => string | null) => {
-    const groups = new Map<string, string[]>();
+    const groups = new Map<string, (typeof seos)[number][]>();
     for (const s of seos) {
       const raw = key(s);
       if (!raw) continue;
       const norm = raw.trim().toLowerCase();
       if (!norm) continue;
-      (groups.get(norm) ?? groups.set(norm, []).get(norm)!).push(s.pageId);
+      (groups.get(norm) ?? groups.set(norm, []).get(norm)!).push(s);
     }
-    return [...groups.values()].filter((ids) => ids.length > 1);
+    return [...groups.values()].flatMap((pages) => {
+      const representatives = new Map<string, (typeof seos)[number]>();
+      for (const page of pages) {
+        const aliasKey = logicalPageKeys.get(page.pageId) ?? urlAliasKey(page.page.url);
+        if (!representatives.has(aliasKey)) representatives.set(aliasKey, page);
+      }
+      const distinctPages = [...representatives.values()];
+      return distinctPages.length > 1 ? [distinctPages] : [];
+    });
   };
 
   const firstH1 = (s: (typeof seos)[number]) => {
@@ -972,31 +1078,31 @@ async function detectDuplicates(crawlJobId: string): Promise<void> {
   });
 
   const data: ReturnType<typeof mk>[] = [];
-  for (const ids of groupBy((s) => s.title))
-    for (const id of ids)
-      data.push(mk(id, "duplicate_title", 3, `Duplicate title shared by ${ids.length} pages.`, "Make each page title unique."));
-  for (const ids of groupBy((s) => s.metaDescription))
-    for (const id of ids)
-      data.push(mk(id, "duplicate_meta_description", 2, `Duplicate meta description shared by ${ids.length} pages.`, "Write a unique description per page."));
-  for (const ids of groupBy(firstH1))
-    for (const id of ids)
-      data.push(mk(id, "duplicate_h1", 2, `Duplicate H1 shared by ${ids.length} pages.`, "Give each page a unique H1."));
+  for (const pages of groupBy((s) => s.title))
+    for (const page of pages)
+      data.push(mk(page.pageId, "duplicate_title", 3, `Duplicate title shared by ${pages.length} distinct pages: ${pages.map((item) => item.page.url).join(" · ")}.`, "Make each distinct page title unique."));
+  for (const pages of groupBy((s) => s.metaDescription))
+    for (const page of pages)
+      data.push(mk(page.pageId, "duplicate_meta_description", 2, `Duplicate meta description shared by ${pages.length} distinct pages: ${pages.map((item) => item.page.url).join(" · ")}.`, "Write a unique description for each distinct page."));
+  for (const pages of groupBy(firstH1))
+    for (const page of pages)
+      data.push(mk(page.pageId, "duplicate_h1", 2, `Duplicate H1 shared by ${pages.length} distinct pages: ${pages.map((item) => item.page.url).join(" · ")}.`, "Give each distinct page a unique H1."));
 
   if (data.length > 0) await prisma.issue.createMany({ data });
 }
 
 /** Find pages with identical visible body text hashes. */
-async function detectExactDuplicateContent(crawlJobId: string): Promise<void> {
+async function detectExactDuplicateContent(crawlJobId: string, logicalPageKeys: Map<string, string>): Promise<void> {
   const seos = await prisma.pageSeo.findMany({
-    where: { page: { crawlJobId }, contentSimhash: { not: null } },
-    select: { pageId: true, contentSimhash: true },
+    where: { page: { crawlJobId, statusCode: 200 }, contentSimhash: { not: null } },
+    select: { pageId: true, contentSimhash: true, page: { select: { url: true } } },
   });
 
-  const groups = new Map<string, string[]>();
+  const groups = new Map<string, (typeof seos)[number][]>();
   for (const seo of seos) {
     if (seo.contentSimhash == null) continue;
     const key = seo.contentSimhash.toString();
-    (groups.get(key) ?? groups.set(key, []).get(key)!).push(seo.pageId);
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(seo);
   }
 
   const data: {
@@ -1004,21 +1110,67 @@ async function detectExactDuplicateContent(crawlJobId: string): Promise<void> {
     severity: Severity; weightImpact: number; message: string; recommendation: string;
   }[] = [];
 
-  for (const ids of groups.values()) {
-    if (ids.length < 2) continue;
-    for (const pageId of ids) {
+  for (const pages of groups.values()) {
+    const representatives = new Map<string, (typeof seos)[number]>();
+    for (const page of pages) {
+      const aliasKey = logicalPageKeys.get(page.pageId) ?? urlAliasKey(page.page.url);
+      if (!representatives.has(aliasKey)) representatives.set(aliasKey, page);
+    }
+    const distinctPages = [...representatives.values()];
+    if (distinctPages.length < 2) continue;
+    for (const page of distinctPages) {
       data.push({
         crawlJobId,
-        pageId,
+        pageId: page.pageId,
         issueType: "exact_duplicate_content",
         category: "onpage",
         severity: Severity.medium,
         weightImpact: 4,
-        message: `Exact duplicate content shared by ${ids.length} pages.`,
+        message: `Exact duplicate content shared by ${distinctPages.length} distinct pages: ${distinctPages.map((item) => item.page.url).join(" · ")}.`,
         recommendation: "Canonicalize, consolidate, rewrite, or noindex duplicate pages so only the preferred URL is indexed.",
       });
     }
   }
 
   if (data.length > 0) await prisma.issue.createMany({ data });
+}
+
+/** Detect multiple live, non-redirecting URL aliases for one logical page. */
+async function detectUrlAliases(crawlJobId: string, rootUrl: string, logicalPageKeys: Map<string, string>): Promise<void> {
+  const pages = await prisma.page.findMany({
+    where: { crawlJobId, statusCode: 200 },
+    select: { id: true, url: true, depth: true, redirectChain: true },
+  });
+  const groups = new Map<string, typeof pages>();
+  for (const page of pages) {
+    if (Array.isArray(page.redirectChain) && page.redirectChain.length > 0) continue;
+    const key = logicalPageKeys.get(page.id) ?? urlAliasKey(page.url);
+    const matches = groups.get(key) ?? [];
+    matches.push(page);
+    groups.set(key, matches);
+  }
+  for (const pages of groups.values()) {
+    const aliases = [...new Set(pages.map((page) => page.url))].sort();
+    if (aliases.length < 2) continue;
+    const preferredHost = hostname(rootUrl);
+    const preferred = [...pages].sort((left, right) => aliasPagePreference(right, preferredHost) - aliasPagePreference(left, preferredHost))[0];
+    const redundantPageIds = pages.filter((page) => page.id !== preferred.id).map((page) => page.id);
+    if (redundantPageIds.length) {
+      await prisma.issue.deleteMany({
+        where: {
+          crawlJobId,
+          pageId: { in: redundantPageIds },
+          category: { in: ["onpage", "media", "schema", "social", "performance"] },
+        },
+      });
+    }
+    await createSiteIssue(crawlJobId, {
+      issueType: "url_aliases_not_redirected",
+      category: "indexability",
+      severity: Severity.high,
+      weightImpact: 4,
+      message: `The same logical page is accessible without redirecting at ${aliases.length} URL aliases: ${aliases.join(" · ")}.`,
+      recommendation: "Choose one preferred canonical URL, 301 redirect every alias to it, and use only the preferred URL in internal links, canonical tags, and sitemap.xml.",
+    });
+  }
 }

@@ -1,12 +1,13 @@
 // Crawl detail: live status (polls while running), score gauge, summary stats,
 // pages table, and issues table with severity badges.
-import { useEffect, useState, type ReactNode } from "react";
-import { useParams } from "react-router-dom";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type {
   BrokenLinkRow,
   CrawlStatus,
   CrawlSummary,
+  ExecutionTask,
   HealthReport,
   AiContentGeneration,
   AiGenerationType,
@@ -16,6 +17,7 @@ import type {
   PageSpeedStrategyResult,
 } from "../types.js";
 import { ActionIconAnchor, ActionIconButton, Card, StatusPill, Badge, Button } from "../components/ui.js";
+import WebsitePlanSuggestionAction from "../components/WebsitePlanSuggestionAction.js";
 
 function SeverityChip({
   label, sev, count, active, onClick,
@@ -68,7 +70,35 @@ function IssueCard({
   );
 }
 
+function taskPriorityClass(priority: string): string {
+  if (priority === "high") return "bg-red-50 text-red-700 border-red-100";
+  if (priority === "low") return "bg-slate-50 text-slate-600 border-slate-100";
+  return "bg-amber-50 text-amber-700 border-amber-100";
+}
+
+function taskStatusClass(status: string): string {
+  if (status === "completed") return "bg-green-50 text-green-700 border-green-100";
+  if (status === "skipped") return "bg-slate-50 text-slate-500 border-slate-100";
+  if (status === "needs_review") return "bg-blue-50 text-blue-700 border-blue-100";
+  if (status === "failed") return "bg-red-50 text-red-700 border-red-100";
+  return "bg-brand-50 text-brand-700 border-brand-100";
+}
+
+function taskLabel(value: string): string {
+  return value.replace(/_/g, " ").replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
+function taskModuleClass(moduleName: string): string {
+  if (moduleName === "keyword_research") return "bg-indigo-50 text-indigo-700 border-indigo-100";
+  if (moduleName === "local_seo") return "bg-emerald-50 text-emerald-700 border-emerald-100";
+  if (moduleName === "ai_content") return "bg-purple-50 text-purple-700 border-purple-100";
+  if (moduleName === "social_strategy") return "bg-pink-50 text-pink-700 border-pink-100";
+  return "bg-cyan-50 text-cyan-700 border-cyan-100";
+}
+
 const PAGE_SIZE = 25;
+
+type ReportSection = "overview" | "execution" | "health" | "pages" | "issues" | "broken";
 
 const ISSUE_TYPE_FILTERS = [
   { key: "title", label: "Titles" },
@@ -130,6 +160,7 @@ function organizationNotes(details: OrganizationDetails) {
 }
 
 function ReadinessGenerateModal({
+  projectId,
   activeKey,
   organizationDetails,
   setOrganizationDetails,
@@ -143,6 +174,7 @@ function ReadinessGenerateModal({
   onCopy,
   onClose,
 }: {
+  projectId: string;
   activeKey: ReadinessGenerateKey | null;
   organizationDetails: OrganizationDetails;
   setOrganizationDetails: (details: OrganizationDetails) => void;
@@ -230,7 +262,7 @@ function ReadinessGenerateModal({
         </div>
         <div className="flex flex-col-reverse gap-3 border-t border-charcoal-100 bg-white px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-xs text-charcoal-500">Future access: AI Content → Recent generations → search by this project/topic.</div>
-          <Button type="button" onClick={onGenerate} disabled={generating || !canGenerate}>{generating ? "Generating..." : generated ? "Generate again" : "Generate content"}</Button>
+          {projectId ? <WebsitePlanSuggestionAction projectId={projectId} suggestion={{ sourceModule: "site_analysis", sourceType: "readiness_requirement", sourceId: activeKey, title: config.label, targetUrl: null, evidence: `Site Analysis found the ${config.label} readiness item is missing.`, recommendedAction: `Add ${config.label} to Website Plan review before preparation or implementation.`, expectedImpact: "Improves technical, schema, or answer-readiness coverage after approval and implementation." }} /> : <span className="text-xs font-semibold text-amber-700">Open this crawl from its project to add the requirement to Website Plan.</span>}
         </div>
       </div>
     </div>
@@ -269,14 +301,16 @@ function Pagination({
   page,
   total,
   onPage,
+  pageSize = PAGE_SIZE,
 }: {
   page: number;
   total: number;
   onPage: (page: number) => void;
+  pageSize?: number;
 }) {
-  const pages = pageCount(total);
-  const start = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
-  const end = Math.min(total, page * PAGE_SIZE);
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
 
   return (
     <div className="flex flex-wrap items-center justify-between gap-3 border-t border-charcoal-100 px-5 py-3 text-sm">
@@ -537,6 +571,33 @@ function duplicateIssueLabel(issueType: string): string {
   if (issueType === "duplicate_meta_description") return "Pages using this meta description";
   if (issueType === "duplicate_h1") return "Pages using this H1";
   return "Related pages";
+}
+
+function compactIssueMessage(issue: IssueRow): string {
+  const count = issue.relatedPages?.length ?? 0;
+  if (count > 1) {
+    if (issue.issueType === "duplicate_title") return `Duplicate title shared by ${count} distinct pages.`;
+    if (issue.issueType === "duplicate_meta_description") return `Duplicate meta description shared by ${count} distinct pages.`;
+    if (issue.issueType === "duplicate_h1") return `Duplicate H1 shared by ${count} distinct pages.`;
+    if (issue.issueType === "exact_duplicate_content") return `Exact duplicate content shared by ${count} distinct pages.`;
+  }
+  return issue.message;
+}
+
+function compactLengthStatus(metric: NonNullable<ReturnType<typeof lengthMetric>>): string {
+  if (metric.value < metric.min) return `${metric.value} characters · ${metric.min - metric.value} short`;
+  if (metric.value > metric.max) return `${metric.value} characters · ${metric.value - metric.max} over`;
+  return `${metric.value} characters · within ${metric.min}-${metric.max}`;
+}
+
+function pageUrlParts(value: string | null | undefined): { path: string; host: string; full: string } | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return { path: `${url.pathname || "/"}${url.search}`, host: url.host, full: value };
+  } catch {
+    return { path: value, host: "", full: value };
+  }
 }
 
 function scoreTone(score: number | null | undefined): string {
@@ -1372,7 +1433,7 @@ function HealthDetailDrawer({
   );
 }
 
-function HealthReportView({ report, crawl, pages }: { report: HealthReport | null; crawl: CrawlStatus | null; pages: PageRow[] }) {
+function HealthReportView({ report, crawl, pages, projectId }: { report: HealthReport | null; crawl: CrawlStatus | null; pages: PageRow[]; projectId: string }) {
   const [activeDetail, setActiveDetail] = useState<HealthDetailKey | null>(null);
   const [activeGenerateKey, setActiveGenerateKey] = useState<ReadinessGenerateKey | null>(null);
   const [generating, setGenerating] = useState<ReadinessGenerateKey | null>(null);
@@ -1510,6 +1571,7 @@ function HealthReportView({ report, crawl, pages }: { report: HealthReport | nul
       </div>
 
       <ReadinessGenerateModal
+        projectId={projectId}
         activeKey={activeGenerateKey}
         organizationDetails={organizationDetails}
         setOrganizationDetails={setOrganizationDetails}
@@ -1660,14 +1722,199 @@ function IssueDetailPanel({ issue, onClose }: { issue: IssueRow; onClose: () => 
   );
 }
 
+function issueIdFromTask(task: ExecutionTask): string | null {
+  return task.dedupeKey.startsWith("crawl:") ? task.dedupeKey.slice("crawl:".length) : null;
+}
+
+function taskCompletionSteps(task: ExecutionTask, issue: IssueRow | null): string[] {
+  if (task.moduleName === "keyword_research") {
+    return [
+      "Open the keyword report from this task or the Keyword Research area.",
+      "Review the target keyword, ranking position, search intent, and suggested ideas.",
+      "Decide whether to improve an existing page or create a new page.",
+      "Apply the content or on-page updates manually, then rerun keyword research or track the next ranking check.",
+    ];
+  }
+  if (task.moduleName === "local_seo") {
+    return [
+      "Open the Local SEO area for this project.",
+      "Review the business profile, location, services, and recommendation evidence.",
+      "Update the website, Google Business Profile, citations, or local content manually where needed.",
+      "Mark complete after the local profile or listing change is done and ready for the next review.",
+    ];
+  }
+  if (task.moduleName === "ai_content") {
+    return [
+      "Open AI Content and review the generated draft or recommendation.",
+      "Edit the content for accuracy, brand voice, location/service fit, and compliance.",
+      "Apply it manually to the target page or content plan only after approval.",
+      "Mark complete after the content is reviewed and placed into the project workflow.",
+    ];
+  }
+  if (task.moduleName === "social_strategy") {
+    return [
+      "Open the Social Strategy area and review the planned post.",
+      "Check the caption, platform, topic, date, and creative direction.",
+      "Approve or edit the post, then schedule or publish it manually in the social platform.",
+      "Mark complete after the post has been approved, scheduled, or handled outside the app.",
+    ];
+  }
+  const type = issue?.issueType ?? task.sourceType;
+  if (type.includes("sitemap")) {
+    return [
+      "Open the sitemap or sitemap plugin/CMS area.",
+      "Remove dead URLs or replace them with the correct live canonical URLs.",
+      "Confirm the affected URLs return a valid status or redirect cleanly.",
+      "Rerun the crawl after the website change is live.",
+    ];
+  }
+  if (type.includes("internal") || type.includes("orphan") || type.includes("link")) {
+    return [
+      "Open the affected page and one or more related parent/service pages.",
+      "Add useful contextual internal links in the body content, not only header or footer navigation.",
+      "Use clear anchor text that describes the destination page.",
+      "Rerun the crawl and confirm the page has healthier incoming/outgoing links.",
+    ];
+  }
+  if (type.includes("title") || type.includes("meta_description") || type.includes("h1")) {
+    return [
+      "Open the affected page in the CMS or website editor.",
+      "Update the title, meta description, or H1 using the recommendation.",
+      "Keep the copy unique, readable, and aligned with the target keyword or page purpose.",
+      "Rerun the crawl to confirm the issue is gone.",
+    ];
+  }
+  if (type.includes("schema") || type.includes("llms") || issue?.category === "ai_readiness") {
+    return [
+      "Review the missing AI/search readiness item in the crawl health report.",
+      "Generate or prepare the required schema, llms.txt, robots, or structured content.",
+      "Apply it manually to the website only after review.",
+      "Rerun the crawl to confirm the readiness check passes.",
+    ];
+  }
+  return [
+    "Open the source page or related report section.",
+    "Apply the recommended fix manually in the website, CMS, or project workflow.",
+    "Check the page after publishing to make sure the change is visible.",
+    "Rerun the crawl or related report before marking the task fully complete.",
+  ];
+}
+
+export function ExecutionTaskDrawer({
+  task,
+  issue,
+  onClose,
+  onOpenIssue,
+  onApprove,
+  onComplete,
+  onReopen,
+  onSkip,
+}: {
+  task: ExecutionTask;
+  issue: IssueRow | null;
+  onClose: () => void;
+  onOpenIssue?: () => void;
+  onApprove: () => void;
+  onComplete: () => void;
+  onReopen: () => void;
+  onSkip: () => void;
+}) {
+  const steps = taskCompletionSteps(task, issue);
+  return (
+    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true" aria-label="Execution task details">
+      <button type="button" aria-label="Close task details" className="absolute inset-0 bg-charcoal-900/35" onClick={onClose} />
+      <aside className="absolute right-0 top-0 flex h-full w-full max-w-3xl flex-col bg-white shadow-2xl">
+        <div className="border-b border-charcoal-100 px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Execution task</div>
+              <h2 className="mt-1 text-xl font-bold text-charcoal-900">{task.title}</h2>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskPriorityClass(task.priority)}`}>{taskLabel(task.priority)} priority</span>
+                <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskStatusClass(task.status)}`}>{taskLabel(task.status)}</span>
+                <span className="rounded-full border border-charcoal-100 bg-charcoal-50 px-2 py-0.5 text-xs font-semibold text-charcoal-600">{taskLabel(task.automationLevel)}</span>
+              </div>
+            </div>
+            <Button variant="ghost" onClick={onClose}>Close</Button>
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
+          <section className="rounded-lg border border-charcoal-100 bg-charcoal-50 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">Scope</div>
+            <p className="mt-2 text-sm leading-6 text-charcoal-600">{task.description}</p>
+            {task.impact && <p className="mt-2 text-sm leading-6 text-charcoal-600"><span className="font-semibold">Expected impact:</span> {task.impact}</p>}
+          </section>
+
+          <section className="rounded-lg border border-charcoal-100 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">Source</div>
+            <div className="mt-2 grid gap-2 text-sm text-charcoal-600 sm:grid-cols-2">
+              <div><span className="font-medium text-charcoal-800">Module:</span> {taskLabel(task.moduleName)}</div>
+              <div><span className="font-medium text-charcoal-800">Source type:</span> {taskLabel(task.sourceType)}</div>
+              <div><span className="font-medium text-charcoal-800">Approval:</span> {task.requiresApproval ? "Required before external action" : "Not required"}</div>
+              <div><span className="font-medium text-charcoal-800">Execution:</span> {task.manualRequired ? "Manual confirmation required" : "System prepared"}</div>
+              {issue?.page?.url && <div className="break-words sm:col-span-2"><span className="font-medium text-charcoal-800">Affected page:</span> {issue.page.url}</div>}
+              {issue && <div><span className="font-medium text-charcoal-800">Issue:</span> {taskLabel(issue.issueType)}</div>}
+              {issue && <div><span className="font-medium text-charcoal-800">Category:</span> {taskLabel(issue.category)}</div>}
+            </div>
+          </section>
+
+          <section className="rounded-lg border border-brand-100 bg-brand-50/60 p-4">
+            <div className="text-sm font-semibold text-charcoal-800">How to complete this task</div>
+            <ol className="mt-3 space-y-2 text-sm leading-6 text-charcoal-700">
+              {steps.map((step, index) => (
+                <li key={step} className="flex gap-3">
+                  <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-white text-xs font-bold text-brand-700">{index + 1}</span>
+                  <span>{step}</span>
+                </li>
+              ))}
+            </ol>
+          </section>
+
+          {task.manualInstructions && (
+            <section className="rounded-lg border border-amber-100 bg-amber-50 p-4">
+              <div className="text-sm font-semibold text-amber-900">Manual instruction</div>
+              <p className="mt-2 text-sm leading-6 text-amber-900">{task.manualInstructions}</p>
+            </section>
+          )}
+
+          <section className="rounded-lg border border-green-100 bg-green-50 p-4">
+            <div className="text-sm font-semibold text-green-900">Completion rule</div>
+            <p className="mt-2 text-sm leading-6 text-green-900">
+              Mark this task completed only after the manual work has been handled or the source item has been reviewed and approved. Use Skip when the recommendation is not relevant for this project. External actions such as publishing or social posting still happen manually outside this first version.
+            </p>
+          </section>
+        </div>
+        <div className="flex flex-wrap justify-end gap-2 border-t border-charcoal-100 px-5 py-4">
+          {issue && onOpenIssue && <Button variant="ghost" onClick={onOpenIssue}>View source issue</Button>}
+          {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={onApprove}>Approve</Button>}
+          {task.status !== "skipped" && task.status !== "completed" && <Button variant="ghost" onClick={onSkip}>Skip</Button>}
+          {task.status === "completed" ? <Button variant="ghost" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={onReopen}>Reopen task</Button> : <Button onClick={onComplete}>Mark complete</Button>}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
 export default function CrawlDetail() {
   const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const projectId = searchParams.get("projectId") ?? "";
+  const requestedReturnTo = searchParams.get("returnTo");
+  const returnTo = requestedReturnTo?.startsWith("/") && !requestedReturnTo.startsWith("//") ? requestedReturnTo : "/site-analysis";
   const [status, setStatus] = useState<CrawlStatus | null>(null);
   const [summary, setSummary] = useState<CrawlSummary | null>(null);
   const [pages, setPages] = useState<PageRow[]>([]);
   const [pageTotal, setPageTotal] = useState(0);
   const [issues, setIssues] = useState<IssueRow[]>([]);
   const [brokenLinks, setBrokenLinks] = useState<BrokenLinkRow[]>([]);
+  const [executionTasks, setExecutionTasks] = useState<ExecutionTask[]>([]);
+  const [taskModuleFilter, setTaskModuleFilter] = useState("all");
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskActionMessage, setTaskActionMessage] = useState("");
+  const [taskActionError, setTaskActionError] = useState(false);
+  const [syncingTasks, setSyncingTasks] = useState(false);
+  const taskSyncPromiseRef = useRef<Promise<ExecutionTask[]> | null>(null);
   const [healthReport, setHealthReport] = useState<HealthReport | null>(null);
   const [comparison, setComparison] = useState<CrawlComparison | null>(null);
   const [loadingComparison, setLoadingComparison] = useState(false);
@@ -1675,6 +1922,8 @@ export default function CrawlDetail() {
   const [checkingPageSpeedId, setCheckingPageSpeedId] = useState<string | null>(null);
   const [performancePageId, setPerformancePageId] = useState<string | null>(null);
   const [openIssueId, setOpenIssueId] = useState<string | null>(null);
+  const [openTaskId, setOpenTaskId] = useState<string | null>(null);
+  const [section, setSection] = useState<ReportSection>("execution");
   const [tab, setTab] = useState<"pages" | "issues" | "broken">("pages");
   const [issuesPage, setIssuesPage] = useState(1);
   const [brokenPage, setBrokenPage] = useState(1);
@@ -1738,27 +1987,79 @@ export default function CrawlDetail() {
     }
   };
 
+  const syncExecutionTasks = (websiteId?: string | null, announce = false) => {
+    if (!id || !websiteId) return Promise.resolve([] as ExecutionTask[]);
+    if (taskSyncPromiseRef.current) return taskSyncPromiseRef.current;
+    setSyncingTasks(true);
+    const request = api.post<{ tasks: ExecutionTask[] }>(`/api/websites/${websiteId}/execution-tasks/sync`, {})
+      .then((result) => {
+        setExecutionTasks(result.tasks);
+        setTaskActionError(false);
+        if (announce) setTaskActionMessage(`${result.tasks.length} project task${result.tasks.length === 1 ? " was" : "s were"} synchronized.`);
+        return result.tasks;
+      })
+      .catch((error) => {
+        setTaskActionError(true);
+        setTaskActionMessage(`The crawl report is available, but project tasks could not be synchronized automatically. ${error instanceof Error ? error.message : "Use Sync tasks to try again."}`);
+        return [] as ExecutionTask[];
+      })
+      .finally(() => {
+        setSyncingTasks(false);
+        taskSyncPromiseRef.current = null;
+      });
+    taskSyncPromiseRef.current = request;
+    return request;
+  };
+
+  const updateTaskStatus = async (taskId: string, nextStatus: "completed" | "skipped" | "approved" | "ready") => {
+    setTaskActionMessage("");
+    setTaskActionError(false);
+    try {
+      const endpoint = nextStatus === "completed" ? "complete" : nextStatus === "skipped" ? "skip" : null;
+      const result = endpoint
+        ? await api.post<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}/${endpoint}`, {})
+        : await api.patch<{ task: ExecutionTask }>(`/api/execution-tasks/${taskId}`, { status: nextStatus });
+      setExecutionTasks((tasks) => tasks.map((task) => task.id === result.task.id ? result.task : task));
+      setTaskActionMessage(nextStatus === "completed" ? "Task marked completed. View it anytime using the Completed filter." : `Task marked ${taskLabel(nextStatus)}.`);
+    } catch (error) {
+      setTaskActionError(true);
+      setTaskActionMessage(error instanceof Error ? error.message : "Task status could not be updated.");
+    }
+  };
+
   // Poll status while queued/running.
   useEffect(() => {
     if (!id) return;
     let timer: ReturnType<typeof setTimeout>;
     const tick = async () => {
-      const s = await api.get<CrawlStatus>(`/api/crawls/${id}/status`);
-      setStatus(s);
-      if (s.status === "queued" || s.status === "running") {
-        timer = setTimeout(tick, 1500);
-      } else {
-        // load results once finished
-        setSummary(await api.get(`/api/crawls/${id}/summary`));
-        const pageResult = await api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${id}/pages?take=150`);
-        setPageTotal(pageResult.total);
-        setPages(pageResult.pages);
-        setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
-        setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
-        setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
+      try {
+        const s = await api.get<CrawlStatus>(`/api/crawls/${id}/status`);
+        setStatus(s);
+        if (s.status === "queued" || s.status === "running") {
+          timer = setTimeout(tick, 1500);
+        } else {
+          // load results once finished
+          setSummary(await api.get(`/api/crawls/${id}/summary`));
+          const pageResult = await api.get<{ total: number; pages: PageRow[] }>(`/api/crawls/${id}/pages?take=150`);
+          setPageTotal(pageResult.total);
+          setPages(pageResult.pages);
+          setIssues((await api.get<{ issues: IssueRow[] }>(`/api/crawls/${id}/issues`)).issues);
+          setBrokenLinks((await api.get<{ links: BrokenLinkRow[] }>(`/api/crawls/${id}/broken-links`)).links);
+          setHealthReport(await api.get<HealthReport>(`/api/crawls/${id}/health-report`));
+          const syncedTasks = await syncExecutionTasks(s.website?.id);
+          const sourceIssueId = searchParams.get("sourceIssueId");
+          if (searchParams.get("section") === "execution" || sourceIssueId) setSection("execution");
+          if (sourceIssueId) {
+            const matchingTask = syncedTasks.find((task) => task.dedupeKey === `crawl:${sourceIssueId}`);
+            if (matchingTask) setOpenTaskId(matchingTask.id);
+          }
+        }
+      } catch (error) {
+        setTaskActionError(true);
+        setTaskActionMessage(`The crawl report could not finish loading. ${error instanceof Error ? error.message : "Refresh this page to try again."}`);
       }
     };
-    tick();
+    void tick();
     return () => clearTimeout(timer);
   }, [id]);
 
@@ -1803,23 +2104,58 @@ export default function CrawlDetail() {
   const pageRows = paginate(pages, pagesPage);
   const performancePage = performancePageId ? pages.find((page) => page.id === performancePageId) ?? null : null;
   const openIssue = openIssueId ? issues.find((issue) => issue.id === openIssueId) ?? null : null;
+  const openTask = openTaskId ? executionTasks.find((task) => task.id === openTaskId) ?? null : null;
+  const openTaskIssueId = openTask ? issueIdFromTask(openTask) : null;
+  const openTaskIssue = openTaskIssueId ? issues.find((issue) => issue.id === openTaskIssueId) ?? null : null;
   const sevCounts = {
     high: issues.filter((i) => i.severity === "high").length,
     medium: issues.filter((i) => i.severity === "medium").length,
     low: issues.filter((i) => i.severity === "low").length,
   };
+  const openTaskCount = executionTasks.filter((task) => task.status !== "completed" && task.status !== "skipped").length;
+  const taskFilters = [
+    { key: "all", label: "All", count: executionTasks.length },
+    { key: "crawl", label: "Crawl", count: executionTasks.filter((task) => task.moduleName === "crawl").length },
+    { key: "keyword_research", label: "Keywords", count: executionTasks.filter((task) => task.moduleName === "keyword_research").length },
+    { key: "local_seo", label: "Local SEO", count: executionTasks.filter((task) => task.moduleName === "local_seo").length },
+    { key: "ai_content", label: "AI Content", count: executionTasks.filter((task) => task.moduleName === "ai_content").length },
+    { key: "social_strategy", label: "Social", count: executionTasks.filter((task) => task.moduleName === "social_strategy").length },
+    { key: "needs_review", label: "Needs Review", count: executionTasks.filter((task) => task.status === "needs_review").length },
+    { key: "approved", label: "Approved", count: executionTasks.filter((task) => task.status === "approved").length },
+    { key: "completed", label: "Completed", count: executionTasks.filter((task) => task.status === "completed").length },
+  ].filter((item) => item.key === "all" || item.key === "completed" || item.count > 0);
+  const visibleExecutionTasks = executionTasks.filter((task) => (
+    taskModuleFilter === "all" ||
+    task.moduleName === taskModuleFilter ||
+    task.status === taskModuleFilter
+  ));
+  const taskPageSize = 10;
+  const effectiveTaskPage = Math.min(taskPage, Math.max(1, Math.ceil(visibleExecutionTasks.length / taskPageSize)));
+  const pagedExecutionTasks = visibleExecutionTasks.slice((effectiveTaskPage - 1) * taskPageSize, effectiveTaskPage * taskPageSize);
+  const healthScore = Math.max(0, Math.min(100, summary?.siteScore ?? 0));
+  const scoreDash = 2 * Math.PI * 42;
+  const navItems: { key: ReportSection; label: string; count?: ReactNode; detail: string; tone: string; active: string; countClass: string }[] = [
+    { key: "execution", label: "Execution", count: openTaskCount, detail: "Open tasks", tone: "border-brand-200 bg-brand-50 text-brand-800 hover:border-brand-400", active: "border-brand-600 bg-brand-600 text-white shadow-md", countClass: "bg-white text-brand-700" },
+    { key: "overview", label: "Overview", count: summary?.siteScore ?? "—", detail: "Site score", tone: "border-green-200 bg-green-50 text-green-800 hover:border-green-400", active: "border-green-600 bg-green-600 text-white shadow-md", countClass: "bg-white text-green-700" },
+    { key: "health", label: "Health", detail: "Readiness", tone: "border-blue-200 bg-blue-50 text-blue-800 hover:border-blue-400", active: "border-blue-600 bg-blue-600 text-white shadow-md", countClass: "bg-white text-blue-700" },
+    { key: "issues", label: "Issues", count: issues.length, detail: "Findings", tone: "border-amber-200 bg-amber-50 text-amber-900 hover:border-amber-400", active: "border-amber-500 bg-amber-500 text-white shadow-md", countClass: "bg-white text-amber-700" },
+    { key: "pages", label: "Pages", count: pageTotal || pages.length, detail: "Crawled", tone: "border-slate-200 bg-slate-50 text-slate-800 hover:border-slate-400", active: "border-slate-700 bg-slate-700 text-white shadow-md", countClass: "bg-white text-slate-700" },
+    { key: "broken", label: "Broken", count: brokenLinks.length, detail: "Links", tone: "border-red-200 bg-red-50 text-red-800 hover:border-red-400", active: "border-red-600 bg-red-600 text-white shadow-md", countClass: "bg-white text-red-700" },
+  ];
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
+        <div className="flex min-w-0 items-start gap-3">
+          <button type="button" onClick={() => navigate(returnTo)} className="mt-0.5 inline-flex h-9 shrink-0 items-center rounded-lg border border-slate-200 bg-white px-3 text-sm font-bold text-charcoal-600 shadow-sm hover:border-brand-300 hover:text-brand-700">← Back</button>
+          <div className="min-w-0">
           <h1 className="text-2xl font-bold text-charcoal-800">
             Crawl results{status.website?.domain ? ` for ${status.website.domain}` : ""}
           </h1>
           <p className="text-sm text-charcoal-400">
             {status.website?.rootUrl ? `${status.website.rootUrl} · ` : ""}Crawl ID {id}
           </p>
+          </div>
         </div>
-        <StatusPill status={status.status} />
       </div>
 
       {running ? (
@@ -1836,64 +2172,146 @@ export default function CrawlDetail() {
         <>
           <div className="space-y-6">
             {summary && (
-              <Card className="p-5">
-                <div className="flex flex-col gap-2 border-b border-charcoal-100 pb-4 sm:flex-row sm:items-end sm:justify-between">
+              <Card className="overflow-hidden">
+                <div className="grid lg:grid-cols-[190px_minmax(0,1fr)]">
+                  <div className="flex items-center justify-center border-b border-slate-100 bg-slate-50/70 p-4 lg:border-b-0 lg:border-r">
+                    <div className="relative h-28 w-28"><svg viewBox="0 0 100 100" className="h-full w-full -rotate-90" aria-label={`Site health score ${healthScore} out of 100`}><circle cx="50" cy="50" r="42" fill="none" stroke="#e2e8f0" strokeWidth="8"/><circle cx="50" cy="50" r="42" fill="none" stroke={healthScore >= 80 ? "#059669" : healthScore >= 60 ? "#d97706" : "#dc2626"} strokeWidth="8" strokeLinecap="round" strokeDasharray={scoreDash} strokeDashoffset={scoreDash * (1 - healthScore / 100)}/></svg><div className="absolute inset-0 flex flex-col items-center justify-center"><span className={`text-3xl font-bold ${scoreTone(healthScore)}`}>{healthScore}</span><span className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">Health</span></div></div>
+                  </div>
                   <div>
-                    <h2 className="text-lg font-semibold text-charcoal-800">Crawl stats</h2>
-                    <p className="text-sm text-charcoal-400">Review crawled pages, issue details, broken links, and page performance from this crawl.</p>
+                    <div className="flex flex-col gap-2 border-b border-slate-100 px-5 py-3 sm:flex-row sm:items-center sm:justify-between"><div><h2 className="font-bold text-charcoal-900">Crawl overview</h2><p className="text-xs text-charcoal-500">Latest crawl health and actionable workload.</p></div><StatusPill status={summary.status} /></div>
+                    <div className="grid grid-cols-2 divide-x divide-y divide-slate-100 sm:grid-cols-3 xl:grid-cols-6 xl:divide-y-0">
+                      {[["Pages", summary.pageCount, "Crawled", "text-charcoal-900"], ["Indexable", summary.indexable, "Pages", "text-green-700"], ["Issues", issues.length, "Findings", issues.length ? "text-amber-700" : "text-green-700"], ["Broken", brokenLinks.length, "Links", brokenLinks.length ? "text-red-600" : "text-green-700"], ["Open tasks", openTaskCount, "Execution", "text-brand-700"], ["High priority", executionTasks.filter((task) => task.priority === "high" && task.status !== "completed" && task.status !== "skipped").length, "Tasks", "text-red-600"]].map(([labelText, value, detail, tone]) => <div key={String(labelText)} className="px-4 py-3"><div className="text-[10px] font-bold uppercase tracking-wide text-charcoal-400">{labelText}</div><div className={`mt-1 text-xl font-bold ${tone}`}>{value}</div><div className="text-[10px] font-semibold text-charcoal-400">{detail}</div></div>)}
+                    </div>
                   </div>
-                  <div className="text-sm font-medium text-charcoal-500">
-                    Score <span className={scoreTone(summary.siteScore)}>{summary.siteScore ?? "-"}</span>
-                  </div>
-                </div>
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
-                  <StatBox label="Pages crawled" value={summary.pageCount} />
-                  <StatBox label="Indexable pages" value={summary.indexable} tone="text-green-700" />
-                  <StatBox label="Issues" value={issues.length} tone={issues.length > 0 ? "text-amber-700" : "text-green-700"} />
-                  <StatBox label="Broken links" value={brokenLinks.length} tone={brokenLinks.length > 0 ? "text-red-600" : "text-green-700"} />
-                  <StatBox label="Status" value={summary.status} />
                 </div>
               </Card>
             )}
-            <HealthReportView report={healthReport} crawl={status} pages={pages} />
+
+            <Card className="sticky top-0 z-20 bg-white/95 p-3 backdrop-blur">
+              <div className="flex flex-wrap gap-2">
+                {navItems.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => {
+                      setSection(item.key);
+                      if (item.key === "pages" || item.key === "issues" || item.key === "broken") setTab(item.key);
+                      setOpenIssueId(null);
+                    }}
+                    className={`inline-flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-sm font-bold transition ${section === item.key ? "border-brand-600 bg-brand-600 text-white shadow-sm" : "border-slate-200 bg-white text-charcoal-600 hover:border-brand-300 hover:text-brand-700"}`}
+                  >
+                    <span>{item.label}</span>
+                      {item.count !== undefined && (
+                        <span className={`rounded-full px-2 py-0.5 text-xs ${section === item.key ? "bg-white/20 text-white" : "bg-slate-100 text-charcoal-500"}`}>{item.count}</span>
+                      )}
+                  </button>
+                ))}
+              </div>
+            </Card>
+
+            {section === "health" && <HealthReportView report={healthReport} crawl={status} pages={pages} projectId={projectId} />}
+
+            {section === "execution" && <Card className="overflow-hidden">
+              <div className="flex flex-col gap-3 border-b border-charcoal-100 bg-white px-5 py-4 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-brand-600">Execution Plan</div>
+                  <h2 className="mt-1 text-lg font-bold text-charcoal-800">Project tasks from all modules</h2>
+                  <p className="mt-1 text-sm text-charcoal-500">Action items from crawl, keyword research, local SEO, AI content, and social strategy. External publishing and posting remain manual/approval-required.</p>
+                </div>
+                <div className="flex shrink-0 flex-nowrap items-center gap-2">
+                  {status.website?.id && (
+                    <Button disabled={syncingTasks} onClick={() => void syncExecutionTasks(status.website?.id, true)}>
+                      {syncingTasks ? "Syncing..." : "Sync tasks"}
+                    </Button>
+                  )}
+                  <Button variant="ghost" className="border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" onClick={() => status.website?.id && navigate(`/website-projects/${status.website.id}`)}>
+                    Open project
+                  </Button>
+                </div>
+              </div>
+              {taskActionMessage && <div className={`border-b px-5 py-2.5 text-sm font-semibold ${taskActionError ? "border-amber-200 bg-amber-50 text-amber-900" : "border-emerald-100 bg-emerald-50 text-emerald-800"}`}>{taskActionMessage}</div>}
+              <div className="flex flex-wrap gap-2 border-b border-charcoal-100 px-5 py-3">
+                {taskFilters.map((item) => (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => { setTaskModuleFilter(item.key); setTaskPage(1); }}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      taskModuleFilter === item.key
+                        ? "border-brand-500 bg-brand-50 text-brand-700"
+                        : "border-charcoal-200 bg-white text-charcoal-500 hover:border-brand-300 hover:text-brand-700"
+                    }`}
+                  >
+                    {item.label}
+                    <span className="rounded-full bg-white px-1.5 text-[11px]">{item.count}</span>
+                  </button>
+                ))}
+              </div>
+              {visibleExecutionTasks.length > taskPageSize && <Pagination page={effectiveTaskPage} total={visibleExecutionTasks.length} pageSize={taskPageSize} onPage={setTaskPage} />}
+              <div className="divide-y divide-charcoal-100">
+                {visibleExecutionTasks.length === 0 ? (
+                  <div className="px-5 py-8 text-sm text-charcoal-500">
+                    No execution tasks match this filter yet. Click Sync tasks after crawl, keyword research, local SEO, AI content, or social strategy data exists.
+                  </div>
+                ) : (
+                  pagedExecutionTasks.map((task) => (
+                    <div key={task.id} className="px-5 py-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap gap-2">
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskModuleClass(task.moduleName)}`}>{taskLabel(task.moduleName)}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskPriorityClass(task.priority)}`}>{taskLabel(task.priority)}</span>
+                            <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${taskStatusClass(task.status)}`}>{taskLabel(task.status)}</span>
+                            <span className="rounded-full border border-charcoal-100 bg-charcoal-50 px-2 py-0.5 text-xs font-semibold text-charcoal-600">{taskLabel(task.sourceType)}</span>
+                            {task.requiresApproval && <span className="rounded-full border border-blue-100 bg-blue-50 px-2 py-0.5 text-xs font-semibold text-blue-700">Approval required</span>}
+                          </div>
+                          <div className="mt-2 font-semibold text-charcoal-800">{task.title}</div>
+                          <p className="mt-1 text-sm leading-6 text-charcoal-500">{task.description}</p>
+                          {task.impact && <p className="mt-2 text-xs font-medium text-charcoal-500">{task.impact}</p>}
+                          {task.manualInstructions && <p className="mt-1 text-xs text-charcoal-400">{task.manualInstructions}</p>}
+                        </div>
+                        <div className="flex shrink-0 flex-wrap gap-2">
+                          <Button variant="ghost" onClick={() => setOpenTaskId(task.id)}>Open</Button>
+                          {task.status === "completed" && <Button variant="ghost" className="border-amber-200 bg-amber-50 text-amber-800 hover:bg-amber-100" onClick={() => void updateTaskStatus(task.id, "ready")}>Reopen</Button>}
+                          {task.requiresApproval && task.status !== "approved" && task.status !== "completed" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "approved")}>Approve</Button>}
+                          {task.status !== "completed" && <Button onClick={() => void updateTaskStatus(task.id, "completed")}>Complete</Button>}
+                          {task.status !== "skipped" && task.status !== "completed" && <Button variant="ghost" onClick={() => void updateTaskStatus(task.id, "skipped")}>Skip</Button>}
+                        </div>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+              <Pagination page={effectiveTaskPage} total={visibleExecutionTasks.length} pageSize={taskPageSize} onPage={setTaskPage} />
+            </Card>}
 
           {/* Issue breakdown grid — click a card to filter the issues table */}
-          {summary && (
+          {section === "overview" && summary && (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
               <IssueCard label="Broken links" value={summary.breakdown.brokenLinks} color="red"
-                active={tab === "broken"} onClick={() => { setTab("broken"); setFilter(null); setBrokenPage(1); setOpenIssueId(null); }} />
+                active={tab === "broken"} onClick={() => { setSection("broken"); setTab("broken"); setFilter(null); setBrokenPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Title issues" value={summary.breakdown.titleIssues} color="amber"
-                active={filter === "title"} onClick={() => { setTab("issues"); setFilter(filter === "title" ? null : "title"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "title"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "title" ? null : "title"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Description" value={summary.breakdown.descriptionIssues} color="amber"
-                active={filter === "meta_desc"} onClick={() => { setTab("issues"); setFilter(filter === "meta_desc" ? null : "meta_desc"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "meta_desc"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "meta_desc" ? null : "meta_desc"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="H1 issues" value={summary.breakdown.h1Issues} color="amber"
-                active={filter === "h1"} onClick={() => { setTab("issues"); setFilter(filter === "h1" ? null : "h1"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "h1"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "h1" ? null : "h1"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Content" value={summary.breakdown.contentIssues} color="slate"
-                active={filter === "word_count"} onClick={() => { setTab("issues"); setFilter(filter === "word_count" ? null : "word_count"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "word_count"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "word_count" ? null : "word_count"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Indexability" value={summary.breakdown.indexabilityIssues} color="red"
-                active={filter === "index"} onClick={() => { setTab("issues"); setFilter(filter === "index" ? null : "index"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "index"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "index" ? null : "index"); setIssuesPage(1); setOpenIssueId(null); }} />
               <IssueCard label="Site files" value={summary.breakdown.siteFileIssues} color="slate"
-                active={filter === "site_files"} onClick={() => { setTab("issues"); setFilter(filter === "site_files" ? null : "site_files"); setIssuesPage(1); setOpenIssueId(null); }} />
+                active={filter === "site_files"} onClick={() => { setSection("issues"); setTab("issues"); setFilter(filter === "site_files" ? null : "site_files"); setIssuesPage(1); setOpenIssueId(null); }} />
             </div>
           )}
 
-          {/* Tabs */}
-          <div className="flex gap-2">
-            <Button variant={tab === "pages" ? "primary" : "ghost"} onClick={() => { setTab("pages"); setOpenIssueId(null); }}>
-              Pages ({pageTotal > pages.length ? `${pages.length}/${pageTotal}` : pageTotal || pages.length})
-            </Button>
-            <Button variant={tab === "issues" ? "primary" : "ghost"} onClick={() => { setTab("issues"); setOpenIssueId(null); }}>
-              Issues ({shownIssues.length !== issues.length ? `${shownIssues.length}/` : ""}{issues.length})
-            </Button>
-            {filter && (
-              <Button variant="ghost" onClick={() => { setFilter(null); setIssuesPage(1); setOpenIssueId(null); }}>✕ Clear "{filter}" filter</Button>
-            )}
-            <Button variant={tab === "broken" ? "primary" : "ghost"} onClick={() => { setTab("broken"); setOpenIssueId(null); }}>
-              Broken links ({shownBrokenLinks.length !== brokenLinks.length ? `${shownBrokenLinks.length}/` : ""}{brokenLinks.length})
-            </Button>
-          </div>
+          {section === "issues" && filter && (
+            <div>
+              <Button variant="ghost" onClick={() => { setFilter(null); setIssuesPage(1); setOpenIssueId(null); }}>Clear "{filter}" filter</Button>
+            </div>
+          )}
 
-          {tab === "pages" ? (
+          {section === "pages" ? (
             <Card className="overflow-hidden">
               <div className="overflow-x-auto"><table className="w-full min-w-[820px] text-sm">
                 <thead className="bg-charcoal-50 text-left text-xs uppercase text-charcoal-400">
@@ -1978,7 +2396,7 @@ export default function CrawlDetail() {
               </table></div>
               <Pagination page={pagesPage} total={pages.length} onPage={setPagesPage} />
             </Card>
-          ) : tab === "issues" ? (
+          ) : section === "issues" ? (
             <Card className="overflow-hidden">
               <div className="flex flex-col gap-3 border-b border-charcoal-100 px-5 py-3 lg:flex-row lg:items-center lg:justify-between">
                 <div className="flex flex-wrap items-center gap-2">
@@ -2034,20 +2452,28 @@ export default function CrawlDetail() {
                   </tr>
                 </thead>
                 <tbody>
-                  {issueRows.map((i) => (
+                  {issueRows.map((i) => {
+                    const metric = lengthMetric(i);
+                    const pageUrl = pageUrlParts(i.page?.url);
+                    return (
                       <tr key={i.id} className="border-t border-charcoal-50 align-top">
                         <td className="px-5 py-3"><Badge severity={i.severity} /></td>
-                        <td className="px-5 py-3">
+                        <td className="max-w-[360px] px-5 py-3">
                           <div className="flex items-start gap-2">
                             <div>
-                              <div className="font-medium text-charcoal-700">{i.message}</div>
+                              <div className="font-medium leading-5 text-charcoal-700">{compactIssueMessage(i)}</div>
                               <div className="text-xs text-charcoal-400">{i.category} · {i.issueType}</div>
-                              {lengthMetric(i) && <LengthMeter metric={lengthMetric(i)!} compact />}
+                              {metric && <div className="mt-1 inline-flex rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-charcoal-600">{metric.label}: {compactLengthStatus(metric)}</div>}
                             </div>
                           </div>
                         </td>
-                        <td className="max-w-[220px] truncate px-5 py-3 text-charcoal-500">{i.page?.url ?? "—"}</td>
-                        <td className="px-5 py-3 text-charcoal-500">{i.recommendation ?? "—"}</td>
+                        <td className="w-[280px] max-w-[280px] px-5 py-3 text-charcoal-500">
+                          {pageUrl ? <div title={pageUrl.full}>
+                            <div className="break-all font-semibold leading-5 text-charcoal-700">{pageUrl.path}</div>
+                            {pageUrl.host ? <div className="mt-0.5 break-all text-[11px] text-charcoal-400">{pageUrl.host}</div> : null}
+                          </div> : "—"}
+                        </td>
+                        <td className="max-w-[300px] px-5 py-3 leading-5 text-charcoal-500">{i.recommendation ?? "—"}</td>
                         <td className="px-5 py-3 text-right">
                           <div className="flex justify-end gap-2">
                             <ActionIconButton icon={openIssueId === i.id ? "close" : "details"} label={openIssueId === i.id ? "Close issue details" : "View issue details"} onClick={() => setOpenIssueId(openIssueId === i.id ? null : i.id)} />
@@ -2055,12 +2481,13 @@ export default function CrawlDetail() {
                           </div>
                         </td>
                       </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table></div>
               <Pagination page={issuesPage} total={shownIssues.length} onPage={(p) => { setIssuesPage(p); setOpenIssueId(null); }} />
             </Card>
-          ) : tab === "broken" ? (
+          ) : section === "broken" ? (
             <Card className="overflow-hidden">
               <div className="space-y-3 border-b border-charcoal-100 px-5 py-3">
                 <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -2175,6 +2602,37 @@ export default function CrawlDetail() {
           checking={checkingPageSpeedId === performancePage.id}
           onRunLab={() => runPageSpeedCheck(performancePage.id)}
           onClose={() => setPerformancePageId(null)}
+        />
+      )}
+
+      {openTask && (
+        <ExecutionTaskDrawer
+          task={openTask}
+          issue={openTaskIssue}
+          onClose={() => setOpenTaskId(null)}
+          onOpenIssue={() => {
+            if (!openTaskIssue) return;
+            setSection("issues");
+            setTab("issues");
+            setOpenIssueId(openTaskIssue.id);
+            setOpenTaskId(null);
+          }}
+          onApprove={() => {
+            void updateTaskStatus(openTask.id, "approved");
+            setOpenTaskId(null);
+          }}
+          onComplete={() => {
+            void updateTaskStatus(openTask.id, "completed");
+            setOpenTaskId(null);
+          }}
+          onReopen={() => {
+            void updateTaskStatus(openTask.id, "ready");
+            setOpenTaskId(null);
+          }}
+          onSkip={() => {
+            void updateTaskStatus(openTask.id, "skipped");
+            setOpenTaskId(null);
+          }}
         />
       )}
 

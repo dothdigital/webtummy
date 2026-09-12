@@ -1,0 +1,32 @@
+Hello,
+
+SAMPLE · Published page needs attention
+
+Needs attention: SAMPLE · Published page needs attention
+Update recorded: 2026-09-05 12:00:00 UTC
+
+What happened
+This is an illustrative alert, not a real incident. A scheduled check detected an unavailable page. Review the evidence before making changes.
+
+Issue details · SAMPLE
+Check | Previous | Current | Status
+Page availability | HTTP 200 | HTTP 404 | Needs attention
+Affected page | — | https://example.com/services | Review required
+Automatic publishing | — | No changes made | Waiting for review
+
+
+What to do next
+Step | Action
+1 | Check whether the page URL changed
+2 | Review and approve the appropriate fix
+3 | Publish the approved fix and rerun verification
+
+
+Next action
+Open SEnuke dashboard: https://app.senuke.com/
+
+Thank you,
+The SEnuke AI Team
+
+SAMPLE DESIGN requested for review. All project names, measurements and results in this email are fictional demonstration data.
+Support: support@senuke.com

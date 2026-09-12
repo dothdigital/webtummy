@@ -1,0 +1,12 @@
+SEnuke AI - AI Growth Operating System GUI Mockups — Phase 1 Core Screens
+
+01_Dashboard_Main_After_Login.png - Main screen after user login.
+02_Projects_List_and_Project_Management.png - Project list and management screen.
+03_Opportunity_Finder.png - Opportunity scoring and selection screen.
+04_AI_Strategy_Engine.png - Strategy review and approval screen.
+05_Keyword_Research.png - Keyword research with volume, difficulty, intent, clusters.
+06_Site_Analysis.png - One-click website analysis and optimization checklist.
+07_Backlink_Intelligence.png - Backlink tracking and authority opportunity screen.
+08_AI_Citation_Optimization.png - AI citation readiness and structured-data improvement screen.
+09_AI_Site_Architect.png - Sitemap, page structure, metadata, and CTA architecture screen.
+10_Lead_Magnet_Builder.png - Lead magnet generation, preview, delivery, and publishing screen.

@@ -9,6 +9,22 @@ function formatDate(value: string | null | undefined) {
   return new Intl.DateTimeFormat(undefined, { month: "numeric", day: "numeric", year: "numeric" }).format(new Date(value));
 }
 
+function effectiveRole(roles: string[]) {
+  if (roles.includes("owner") || roles.includes("admin")) return "admin";
+  if (roles.includes("manager") || roles.includes("approver")) return "manager";
+  if (roles.includes("editor")) return "editor";
+  if (roles.includes("client_viewer")) return "client_viewer";
+  return "viewer";
+}
+
+function effectiveRoleLabel(roles: string[]) {
+  const role = roles.length === 1 && ["admin", "manager", "editor", "viewer", "client_viewer"].includes(roles[0]) ? roles[0] : effectiveRole(roles);
+  if (role === "admin") return "Owner/Admin";
+  if (role === "manager") return "Manager/Approver";
+  if (role === "client_viewer") return "Client Viewer";
+  return role.charAt(0).toUpperCase() + role.slice(1);
+}
+
 function formatDateTime(value: string | null | undefined) {
   if (!value) return "-";
   return new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit" }).format(new Date(value));
@@ -37,7 +53,7 @@ function billingState(user: AdminUser) {
   if (!client) return { label: "Internal", detail: "No subscription", className: "border-slate-200 bg-slate-50 text-slate-600" };
   const now = new Date();
   if (isLegacyActiveTrial(user)) return { label: "legacy active", detail: "no trial end set", className: "border-amber-200 bg-amber-50 text-amber-800" };
-  if (client.aiSubscriptionStatus === "active") return { label: "active", detail: client.subscriptionSource || "stripe", className: "border-green-200 bg-green-50 text-green-700" };
+  if (client.aiSubscriptionStatus === "active") return { label: "active", detail: client.subscriptionSource || "commercial", className: "border-green-200 bg-green-50 text-green-700" };
   if (client.aiSubscriptionStatus === "trialing") {
     const active = Boolean(client.trialEndsAt && new Date(client.trialEndsAt) > now);
     return { label: active ? "trial active" : "trial expired", detail: active ? `ends ${formatDate(client.trialEndsAt)}` : "upgrade required", className: active ? "border-blue-200 bg-blue-50 text-blue-700" : "border-red-200 bg-red-50 text-red-700" };
@@ -56,7 +72,7 @@ function sourceLabel(user: AdminUser) {
   if (client.subscriptionSource && client.subscriptionSource !== "trial") return client.subscriptionSource;
   if (client.aiSubscriptionStatus === "trialing") return "trial";
   if (client.aiSubscriptionStatus === "offline") return "offline";
-  if (client.aiSubscriptionStatus === "active") return "stripe/manual";
+  if (client.aiSubscriptionStatus === "active") return client.subscriptionSource || "commercial";
   return "-";
 }
 
@@ -67,7 +83,7 @@ export default function Users() {
   const [planFilter, setPlanFilter] = useState("all");
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [modal, setModal] = useState<{ type: "details" | "edit" | "password" | "subscription"; user: AdminUser } | null>(null);
+  const [modal, setModal] = useState<{ type: "actions" | "details" | "edit" | "password" | "subscription" | "rbac"; user: AdminUser } | null>(null);
   const [password, setPassword] = useState("");
   const [trialDays, setTrialDays] = useState("30");
   const [amount, setAmount] = useState("");
@@ -78,9 +94,17 @@ export default function Users() {
   const [autoRenew, setAutoRenew] = useState(false);
   const [offlineExpiry, setOfflineExpiry] = useState(() => dateInputValue(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)));
   const [message, setMessage] = useState<string | null>(null);
+  const [createAccountOpen, setCreateAccountOpen] = useState(false);
+  const [createAccountBusy, setCreateAccountBusy] = useState(false);
+  const [createName, setCreateName] = useState("");
+  const [createEmail, setCreateEmail] = useState("");
+  const [createWorkspaceName, setCreateWorkspaceName] = useState("");
+  const [createPlan, setCreatePlan] = useState("entrepreneur");
+  const [createTrialDays, setCreateTrialDays] = useState("30");
 
   const planByCode = useMemo(() => new Map(plans.map((plan) => [plan.code, plan])), [plans]);
   const filteredUsers = useMemo(() => users.filter((user) => planFilter === "all" || user.client?.plan === planFilter), [planFilter, users]);
+  const accountPlans = useMemo(() => plans.filter((plan) => ["entrepreneur", "business", "agency"].includes(plan.code)), [plans]);
 
   const load = async () => {
     setLoading(true);
@@ -100,7 +124,7 @@ export default function Users() {
 
   const updateUser = (updated: AdminUser) => {
     setUsers((current) => current.map((item) => {
-      if (item.id === updated.id) return updated;
+      if (item.id === updated.id) return { ...updated, memberships: updated.memberships ?? item.memberships };
       if (updated.clientId && item.clientId === updated.clientId && item.client) return { ...item, client: updated.client };
       return item;
     }));
@@ -127,9 +151,77 @@ export default function Users() {
   };
 
   const verify = (user: AdminUser) => patchUser(user, `/api/users/${user.id}/verify-email`, {}, `${user.email} is now verified.`);
+  const resendSetupEmail = async (user: AdminUser) => {
+    setBusyId(user.id);
+    setMessage(null);
+    try {
+      const result = await api.post<{ message: string }>(`/api/users/${user.id}/resend-setup-email`, {});
+      setMessage(result.message);
+      setModal(null);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBusyId(null);
+    }
+  };
   const setActive = (user: AdminUser, isActive: boolean) => patchUser(user, `/api/users/${user.id}/active`, { isActive }, `${user.email} ${isActive ? "enabled" : "disabled"}.`);
   const changePlan = (user: AdminUser, plan: string) => patchUser(user, `/api/users/${user.id}/plan`, { plan }, `${user.client?.name ?? user.email} moved to ${planByCode.get(plan)?.name ?? plan}.`);
   const updateBillingAccess = (user: AdminUser, body: unknown, success: string) => patchUser(user, `/api/users/${user.id}/billing-access`, body, success);
+
+  const updateMembershipRole = async (membershipId: string, role: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/memberships/${membershipId}/role`, { role }); setMessage("Workspace role updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const updateMembershipStatus = async (membershipId: string, status: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/memberships/${membershipId}/status`, { status }); setMessage("Workspace membership updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const makePrimaryOwner = async (workspaceId: string, membershipId: string) => {
+    setBusyId(membershipId); setMessage(null);
+    try { await api.patch(`/api/users/workspaces/${workspaceId}/primary-owner`, { membershipId }); setMessage("Primary Owner updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const updateApprovalPolicy = async (workspaceId: string, allowManagerSelfApproval: boolean) => {
+    setBusyId(workspaceId); setMessage(null);
+    try { await api.patch(`/api/users/workspaces/${workspaceId}/approval-policy`, { allowManagerSelfApproval }); setMessage("Workspace approval policy updated."); await load(); }
+    catch (error) { setMessage(error instanceof Error ? error.message : String(error)); }
+    finally { setBusyId(null); }
+  };
+
+  const createAccount = async (event: FormEvent) => {
+    event.preventDefault();
+    setCreateAccountBusy(true);
+    setMessage(null);
+    try {
+      const result = await api.post<{ message: string; setupEmailSent: boolean }>("/api/users", {
+        name: createName,
+        email: createEmail,
+        workspaceName: createWorkspaceName,
+        plan: createPlan,
+        trialDays: Number(createTrialDays),
+      });
+      setMessage(result.message);
+      setCreateAccountOpen(false);
+      setCreateName("");
+      setCreateEmail("");
+      setCreateWorkspaceName("");
+      setCreatePlan("entrepreneur");
+      setCreateTrialDays("30");
+      await load();
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCreateAccountBusy(false);
+    }
+  };
 
   const changePassword = async (event: FormEvent, user: AdminUser) => {
     event.preventDefault();
@@ -168,19 +260,22 @@ export default function Users() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-charcoal-800">User Management</h1>
-        <p className="text-sm text-charcoal-400">Manage accounts, plans, trials, offline subscriptions, and payment history.</p>
+        <p className="text-sm text-charcoal-400">Manage accounts, workspace roles, membership access, plans, subscriptions, and payment history.</p>
       </div>
       {message && <Card className="p-4 text-sm text-charcoal-600">{message}</Card>}
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-3 border-b border-charcoal-100 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="font-semibold text-charcoal-700">Users ({filteredUsers.length}{planFilter === "all" ? "" : ` of ${users.length}`})</div>
-          <label className="flex items-center gap-2 text-sm text-charcoal-600">
-            <span className="font-medium">Filter plan</span>
-            <select value={planFilter} onChange={(event) => setPlanFilter(event.target.value)} className="min-w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
-              <option value="all">All plans</option>
-              {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
-            </select>
-          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <button type="button" onClick={() => setCreateAccountOpen(true)} className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-bold text-white shadow-sm hover:bg-brand-700">+ Create account</button>
+            <label className="flex items-center gap-2 text-sm text-charcoal-600">
+              <span className="font-medium">Filter plan</span>
+              <select value={planFilter} onChange={(event) => setPlanFilter(event.target.value)} className="min-w-44 rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+                <option value="all">All plans</option>
+                {plans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}
+              </select>
+            </label>
+          </div>
         </div>
         {loading ? <div className="p-6 text-sm text-charcoal-400">Loading users...</div> : filteredUsers.length === 0 ? <div className="p-6 text-sm text-charcoal-400">No users found.</div> : (
           <div className="overflow-x-auto">
@@ -205,7 +300,7 @@ export default function Users() {
                         <td className="px-5 py-3 font-medium text-charcoal-800">{user.name ?? "-"}</td>
                         <td className="px-5 py-3 text-charcoal-600">{user.email}</td>
                         <td className="px-5 py-3 text-charcoal-600">{user.client?.name ?? "-"}</td>
-                        <td className="px-5 py-3 text-charcoal-600">{user.role.replace("_", " ")}</td>
+                        <td className="px-5 py-3 text-charcoal-600">{user.role === "super_admin" ? "Super Admin" : (user.memberships ?? []).map((membership) => effectiveRoleLabel(membership.roles.map((item) => item.role))).join(", ") || user.role.replace("_", " ")}</td>
                         <td className="px-5 py-3">
                           <div className={`inline-flex rounded-full border px-2.5 py-1 text-xs font-semibold capitalize ${status.className}`}>{status.label}</div>
                           <div className="mt-1 text-xs text-charcoal-400">{status.detail}</div>
@@ -213,15 +308,14 @@ export default function Users() {
                         <td className="px-5 py-3 text-charcoal-600">{trialEndLabel(user)}</td>
                         <td className="px-5 py-3 capitalize text-charcoal-600">{sourceLabel(user)}</td>
                         <td className="px-5 py-3 text-right">
-                          <div className="flex flex-nowrap justify-end gap-2 whitespace-nowrap">
-                            <ActionIconButton icon="details" label="Details" onClick={() => setModal({ type: "details", user })} />
-                            {user.clientId && <ActionIconButton icon="save" label="Manage subscription" onClick={() => setModal({ type: "subscription", user })} />}
-                            {user.clientId && <ActionIconButton icon="edit" label="Edit user and plan" onClick={() => setModal({ type: "edit", user })} disabled={busyId === user.id} />}
-                            {user.clientId && <ActionIconButton icon="project" label="View projects" onClick={() => { startImpersonation(user.clientId!, user.name ?? user.email); navigate("/projects"); }} />}
-                            <ActionIconButton icon={user.isActive ? "disable" : "enable"} label={user.isActive ? "Disable account" : "Enable account"} onClick={() => setActive(user, !user.isActive)} disabled={busyId === user.id} />
-                            <ActionIconButton icon="key" label="Change password" onClick={() => { setModal({ type: "password", user }); setPassword(""); }} disabled={busyId === user.id} />
-                            {!user.emailVerifiedAt && <ActionIconButton icon="verify" label="Verify email" onClick={() => verify(user)} disabled={busyId === user.id} />}
-                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setModal({ type: "actions", user })}
+                            className="inline-flex items-center gap-2 whitespace-nowrap rounded-lg border border-brand-200 bg-white px-3 py-2 text-xs font-bold text-brand-700 shadow-sm transition hover:border-brand-400 hover:bg-brand-50 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                            aria-label={`View all actions for ${user.name ?? user.email}`}
+                          >
+                            View actions <span aria-hidden="true">→</span>
+                          </button>
                         </td>
                       </tr>
                   );
@@ -232,7 +326,29 @@ export default function Users() {
         )}
       </Card>
       {modal && (
-        <Modal title={modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
+        <Modal title={modal.type === "actions" ? `Actions — ${modal.user.name ?? modal.user.email}` : modal.type === "rbac" ? `Workspace Access — ${modal.user.name ?? modal.user.email}` : modal.type === "subscription" ? `Manage Subscription — ${modal.user.name ?? modal.user.email}` : modal.type === "password" ? `Change Password — ${modal.user.name ?? modal.user.email}` : modal.type === "edit" ? `Edit User — ${modal.user.name ?? modal.user.email}` : `User Details — ${modal.user.name ?? modal.user.email}`} onClose={() => setModal(null)}>
+          {modal.type === "actions" && (
+            <div>
+              <p className="mb-4 text-sm text-charcoal-500">Choose what you want to do with this account. Only available actions are shown.</p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <ActionChoice title="View user details" description="Review account, plan, login, verification, and access dates." onClick={() => setModal({ type: "details", user: modal.user })} />
+                {modal.user.role !== "super_admin" && <ActionChoice title="Manage workspace access" description="Change workspace roles, membership status, ownership, and approval permissions." onClick={() => setModal({ type: "rbac", user: modal.user })} />}
+                {modal.user.clientId && <ActionChoice title="Manage subscription" description="Update trial or manual access and record an offline payment." onClick={() => setModal({ type: "subscription", user: modal.user })} />}
+                {modal.user.clientId && <ActionChoice title="Edit user and plan" description="Change the account plan or enable and disable the account." onClick={() => setModal({ type: "edit", user: modal.user })} disabled={busyId === modal.user.id} />}
+                {modal.user.clientId && <ActionChoice title="Open user projects" description="View the platform as this customer and open their project list." onClick={() => { startImpersonation(modal.user.clientId!, modal.user.name ?? modal.user.email); navigate("/projects"); }} />}
+                <ActionChoice title="Change password" description="Set a new login password for this user." onClick={() => { setPassword(""); setModal({ type: "password", user: modal.user }); }} disabled={busyId === modal.user.id} />
+                {modal.user.role !== "super_admin" && <ActionChoice title="Resend setup email" description="Send a fresh secure password-setting link to this user. The link expires in one hour." onClick={() => void resendSetupEmail(modal.user)} disabled={busyId === modal.user.id || !modal.user.isActive} />}
+                {!modal.user.emailVerifiedAt && <ActionChoice title="Verify email" description="Mark this email address as verified and enable the account." onClick={() => { const user = modal.user; setModal(null); void verify(user); }} disabled={busyId === modal.user.id} />}
+                <ActionChoice
+                  title={modal.user.isActive ? "Disable account" : "Enable account"}
+                  description={modal.user.isActive ? "Block this user from signing in without deleting their data." : "Restore this user’s ability to sign in."}
+                  onClick={() => { const user = modal.user; setModal(null); void setActive(user, !user.isActive); }}
+                  disabled={busyId === modal.user.id}
+                  destructive={modal.user.isActive}
+                />
+              </div>
+            </div>
+          )}
           {modal.type === "details" && (
             <div className="grid gap-4 text-sm md:grid-cols-3">
               <Detail label="User ID" value={modal.user.id} /><Detail label="Client ID" value={modal.user.clientId ?? "-"} /><Detail label="User created" value={formatDateTime(modal.user.createdAt)} />
@@ -261,6 +377,30 @@ export default function Users() {
               </div>
             </div>
           )}
+          {modal.type === "rbac" && (
+            <div className="space-y-4">
+              {(users.find((item) => item.id === modal.user.id)?.memberships ?? modal.user.memberships ?? []).map((membership) => {
+                const primaryOwner = membership.workspace.ownerUserId === membership.userId;
+                const currentRole = effectiveRole(membership.roles.map((item) => item.role));
+                const allowedRoles = membership.workspace.workspaceType === "agency" ? ["admin", "manager", "editor", "viewer", "client_viewer"] : ["admin", "manager", "editor", "viewer"];
+                const approvalPolicy = membership.workspace.autoApprovalPolicyJson && typeof membership.workspace.autoApprovalPolicyJson === "object" ? membership.workspace.autoApprovalPolicyJson as { allowManagerSelfApproval?: unknown } : {};
+                return <Card key={membership.id} className="p-4">
+                  <div className="flex flex-wrap items-start justify-between gap-3"><div><div className="font-bold text-charcoal-900">{membership.workspace.name}</div><div className="mt-1 text-xs capitalize text-charcoal-500">{membership.workspace.workspaceType} workspace · {primaryOwner ? "Primary Owner" : "Member"}</div></div><span className={`rounded-full px-2.5 py-1 text-xs font-bold ${membership.status === "active" ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"}`}>{membership.status}</span></div>
+                  <div className="mt-4 grid gap-3 md:grid-cols-[1fr_1fr_auto]">
+                    <label className="text-xs font-bold text-charcoal-600">Effective role<select disabled={primaryOwner || busyId === membership.id} value={currentRole} onChange={(event) => void updateMembershipRole(membership.id, event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal">{allowedRoles.map((role) => <option key={role} value={role}>{effectiveRoleLabel([role])}</option>)}</select></label>
+                    <label className="text-xs font-bold text-charcoal-600">Membership status<select disabled={primaryOwner || busyId === membership.id} value={membership.status} onChange={(event) => void updateMembershipStatus(membership.id, event.target.value)} className="mt-1 h-10 w-full rounded-lg border bg-white px-3 text-sm font-normal"><option value="active">Active</option><option value="suspended">Suspended</option><option value="deactivated">Deactivated</option></select></label>
+                    <div className="grid grid-cols-3 gap-2 text-center text-xs"><Detail label="Projects" value={String(membership._count.projectAssignments)} /><Detail label="Tasks" value={String(membership._count.assignedTasks)} /><Detail label="Approvals" value={String(membership._count.approvalTasks)} /></div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                    <label className="flex items-start gap-2 text-xs text-charcoal-600"><input type="checkbox" checked={approvalPolicy.allowManagerSelfApproval === true} disabled={busyId === membership.workspace.id} onChange={(event) => void updateApprovalPolicy(membership.workspace.id, event.target.checked)} className="mt-0.5" /><span><b>Manager self-approval</b><span className="block text-charcoal-400">Allow Manager/Approver users to approve their own submitted work.</span></span></label>
+                    {!primaryOwner && currentRole === "admin" && <Button variant="ghost" disabled={busyId === membership.id} onClick={() => void makePrimaryOwner(membership.workspace.id, membership.id)}>Make Primary Owner</Button>}
+                  </div>
+                  {primaryOwner && <p className="mt-3 text-xs text-amber-700">Transfer Primary Owner from the workspace before changing this user’s Owner/Admin role or status.</p>}
+                </Card>;
+              })}
+              {!modal.user.memberships?.length && <p className="text-sm text-charcoal-500">This account has no workspace membership.</p>}
+            </div>
+          )}
           {modal.type === "password" && (
             <form onSubmit={(event) => { void changePassword(event, modal.user); }} className="space-y-4">
               <Input label="New password" type="password" value={password} onChange={setPassword} placeholder="Minimum 8 characters" />
@@ -272,6 +412,21 @@ export default function Users() {
           )}
         </Modal>
       )}
+      {createAccountOpen && <Modal title="Create customer account" onClose={() => !createAccountBusy && setCreateAccountOpen(false)}>
+        <form onSubmit={(event) => void createAccount(event)} className="space-y-5">
+          <div className="rounded-xl border border-brand-100 bg-brand-50 p-4 text-sm leading-6 text-brand-950">
+            This protected Admin action creates the user, workspace, owner membership, commercial plan entitlement, and AI Capacity account. The user receives a secure link to set their password. Public registration remains disabled.
+          </div>
+          <div className="grid gap-4 md:grid-cols-2">
+            <Input label="Full name" value={createName} onChange={setCreateName} placeholder="Account owner name" />
+            <Input label="Email address" type="email" value={createEmail} onChange={setCreateEmail} placeholder="owner@example.com" />
+            <Input label="Workspace name" value={createWorkspaceName} onChange={setCreateWorkspaceName} placeholder="Business or workspace name" />
+            <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Plan</span><select value={createPlan} onChange={(event) => setCreatePlan(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">{accountPlans.map((plan) => <option key={plan.code} value={plan.code}>{plan.name}</option>)}</select></label>
+            <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Trial access days</span><input type="number" min="0" max="365" value={createTrialDays} onChange={(event) => setCreateTrialDays(event.target.value)} className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100" /><span className="mt-1 block text-xs text-slate-500">Use 0 to create the account in payment-required, read-only state.</span></label>
+          </div>
+          <div className="flex justify-end gap-2"><Button type="button" variant="ghost" onClick={() => setCreateAccountOpen(false)} disabled={createAccountBusy}>Cancel</Button><Button type="submit" disabled={createAccountBusy || !createName.trim() || !createEmail.trim() || !createWorkspaceName.trim() || !createPlan || !createTrialDays}>{createAccountBusy ? "Creating…" : "Create account & send setup email"}</Button></div>
+        </form>
+      </Modal>}
     </div>
   );
 }
@@ -331,6 +486,20 @@ function Modal({ title, children, onClose }: { title: string; children: ReactNod
         <div className="p-5">{children}</div>
       </div>
     </div>
+  );
+}
+
+function ActionChoice({ title, description, onClick, disabled = false, destructive = false }: { title: string; description: string; onClick: () => void; disabled?: boolean; destructive?: boolean }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={`rounded-xl border p-4 text-left transition focus:outline-none focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50 ${destructive ? "border-red-200 hover:border-red-400 hover:bg-red-50 focus:ring-red-200" : "border-slate-200 hover:border-brand-300 hover:bg-brand-50/60 focus:ring-brand-200"}`}
+    >
+      <span className={`block text-sm font-bold ${destructive ? "text-red-700" : "text-charcoal-900"}`}>{title}</span>
+      <span className="mt-1 block text-xs leading-5 text-charcoal-500">{description}</span>
+    </button>
   );
 }
 

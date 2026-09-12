@@ -1,0 +1,46 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/theme.json",
+  "version": 3,
+  "settings": {
+    "appearanceTools": true,
+    "layout": { "contentSize": "760px", "wideSize": "1280px" },
+    "color": {
+      "defaultPalette": false,
+      "defaultGradients": false,
+      "custom": true,
+      "customGradient": true,
+      "link": true,
+      "palette": [
+        { "slug": "base", "name": "Base", "color": "#ffffff" },
+        { "slug": "contrast", "name": "Contrast", "color": "#101828" },
+        { "slug": "primary", "name": "Primary", "color": "#183048" },
+        { "slug": "secondary", "name": "Secondary", "color": "#ef880b" },
+        { "slug": "accent", "name": "Accent", "color": "#63c4b1" },
+        { "slug": "soft", "name": "Soft background", "color": "#f5f7fb" }
+      ]
+    },
+    "spacing": { "blockGap": true, "margin": true, "padding": true, "units": ["px", "rem", "em", "%", "vw", "vh"] },
+    "typography": { "customFontSize": true, "fluid": true, "fontStyle": true, "fontWeight": true, "letterSpacing": true, "lineHeight": true, "textDecoration": true, "textTransform": true },
+    "border": { "color": true, "radius": true, "style": true, "width": true },
+    "dimensions": { "minHeight": true },
+    "position": { "sticky": true }
+  },
+  "styles": {
+    "color": { "background": "#f5f7fb", "text": "#101828" },
+    "spacing": { "blockGap": "1.5rem" },
+    "typography": { "fontFamily": "Inter, system-ui, sans-serif", "lineHeight": "1.7" },
+    "elements": {
+      "heading": { "typography": { "fontFamily": "Epilogue, Avenir Next, Inter, system-ui, sans-serif", "fontWeight": "800", "lineHeight": "1.1" } },
+      "button": { "border": { "radius": "999px" }, "typography": { "fontWeight": "800" } },
+      "link": { "typography": { "textDecoration": "none" } }
+    }
+  },
+  "templateParts": [
+    { "name": "header", "title": "SENuke Header", "area": "header" },
+    { "name": "footer", "title": "SENuke Footer", "area": "footer" }
+  ],
+  "customTemplates": [
+    { "name": "page-narrow", "title": "SENuke Narrow Page", "postTypes": ["page", "post"] },
+    { "name": "page-blank", "title": "SENuke Blank Canvas", "postTypes": ["page"] }
+  ]
+}

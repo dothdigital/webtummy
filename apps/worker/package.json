@@ -8,11 +8,12 @@
     "start": "tsx src/index.ts"
   },
   "dependencies": {
+    "@aws-sdk/credential-provider-node": "^3.972.81",
     "@webtummy/core": "*",
     "@webtummy/db": "*",
     "bullmq": "^5.34.0",
     "dotenv": "^16.4.7",
     "ioredis": "^5.4.2",
-    "undici": "^7.2.0"
+    "undici": "^7.28.0"
   }
 }
