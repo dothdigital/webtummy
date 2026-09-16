@@ -1,3 +1,4 @@
+import { buildResearchMarketLabels } from "@webtummy/core/research-markets";
 export type BusinessLocation = {
   country: string;
   stateProvince: string;
@@ -78,22 +79,7 @@ export function projectAnalysisLocationLabels(
     .filter((item) => excluded.has(item)));
   const markets = cleanGeographicTargetMarkets(raw)
     .filter((market) => !excluded.has(market.toLocaleLowerCase()) || explicitContextMarkets.has(market.toLocaleLowerCase()));
-  return [...new Map(markets.map((market) => {
-    const normalizedMarket = market.toLocaleLowerCase();
-    const matchedCountry = countryLocationLabel(market);
-    if (matchedCountry) return [matchedCountry.toLocaleLowerCase(), matchedCountry] as const;
-    const compositeParts = market.split(",").map((part) => part.trim()).filter(Boolean);
-    const compositeCountry = compositeParts.length > 1 ? countryLocationLabel(compositeParts[compositeParts.length - 1]) : null;
-    if (compositeCountry) {
-      const label = canonicalGeographicLocationLabel([...compositeParts.slice(0, -1), compositeCountry].join(", "));
-      return [label.toLocaleLowerCase(), label] as const;
-    }
-    const parts = [market];
-    if (region && normalizedMarket !== region.toLocaleLowerCase() && !normalizedMarket.includes(region.toLocaleLowerCase())) parts.push(region);
-    if (country && !normalizedMarket.includes(country.toLocaleLowerCase())) parts.push(country);
-    const label = canonicalGeographicLocationLabel(parts.join(", "));
-    return [label.toLocaleLowerCase(), label] as const;
-  })).values()];
+  return buildResearchMarketLabels(markets, region, country);
 }
 
 const nonGeographicMarketTerms = /\b(?:startup|startups|enterprise|enterprises|business|businesses|company|companies|customer|customers|client|clients|buyer|buyers|audience|audiences|people|person|individual|individuals|family|families|homeowner|homeowners|organization|organizations|team|teams|professional|professionals|industry|industries|looking|seeking|wanting|needing|integration|solution|solutions|service|services|product|products|insurance|software|technology|marketing|development)\b/i;
@@ -140,7 +126,7 @@ export function cleanGeographicTargetMarkets(values: string[]) {
         : [withoutVagueSuffix];
     return namedCandidates.flatMap((market) => {
       const normalizedMarket = market.trim().replace(/\s+/g, " ");
-      if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];
+      if (protectedCompositeGeographicMarkets.has(normalizedMarket.split(",")[0].trim().toLocaleLowerCase())) return [normalizedMarket];
       return normalizedMarket
         .split(/\s+(?:and|&)\s+/i)
         .map((item) => item.trim())

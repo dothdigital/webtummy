@@ -1,3 +1,6 @@
+import { websiteAnalysisUrl } from "@webtummy/core/website-context";
+import { keywordTargetUrlSchema } from "../keyword-target-url.js";
+import { researchMarketMatchesLocation } from "@webtummy/core/research-markets";
 import { isNaturalKeyword, isUnverifiedBrandServiceLocation, keywordEvidenceList, record } from "../keyword-evidence.js";
 import { keywordExclusionListSchema, keywordBatchCountSchema } from "../keyword-input.js";
 import { createHash } from "node:crypto";
@@ -45,7 +48,7 @@ const createSchema = z.object({
   websiteId: z.string().optional().nullable(),
   clientId: z.string().optional().nullable(),
   seedKeyword: z.string().min(2),
-  targetUrl: z.string().url().optional().nullable(),
+  targetUrl: keywordTargetUrlSchema,
   targetDomain: z.string().min(2).optional().nullable(),
   locationName: z.string().trim().min(2),
   languageCode: z.string().min(2).max(8).default("en"),
@@ -75,7 +78,7 @@ const manualRankSchema = z.object({
 });
 
 const compareSchema = z.object({
-  targetUrl: z.string().url().optional().nullable(),
+  targetUrl: keywordTargetUrlSchema,
 });
 
 const backlinkQuerySchema = z.object({
@@ -254,7 +257,7 @@ type KeywordResearchExecutionInput = {
 
 type ScopedKeywordWebsite = { id: string; clientId: string; domain: string; rootUrl: string };
 type KeywordCreateInput = z.infer<typeof createSchema>;
-type KeywordResearchProject = { id: string; clientId: string; websiteId: string | null; targetLocations: Prisma.JsonValue };
+type KeywordResearchProject = { id: string; clientId: string; websiteId: string | null; targetLocations: Prisma.JsonValue; websiteStatus: string; websiteUrl: string | null; primaryGoal: string | null; websiteContextJson: Prisma.JsonValue };
 type KeywordResearchScope = {
   clientId: string;
   project: KeywordResearchProject | null;
@@ -652,7 +655,7 @@ async function keywordResearchScopeForRequest(req: Request, input: Pick<KeywordC
   if (input.projectId) {
     project = await prisma.project.findFirst({
       where: { id: input.projectId, status: { not: "deleted" }, ...(clientId ? { clientId } : {}) },
-      select: { id: true, clientId: true, websiteId: true, targetLocations: true },
+      select: { id: true, clientId: true, websiteId: true, targetLocations: true, websiteStatus: true, websiteUrl: true, primaryGoal: true, websiteContextJson: true },
     });
     if (!project) throw new KeywordResearchHttpError(404, "project not found");
     clientId = project.clientId;
@@ -681,7 +684,8 @@ async function keywordResearchScopeForRequest(req: Request, input: Pick<KeywordC
   return { clientId, project, website };
 }
 
-function keywordResearchTargets(input: KeywordCreateInput, scope: KeywordResearchScope) {
+export function keywordResearchTargets(input: KeywordCreateInput, scope: KeywordResearchScope) {
+  if (scope.project && !websiteAnalysisUrl({ ...scope.project, websiteUrl: scope.project.websiteUrl || scope.website?.rootUrl })) return { targetDomain: null, targetUrl: null };
   const connectedDomain = normalizeDomain(scope.website?.domain) || domainFromUrl(scope.website?.rootUrl);
   const targetDomain = scope.project
     ? connectedDomain
@@ -698,9 +702,8 @@ function validateKeywordLocationPair(input: KeywordCreateInput, scope: KeywordRe
     ? scope.project.targetLocations.map(String).flatMap((item) => item.split(",")).map((item) => item.trim()).filter(Boolean)
     : [];
   const explicitSeedMarkets = detectKeywordLocations(input.seedKeyword, projectMarkets);
-  const requestedMarket = normalizeKeywordPhrase(location.displayName.split(",")[0] ?? location.displayName);
-  if (explicitSeedMarkets.length && !explicitSeedMarkets.some((market) => normalizeKeywordPhrase(market) === requestedMarket)) {
-    throw new KeywordResearchHttpError(400, `The localized seed “${input.seedKeyword}” can only be analyzed in its matching market (${explicitSeedMarkets.join(", ")}). Remove the location from the seed to analyze it across multiple markets.`);
+  if (explicitSeedMarkets.length && !explicitSeedMarkets.some((market) => researchMarketMatchesLocation(market, location.displayName))) {
+    throw new KeywordResearchHttpError(400, `“${input.seedKeyword}” names ${explicitSeedMarkets.join(", ")}, which does not match ${location.displayName}. Click Edit selection and choose the matching market, or remove the place name from the keyword to research it across your selected markets.`);
   }
 }
 
@@ -915,11 +918,7 @@ keywordResearchRouter.post(["/keyword-research/batch", "/keyword-research/batch/
       resolvedLocations.set(canonicalGeographicLocationLabel(requested).toLocaleLowerCase(), location);
     } catch (error) {
       const publicError = publicKeywordResearchError(error instanceof Error ? error.message : "The location could not be validated.", "location");
-      const requestedKey = normalizeText(requested);
-      const reason = ["gta", "greater toronto area", "toronto gta"].includes(requestedKey)
-        ? "GTA is a regional abbreviation, not an exact location supported by the research provider. Choose Toronto, Mississauga, Brampton, another specific city, Ontario, or Canada."
-        : publicError.message;
-      invalidLocations.push({ location: requested, reason });
+      invalidLocations.push({ location: requested, reason: publicError.message });
     }
   }));
   const validatedChecks = new Map<string, { input: KeywordCreateInput; location: SearchLocation }>();
@@ -979,6 +978,7 @@ keywordResearchRouter.post(["/keyword-research/batch", "/keyword-research/batch/
       limit: KEYWORD_RESEARCH_MAX_SELECTED_CHECKS,
       overLimit: rawChecks.length > KEYWORD_RESEARCH_MAX_SELECTED_CHECKS,
       validationMessage: rawChecks.length > KEYWORD_RESEARCH_MAX_SELECTED_CHECKS ? KEYWORD_RESEARCH_SELECTION_LIMIT_MESSAGE : null,
+      invalidLocations,
       invalidChecks: [...invalidLocations.map((item) => `${item.location}: ${item.reason}`), ...invalidChecks.map((item) => `${item.keyword} · ${item.location}: ${item.reason}`)],
     });
   }
@@ -1084,12 +1084,12 @@ keywordResearchRouter.post("/keyword-research/validate-locations", async (req, r
   const parsed = locationPreflightSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const uniqueLocations = [...new Map(parsed.data.locationNames.map((location) => [location.toLocaleLowerCase(), location])).values()];
-  const valid: Array<{ requested: string; resolved: string; metricScope: string }> = [];
+  const valid: Array<{ requested: string; resolved: string; metricScope: string; metricSource: string }> = [];
   const invalid: Array<{ requested: string; reason: string }> = [];
   for (const requested of uniqueLocations) {
     try {
       const location = await resolveExactSearchLocation(requested);
-      valid.push({ requested, resolved: location.displayName, metricScope: location.metricScopeName });
+      valid.push({ requested, resolved: location.displayName, metricScope: location.metricScopeName ?? location.displayName, metricSource: location.metricSource ?? "selected_location" });
     } catch (error) {
       invalid.push({ requested, reason: publicKeywordResearchError(error instanceof Error ? error.message : "The location could not be validated.", "location").message });
     }
@@ -2847,7 +2847,8 @@ export async function resolveExactSearchLocation(value: string, keyword = ""): P
   if (!isPlausibleGeographicTargetMarket(requestedMarket)) {
     throw new Error(`Exact location metrics require an unambiguous provider location for “${value}”. Choose a named city, neighbourhood, region, province/state, or country.`);
   }
-  const known = resolveSearchLocation(value, keyword);
+  const regionalAlias = /^(?:gta|toronto gta)$/i.test(requestedMarket);
+  const known = regionalAlias ? customLocation(value.trim()) : resolveSearchLocation(value, keyword);
   if ("location_code" in known.keywordMetrics) return known;
   let matched: SearchProviderLocation | null;
   let matchedViaParentCity = false;
@@ -2868,6 +2869,8 @@ export async function resolveExactSearchLocation(value: string, keyword = ""): P
         "north york": "Toronto",
         "east york": "Toronto",
         york: "Toronto",
+        gta: "Toronto",
+        "toronto gta": "Toronto",
       };
       const canonicalMarket = (knownParentMarket[normalizedRequestedMarket] ?? requestedMarket)
         .replace(/^(?:north|south|east|west|central|downtown)\s+/i, "")

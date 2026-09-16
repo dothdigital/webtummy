@@ -33,7 +33,7 @@ describe("DEV-047 Part 4 Growth Intelligence", () => {
   });
 
   it("uses the canonical Part 4 opportunity score", () => {
-    expect(scoreGrowthOpportunity({ impact: 90, goalAlignment: 90, confidence: 80, reach: 70, urgency: 70, learningValue: 70, ease: 60, readiness: 80, risk: 10 })).toBe(56);
+    expect(scoreGrowthOpportunity({ impact: 90, goalAlignment: 90, confidence: 80, reach: 70, urgency: 70, learningValue: 70, ease: 60, readiness: 80, risk: 10 })).toBe(41);
   });
 
   it("applies hard gates before selecting one next action", () => {

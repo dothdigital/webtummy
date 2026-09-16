@@ -1,3 +1,4 @@
+import { websiteRoutingNeedsConfirmation } from "@webtummy/core/website-context";
 import { describe, expect, it } from "vitest";
 import { latestWebsiteImplementationAt, executionPlanWorkflowBlocker, hasCurrentBusinessBrainGovernance, hasCurrentPreExecutionGrowth, resolveProjectApplicability, resolveProjectWorkflow, STRATEGY_EVIDENCE_SETTLING_WINDOW_MS, strategyWorkflowPrerequisite, workflowStagePrerequisite, type WorkflowEvidenceSnapshot } from "./project-workflow-controller.js";
 
@@ -326,8 +327,8 @@ describe("DEV-046 project workflow controller", () => {
       websitePlanApproved: false,
       websitePlanTaskStatus: "ready",
     }));
-    expect(result.nextBestAction.title).toBe("Create the SEO Page Map & Content Plan");
-    expect(result.nextBestAction.action.label).toBe("Create SEO Plan");
+    expect(result.nextBestAction.title).toBe("Create the Website Plan");
+    expect(result.nextBestAction.action.label).toBe("Create Website Plan");
     expect(result.nextBestAction.expectedResult).toContain("proposed pages");
   });
 
@@ -725,4 +726,29 @@ it("routes corrected keyword evidence through review even when an older Strategy
   }));
   expect(result.nextBestAction.title).toBe("Review corrected keyword evidence");
   expect(result.nextBestAction.action.url).toBe("/keywords?projectId=project-1");
+});
+
+it.each(["Generate More Qualified Leads", "Increase Sales and Revenue", "Improve Website Conversions"])("allows supported existing-site outcome analysis before optional keywords: %s", (primaryGoal) => {
+  const state = snapshot({ primaryGoal, approvedKeywords: false, keywordEvidenceAt: null, siteEvidenceAt: new Date(), gapEvidenceAt: new Date(), latestEvidenceAt: new Date() });
+  const workflow = resolveProjectWorkflow(state);
+  expect(workflow.intelligenceReady).toBe(true);
+});
+
+it("still requires keyword evidence for a local visibility project", () => {
+  expect(resolveProjectWorkflow(snapshot({ primaryGoal: "Improve Local Visibility", localSeoApplicable: true, approvedKeywords: false })).intelligenceReady).toBe(false);
+});
+
+
+describe("legacy project next-action regression", () => {
+  it("preserves the next work action for a clearly identified new website with a saved domain", () => {
+    const needsConfirmation = websiteRoutingNeedsConfirmation({ websiteStatus: "new_website_required", websiteUrl: "KPIRY.com", websiteContextJson: null, primaryGoal: "Build a New Website" });
+    const expected = resolveProjectWorkflow(snapshot({ existingWebsite: false, preLaunchWebsite: true }));
+    const actual = resolveProjectWorkflow(snapshot({ existingWebsite: false, preLaunchWebsite: true, websiteSituationNeedsConfirmation: needsConfirmation }));
+    expect(actual.nextBestAction).toEqual(expected.nextBestAction);
+    expect(actual.nextBestAction.title).not.toBe("Confirm website and domain details");
+  });
+  it("retains confirmation for an ambiguous existing-site versus new-build situation", () => {
+    const needsConfirmation = websiteRoutingNeedsConfirmation({ websiteStatus: "existing_website", websiteUrl: "example.com", primaryGoal: "Build a New Website" });
+    expect(resolveProjectWorkflow(snapshot({ websiteSituationNeedsConfirmation: needsConfirmation })).nextBestAction.title).toBe("Confirm website and domain details");
+  });
 });

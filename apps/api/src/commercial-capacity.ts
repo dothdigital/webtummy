@@ -1,3 +1,4 @@
+import { fixedTermCapacityPeriod } from "./fixed-term-offers.js";
 import { prisma, type Prisma } from "@webtummy/db";
 
 type Db = typeof prisma | Prisma.TransactionClient;
@@ -55,7 +56,7 @@ export function capacityPeriod(now = new Date()) {
   };
 }
 
-export async function workspaceCapacityAllowance(workspaceId: string, db: Db = prisma) {
+export async function workspaceCapacityAllowance(workspaceId: string, db: Db = prisma, now = new Date()) {
   const workspace = await db.workspace.findUnique({
     where: { id: workspaceId },
     select: {
@@ -64,7 +65,7 @@ export async function workspaceCapacityAllowance(workspaceId: string, db: Db = p
         where: { status: { not: "deleted" } },
         orderBy: { createdAt: "desc" },
         take: 1,
-        select: { planVersion: { select: { numericLimits: true, billingPlan: { select: { code: true } } } } },
+        select: { provider: true, currentPeriodStart: true, currentPeriodEnd: true, planVersion: { select: { numericLimits: true, billingPlan: { select: { code: true } } } } },
       },
     },
   });
@@ -77,13 +78,14 @@ export async function workspaceCapacityAllowance(workspaceId: string, db: Db = p
   const planCode = canonicalCommercialPlanCode(subscription?.planVersion.billingPlan.code || workspace.legacyClient?.plan);
   return {
     planCode,
+    fixedPeriod: subscription?.provider === "jvzoo" ? fixedTermCapacityPeriod(subscription.planVersion.billingPlan.code, subscription.currentPeriodStart, subscription.currentPeriodEnd, now) : null,
     allowance: Number.isFinite(configured) && configured >= 0 ? configured : COMMERCIAL_PLAN_CAPACITY[planCode],
   };
 }
 
 export async function ensureWorkspaceCapacityAccount(workspaceId: string, db: Db = prisma, now = new Date()) {
-  const { periodStart, periodEnd } = capacityPeriod(now);
-  const { allowance, planCode } = await workspaceCapacityAllowance(workspaceId, db);
+  const { allowance, planCode, fixedPeriod } = await workspaceCapacityAllowance(workspaceId, db, now);
+  const { periodStart, periodEnd } = fixedPeriod ?? capacityPeriod(now);
   const key = { workspaceId_periodStart: { workspaceId, periodStart } };
   const existing = await db.workspaceCapacityAccount.findUnique({ where: key });
   if (existing) {

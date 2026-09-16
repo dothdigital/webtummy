@@ -7,7 +7,7 @@ const stringList = z.array(z.string().trim().min(2).max(1000)).min(1).max(12);
 
 const channelStrategySchema = z.object({
   objective: conciseText,
-  actions: stringList.min(2).max(6),
+  actions: z.array(z.string().trim().min(2).max(1000)).max(6),
   dependencies: z.array(z.string().trim().min(2).max(500)).max(6),
   destination: z.string().trim().min(2).max(120),
   successSignal: z.string().trim().min(2).max(500),
@@ -62,6 +62,8 @@ const funnelStepSchema = z.object({
   confidenceReason: conciseText,
   effort: z.enum(["low", "medium", "high"]),
   planningTimeEstimate: z.string().trim().min(2).max(120).nullable(),
+  cost: z.number().min(0).max(100).nullable().optional(),
+  timeToResultsDays: z.number().min(0).max(3650).nullable().optional(),
   destination: funnelDestinationSchema,
   sourceSignals: z.array(z.string().trim().min(2).max(120)).min(1).max(10),
   affectedPages: z.array(z.string().trim().min(2).max(2000)).max(30),
@@ -116,6 +118,8 @@ export const unifiedStrategyPlanSchema = z.object({
     key: z.string().trim().min(2).max(80),
     title: shortText,
     priority: z.enum(["critical", "high", "medium", "low"]),
+    cost: z.number().min(0).max(100).nullable().optional(),
+    timeToResultsDays: z.number().min(0).max(3650).nullable().optional(),
     objective: conciseText,
     whyNow: conciseText,
     evidence: z.array(z.string().trim().min(2).max(1000)).min(1).max(10),
@@ -123,7 +127,7 @@ export const unifiedStrategyPlanSchema = z.object({
     channels: z.array(z.string().trim().min(2).max(80)).min(1).max(10),
     successMeasures: z.array(z.string().trim().min(2).max(500)).min(1).max(6),
     dependencies: z.array(z.string().trim().min(2).max(500)).max(8),
-  })).min(4).max(10),
+  })).min(1).max(10),
   channels: z.object({
     website: channelStrategySchema,
     seo: channelStrategySchema,
@@ -291,27 +295,6 @@ export function completeUnifiedStrategyPlan(value: unknown) {
   const focusAreas = Array.isArray(root.focusAreas) ? root.focusAreas.map(record) : [];
   const phases = Array.isArray(root.phases) ? root.phases.map(record) : [];
   const safeFocusAreas = [...focusAreas];
-  for (const [key, value] of Object.entries(channels)) {
-    if (safeFocusAreas.length >= 4) break;
-    const channel = record(value);
-    const channelActions = strings(channel.actions);
-    if (!channelActions.length || typeof channel.objective !== "string" || typeof channel.successSignal !== "string") continue;
-    const channelName = titleKey(key);
-    const fallbackKey = `channel_${key}`;
-    if (safeFocusAreas.some((focus) => focus.key === fallbackKey)) continue;
-    safeFocusAreas.push({
-      key: fallbackKey,
-      title: `${channelName} strategic priority`,
-      priority: safeFocusAreas.length < 2 ? "high" : "medium",
-      objective: channel.objective,
-      whyNow: typeof diagnosis.keyChallenge === "string" ? diagnosis.keyChallenge : `This ${channelName} work is required to support the generated cross-platform Strategy.`,
-      evidence: [`This priority is derived from the generated ${channelName} channel plan and must be validated against approved project evidence before execution.`],
-      actions: channelActions.length >= 2 ? channelActions.slice(0, 8) : [channelActions[0], `Validate the ${channelName} result before expanding the Strategy.`],
-      channels: [channelName],
-      successMeasures: [channel.successSignal],
-      dependencies: strings(channel.dependencies).slice(0, 8),
-    });
-  }
 
   const focusActions = safeFocusAreas.flatMap((focus) => strings(focus.actions));
   const safePhases = [...phases];
@@ -657,6 +640,10 @@ async function generateFocusedGrowthFunnelWithAi(input: { evidence: Record<strin
 export async function generateUnifiedStrategyWithAi(input: { evidence: Record<string, unknown>; revision?: string; model?: string }) {
   const prompt = [
     "Create one integrated business growth strategy—not a summary of the input.",
+    "The customer's primaryGoal controls the primary objective, applicable analyses, focus areas and Next Best Action. For sales prioritize demonstrated revenue, checkout, offer and customer-value constraints; for leads prioritize qualified capture, conversion and follow-up. Search, SEO, AEO and GEO are methods, not the business objective.",
+    "Evaluate search and AI visibility, website conversion, lead generation, sales and revenue, offers and customer value, nurturing, local reputation, ecommerce merchandising, retention and lifetime value, and measurement. Include an actionable opportunity only with supplied supporting evidence; do not fill categories or add focus areas to achieve balance. An SEO-heavy recommendation is allowed when evidence supports it; explicitly explain why it outranks other applicable business opportunities.",
+    "For focus areas and funnel steps, supply cost as a relative 0–100 implementation estimate and timeToResultsDays as days only when the supplied evidence supports an estimate; otherwise use null. Planning time is not time to business results.",
+    "Every recommendation must begin with its expected business benefit, followed by the method. Compare evidence strength, expected impact, effort, implementation cost (unknown when unavailable), time to potential results (unknown when unavailable), and unresolved dependencies. A planning assumption is not verified performance.",
     "The strategy must make choices: diagnose the current state, identify the primary constraint, rank focus areas, connect the audience and offer to keyword/page intent, define a phased sequence, assign each action to a platform destination, state dependencies, and define observable success measures.",
     "Website, SEO, content, lead magnet, AI citations, Local SEO, authority, social, publishing, and measurement must operate as one system. Do not recommend every channel equally. Explain what leads, what supports it, and what should wait.",
     "Use approved keywords and Site Analysis as evidence, not as the strategy itself. Do not merely repeat keyword lists, locations, intake answers, or score labels.",
@@ -665,6 +652,7 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
     "When project.projectType is ecommerce, treat ecommerce as the business type—not a restricted workspace. Preserve every applicable Website, SEO, content, Local SEO, AI Citation, authority, lead magnet, email, social, CRM, CRO, experiment, publishing, measurement, Growth Blueprint, and Next Best Action capability. Reframe the strategy around products, collections, buyer journeys, product search intent, category ownership, buying guides, comparisons, merchandising, and store architecture rather than service-page assumptions.",
     "For ecommerce evidence, distinguish observed public-store facts, inferred recommendations, user-provided performance, connected data, and unavailable private evidence. Never call a product best-selling, high-margin, slow-moving, high-converting, profitable, or inventory-constrained unless explicit user-provided or connected evidence supports that claim. Public relationship evidence may support cross-sell, upsell, or bundle hypotheses only when labelled inferred and assigned a validation requirement.",
     "Create a distinct websiteStrategy decision layer. It is broader than SEO: choose new-site, existing-site improvement, or no-site mode; recommend an evidence-backed page range; separate launch, next, and later scope; define sitemap priorities, navigation, content architecture, conversion paths, Local Authority treatment, technical foundation, launch safeguards, and deferred opportunities. Do not turn every keyword-location combination into a page.",
+    "The confirmed project.websiteContext governs website decisions. Domain ownership is not a live website. For new or separate websites, choose new_website mode and make building the website a required outcome without requiring Site Analysis. For replacement, also choose new_website mode, analyze the existing URL as migration evidence, preserve useful URLs/content, plan redirects, use the confirmed destination domain, and keep the old site live until explicit launch approval. Never downgrade Build a New Website into minor SEO improvements. A separate existing site is an optional reference only.",
     "The websiteStrategy is part of this Unified Strategy. After approval, the separate Website Plan converts it into exact build-ready pages, URLs, briefs, forms, schema, media, files, and publishing requirements.",
     "Lead-magnet actions must connect a specific audience need and high-intent page to capture, delivery, follow-up, and measurement. AI-citation actions must connect answer-first content, entities, verified sources, schema, and monitoring without promising citations.",
     "Evaluate the actual customer journey using all supplied evidence. This is not the project execution roadmap. Return exactly these six stages in this exact order: discover, evaluate, trust, convert, delight, grow_refer. Show how a customer discovers the business, evaluates the solution, builds trust, converts, experiences delivery, and becomes a retained customer or appropriate advocate.",
@@ -672,7 +660,8 @@ export async function generateUnifiedStrategyWithAi(input: { evidence: Record<st
     "For every growthFunnel.steps[].evidenceType, use exactly measured, verified_project_data, or inferred. If private or direct evidence is unavailable, use inferred and explain the validation requirement; never invent another evidenceType label.",
     "Select nextBestActionKey by locating the highest-impact evidence-backed growth opportunity—not simply the first stage. Lead magnets may support evaluation, delivery and email follow-up may support trust, the primary CTA belongs in convert, onboarding belongs in delight, and analytics, retention, referrals, Growth Intelligence, and Next Best Action belong in grow_refer. Do not disguise a prioritized task list as a customer journey.",
     "Apply these decision rules before proposing work: improve or map an existing page when it already satisfies an intent; create a new page only when demand exists, the page adds unique value, architecture supports it, and cannibalization and capacity are acceptable. Recommend a lead magnet only when a specific audience value exchange, capture path, delivery method, follow-up path, and measurement plan are viable. Refresh content only when the page still supports the business goal and intent; otherwise recommend consolidation, redirection, or retirement. Recommend CTA experiments only with a baseline, measurable outcome, sufficient traffic or a reasonable proxy, acceptable risk, and approval. Defer experiments when the sample, permissions, delivery capacity, or measurement path is insufficient.",
-    "Return the exact JSON structure below. localSeo may be null only when local visibility is genuinely not applicable. growthFunnel.evaluationMethod must be ai. Return 2-8 audience journey stages, 4-10 focus areas, 3-5 phases, 5-12 top actions, 3-12 KPIs, exactly 6 funnel stages, and complete every required field.",
+    "For channels without applicable evidence, return an empty actions array and explain the limitation in the objective; never fill an unused channel with invented work. Focus areas may include cost (relative 0–100 implementation cost) and timeToResultsDays only when supported by supplied estimates; otherwise set them to null.",
+    "Return the exact JSON structure below. localSeo may be null only when local visibility is genuinely not applicable. growthFunnel.evaluationMethod must be ai. Return 2-8 audience journey stages, 1-10 evidence-supported focus areas, 3-5 phases, 5-12 top actions, 3-12 KPIs, exactly 6 funnel stages, and complete every required field.",
     JSON.stringify(outputShape),
     `Reviewer revision request: ${input.revision || "No additional revision request."}`,
     `Approved project evidence: ${JSON.stringify(input.evidence).slice(0, 100_000)}`,
@@ -764,7 +753,7 @@ export function approvedStrategyContext(strategy: {
     version: strategy.version ?? null,
     status: strategy.status ?? null,
     isApproved: strategy.status === "approved",
-    contractVersion: decisionSet?.engineVersion === "dev-047-part2-v1" ? "unified-strategy-v4" : unifiedPlan?.growthFunnel?.evaluationMethod === "ai" ? "unified-strategy-v3" : unifiedPlan ? "unified-strategy-v2" : "legacy-strategy-v1",
+    contractVersion: ["dev-047-part2-v1", "growth-business-outcomes-v2"].includes(String(decisionSet?.engineVersion)) ? "unified-strategy-v4" : unifiedPlan?.growthFunnel?.evaluationMethod === "ai" ? "unified-strategy-v3" : unifiedPlan ? "unified-strategy-v2" : "legacy-strategy-v1",
     decisionSet,
     unifiedPlan,
     summary: strategy.strategySummary ?? null,

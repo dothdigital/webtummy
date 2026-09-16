@@ -1,3 +1,4 @@
+import { websiteAnalysisUrl } from "@webtummy/core/website-context";
 export const projectTypes = ["new_business", "existing_website", "local_seo", "agency_client", "ecommerce"] as const;
 
 export type ProjectType = typeof projectTypes[number];
@@ -24,6 +25,7 @@ export type CampaignExecutionTaskInput = {
 export type CampaignProjectContext = {
   projectType: string;
   websiteStatus?: string | null;
+  websiteContextJson?: unknown;
   websiteId?: string | null;
   websiteUrl?: string | null;
   website?: { id?: string | null; rootUrl?: string | null } | null;
@@ -125,8 +127,7 @@ export function projectTypeForWebsiteSituation(projectType: string, websiteStatu
 }
 
 export function isExistingWebsiteCampaign(project: CampaignProjectContext) {
-  if (project.websiteStatus) return project.websiteStatus === "existing_website";
-  return project.projectType === "existing_website" || project.projectType === "local_seo" || hasProjectWebsite(project);
+  return Boolean(websiteAnalysisUrl(project));
 }
 
 /**

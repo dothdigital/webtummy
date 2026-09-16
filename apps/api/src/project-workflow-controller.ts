@@ -1,3 +1,5 @@
+import { websiteAnalysisUrl, websiteBuildRequested, websiteContext, websitePlanningContext, websiteRoutingNeedsConfirmation } from "@webtummy/core/website-context";
+import { requiresSearchResearch } from "@webtummy/core/growth-categories";
 import { resolveHandoffReview } from "./website-handoff-review-state.js";
 import { websiteHandoffIsComplete, websitePublicationIsLive } from "@webtummy/core/website-generation";
 import { createHash } from "node:crypto";
@@ -60,7 +62,7 @@ const WORKFLOW_EVIDENCE_FRESHNESS_DAYS: Record<string, number> = {
   authority_analysis: 90,
 };
 
-export function resolveProjectApplicability(input: { projectType: string; websiteStatus: string; hasWebsite: boolean; websiteLaunched?: boolean; targetMarketCount?: number; contextText: string }) {
+export function resolveProjectApplicability(input: { projectType: string; primaryGoal?: string | null; websiteStatus: string; hasWebsite: boolean; websiteLaunched?: boolean; targetMarketCount?: number; contextText: string }) {
   const existingWebsite = Boolean(input.websiteLaunched) || (input.websiteStatus === "existing_website" && input.hasWebsite);
   const preLaunchWebsite = ["new_website_required", "website_planned"].includes(input.websiteStatus) && !existingWebsite;
   const localSeo = input.projectType === "local_seo" || /local|service area|near me|google business|map pack|appointment|booking|physical location|storefront/i.test(input.contextText);
@@ -69,6 +71,7 @@ export function resolveProjectApplicability(input: { projectType: string; websit
     preLaunchWebsite,
     localSeo,
     requiredModules: WORKFLOW_MODULE_CAPABILITIES.filter((capability) => {
+      if (["keyword_intelligence", "competitor_intelligence", "ai_citation_analysis", "authority_analysis"].includes(capability.key) && !localSeo && !requiresSearchResearch(input.primaryGoal ?? input.contextText, existingWebsite)) return false;
       if (["site_analysis", "technical_seo"].includes(capability.key)) return existingWebsite;
       if (capability.key === "ecommerce_intelligence") return input.projectType === "ecommerce";
       if (["location_intelligence", "local_seo_analysis"].includes(capability.key)) return localSeo;
@@ -192,7 +195,7 @@ const PRE_EXECUTION_WORKFLOW_TITLES = new Set([
   "Confirm the business facts before planning",
   "Run the Growth Engine before making changes",
   "Review and approve the Growth Blueprint",
-  "Create the SEO Page Map & Content Plan",
+  "Create the Website Plan", "Create the SEO Page Map & Content Plan",
   "Review the SEO Plan",
   "Approve the SEO Plan",
   "Start Website Development",
@@ -262,6 +265,7 @@ export function hasCurrentPreExecutionGrowth(input: { strategyApprovedAt: Date |
 
 export type WorkflowEvidenceSnapshot = {
   projectId: string;
+  primaryGoal?: string | null;
   projectConfigured: boolean;
   workspaceConfigured: boolean;
   situationConfigured: boolean;
@@ -322,6 +326,7 @@ export type WorkflowEvidenceSnapshot = {
   executionPlanUpdatedAt: Date | null;
   openExecutionTasks: number;
   completedExecutionTasks: number;
+  websiteSituationNeedsConfirmation?: boolean;
   websitePlanRequired: boolean;
   websitePlanGenerated: boolean;
   websitePlanGenerationStatus: string | null;
@@ -487,6 +492,7 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   const intelligence: WorkflowModule[] = [];
   const push = (value: WorkflowModule) => intelligence.push(value);
 
+  const searchRequired = requiresSearchResearch(snapshot.primaryGoal, snapshot.existingWebsite) || snapshot.localSeoApplicable;
   const approvedKeywordCount = snapshot.approvedKeywordCount ?? 0;
   const missingKeywordResearchCount = snapshot.missingKeywordResearchCount ?? 0;
   const missingKeywordResearchCheckCount = snapshot.missingKeywordResearchCheckCount ?? missingKeywordResearchCount;
@@ -502,7 +508,7 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
       : keywordMarketSetupRequired
         ? "Choose at least one exact city, region, or country before starting Keyword Intelligence analysis."
         : null;
-  let keywordsStatus = moduleStatus({ required: true, complete: snapshot.approvedKeywords && !keywordMarketSetupRequired, inProgress: snapshot.keywordResearchInProgress, failed: snapshot.keywordResearchFailed && !snapshot.keywordResearchInProgress, blockedBy: keywordBlockedBy });
+  let keywordsStatus = moduleStatus({ required: searchRequired, complete: snapshot.approvedKeywords && !keywordMarketSetupRequired, inProgress: snapshot.keywordResearchInProgress, failed: snapshot.keywordResearchFailed && !snapshot.keywordResearchInProgress, blockedBy: keywordBlockedBy });
   if (keywordsStatus === "not_started" && approvedKeywordCount > missingKeywordResearchCount && missingKeywordResearchCount > 0) keywordsStatus = "needs_attention";
   const missingKeywordNames = missingKeywordResearchKeywords.length
     ? ` Affected: ${missingKeywordResearchKeywords.slice(0, 6).join(", ")}${missingKeywordResearchKeywords.length > 6 ? `, and ${missingKeywordResearchKeywords.length - 6} more` : ""}.`
@@ -526,18 +532,18 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     : missingKeywordResearchCount > 0
       ? `Analyze ${missingKeywordResearchCheckCount} remaining check${missingKeywordResearchCheckCount === 1 ? "" : "s"}`
       : "Run keyword research";
-  push({ key: "keyword_intelligence", label: "Keyword Intelligence", description: "Search demand, intent, topic groups, opportunity, and approved keyword evidence.", status: keywordsStatus, required: true, weight: 18, reason: statusReason(keywordsStatus, `All ${approvedKeywordCount || "approved"} Primary and Secondary keywords have completed analysis.`, keywordPendingReason, keywordBlockedBy ?? undefined), evidenceAt: snapshot.keywordEvidenceAt?.toISOString() ?? null, action: keywordBlockedBy === "Create and select the project opportunity before Keyword Intelligence." ? action("Create and select opportunity", `/opportunities?${projectQuery}`, "generate") : action(keywordActionLabel, `/keywords?${projectQuery}`, snapshot.approvedKeywords ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: "AI expands seed topics, researches demand and intent, groups keywords, identifies page ownership, and explains the strongest opportunities." } });
+  push({ key: "keyword_intelligence", label: "Keyword Intelligence", description: "Search demand, intent, topic groups, opportunity, and approved keyword evidence.", status: keywordsStatus, required: searchRequired, weight: 18, reason: statusReason(keywordsStatus, `All ${approvedKeywordCount || "approved"} Primary and Secondary keywords have completed analysis.`, keywordPendingReason, keywordBlockedBy ?? undefined), evidenceAt: snapshot.keywordEvidenceAt?.toISOString() ?? null, action: keywordBlockedBy === "Create and select the project opportunity before Keyword Intelligence." ? action("Create and select opportunity", `/opportunities?${projectQuery}`, "generate") : action(keywordActionLabel, `/keywords?${projectQuery}`, snapshot.approvedKeywords ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: "AI expands seed topics, researches demand and intent, groups keywords, identifies page ownership, and explains the strongest opportunities." } });
 
   const locationRequired = snapshot.localSeoApplicable;
   const locationComplete = snapshot.targetLocationsConfirmed && (snapshot.localAnalysisComplete || snapshot.gapAnalysisComplete || snapshot.approvedKeywords);
   const locationStatus = moduleStatus({ required: locationRequired, complete: locationComplete, inProgress: snapshot.localAnalysisInProgress, failed: snapshot.localAnalysisFailed, blockedBy: snapshot.targetLocationsConfirmed ? null : "Confirm target markets first." });
   push({ key: "location_intelligence", label: "Location Intelligence", description: "Target markets, service areas, local intent, and location-specific evidence where applicable.", status: locationStatus, required: locationRequired, weight: 8, reason: statusReason(locationStatus, "Target markets and location evidence are available.", "Confirm target markets and collect local search evidence.", "Confirm target markets first."), evidenceAt: snapshot.localEvidenceAt?.toISOString() ?? snapshot.keywordEvidenceAt?.toISOString() ?? null, action: locationRequired ? action(locationComplete ? "Review Local SEO" : "Collect local evidence", `/local-seo?${projectQuery}`, locationComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "AI maps services to cities and service areas, avoids doorway-page patterns, and recommends the markets that need attention first." } });
 
-  const competitorRequired = true;
-  const competitorStatus = moduleStatus({ required: competitorRequired, complete: snapshot.competitorAnalysisComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.competitorAnalysisInProgress, failed: snapshot.competitorAnalysisFailed, blockedBy: snapshot.approvedKeywords ? null : "Keyword Intelligence must establish the comparison topics first." });
+  const competitorRequired = searchRequired;
+  const competitorStatus = moduleStatus({ required: competitorRequired, complete: snapshot.competitorAnalysisComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.competitorAnalysisInProgress, failed: snapshot.competitorAnalysisFailed, blockedBy: !searchRequired || snapshot.approvedKeywords ? null : "Keyword Intelligence must establish the comparison topics first." });
   push({ key: "competitor_intelligence", label: "Opportunity & Competitor Intelligence", description: "Demand, customer questions, real search competitors, positioning, coverage, and market opportunities.", status: competitorStatus, required: competitorRequired, weight: 10, reason: statusReason(competitorStatus, "Opportunity and competitor evidence has been collected.", "Run Market & Content Gap Analysis to compare demand, questions, and real search competitors.", "Complete Keyword Intelligence first."), evidenceAt: snapshot.competitorEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(competitorStatus === "complete" ? "Review market intelligence" : "Analyze market and competitors", `/gap-analysis?${projectQuery}`, competitorStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: "AI identifies actual competing domains, demand and customer questions, compares coverage and authority, and recommends defensible opportunities rather than copying competitors." } });
 
-  const siteStatus = moduleStatus({ required: snapshot.existingWebsite, complete: snapshot.siteAnalysisComplete, inProgress: snapshot.siteAnalysisInProgress, failed: snapshot.siteAnalysisFailed, blockedBy: snapshot.approvedKeywords ? null : "Complete Keyword Intelligence so the crawl can be interpreted against target demand." });
+  const siteStatus = moduleStatus({ required: snapshot.existingWebsite, complete: snapshot.siteAnalysisComplete, inProgress: snapshot.siteAnalysisInProgress, failed: snapshot.siteAnalysisFailed, blockedBy: !searchRequired || snapshot.approvedKeywords ? null : "Complete Keyword Intelligence so the crawl can be interpreted against target demand." });
   const websiteBaselineDue = snapshot.existingWebsite && snapshot.publishingComplete && !snapshot.siteAnalysisComplete;
   push({ key: "site_analysis", label: snapshot.preLaunchWebsite || websiteBaselineDue ? "Website Intelligence Baseline" : "Website Intelligence", description: "Crawl-backed pages, links, indexability, content, schema, accessibility, and conversion evidence.", status: siteStatus, required: snapshot.existingWebsite, weight: 16, reason: snapshot.preLaunchWebsite ? "Starts after the website is published; a live-site baseline is never fabricated before launch." : statusReason(siteStatus, "A completed crawl exists for the current website.", websiteBaselineDue ? "The website is published. Run the first Website Intelligence assessment and save its measurement baseline." : "Analyze the connected website before Strategy generation.", "Complete Keyword Intelligence first."), evidenceAt: snapshot.siteEvidenceAt?.toISOString() ?? null, action: snapshot.existingWebsite ? action(snapshot.siteAnalysisComplete ? "Review Website Intelligence" : websiteBaselineDue ? "Create Website Intelligence Baseline" : "Analyze website", `/site-analysis?${projectQuery}`, snapshot.siteAnalysisComplete ? "review" : "generate") : null, ai: { ...aiRoles.intelligence, implementation: "The crawler collects page-level evidence; AI groups repeated findings, explains impact, and recommends fixes for the correct canonical page." } });
 
@@ -582,13 +588,19 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
   let citationStatus = moduleStatus({ required: citationRequired, complete: snapshot.citationEvidenceComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.gapAnalysisInProgress, failed: snapshot.gapAnalysisFailed, blockedBy: gapBlocked });
   push({ key: "ai_citation_analysis", label: snapshot.preLaunchWebsite ? "AI Citation Opportunities" : "AI Citation Analysis", description: snapshot.preLaunchWebsite ? "Planned entities, answer content, source clarity, schema, trust signals, and AI-discoverability requirements for the first website." : "Entity, claim, source, answer structure, trust, schema, and AI-discoverability readiness.", status: citationStatus, required: citationRequired, weight: 8, reason: citationStatus === "stale" ? staleGapReason : statusReason(citationStatus, snapshot.preLaunchWebsite ? "AI Citation and trust requirements are available to the Unified Strategy." : "AI citation and trust evidence is available.", "Run AI Citation research and save its evidence.", gapBlocked ?? undefined), evidenceAt: snapshot.citationEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(citationStatus === "complete" ? "Review citation direction" : citationStatus === "stale" ? "Refresh citation evidence" : snapshot.preLaunchWebsite ? "Plan AI Citation readiness" : "Analyze AI citations", "/ai-citations?" + projectQuery, citationStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: snapshot.preLaunchWebsite ? "AI converts verified business facts, audience questions, trust requirements, and planned page roles into citation-ready content and schema requirements without inventing claims." : "AI validates trust signals against crawl and Website Development records, then prepares factual content, schema, files, and website updates for review." } });
 
-  const authorityRequired = true;
+  const authorityRequired = searchRequired;
   const authorityBlockedBy = snapshot.preLaunchWebsite ? gapBlocked : snapshot.siteAnalysisComplete ? null : "Complete Site Analysis first.";
   let authorityStatus = moduleStatus({ required: authorityRequired, complete: snapshot.authorityEvidenceComplete || snapshot.gapAnalysisComplete, inProgress: snapshot.competitorAnalysisInProgress || snapshot.gapAnalysisInProgress, failed: snapshot.competitorAnalysisFailed || snapshot.gapAnalysisFailed, blockedBy: authorityBlockedBy });
   if (authorityStatus === "not_started" && gapEvidenceSuperseded) authorityStatus = "stale";
   push({ key: "authority_analysis", label: snapshot.preLaunchWebsite ? "Authority Opportunities" : "Authority Analysis", description: snapshot.preLaunchWebsite ? "Topical authority clusters, proof assets, expert content, mentions, partnerships, and safe authority requirements for launch." : "Backlinks, mentions, assets, source quality, risk, and realistic authority opportunities.", status: authorityStatus, required: authorityRequired, weight: 8, reason: authorityStatus === "stale" ? staleGapReason : statusReason(authorityStatus, snapshot.preLaunchWebsite ? "Authority requirements and safe opportunities are available to the Unified Strategy." : "Authority evidence and safe opportunities are available.", snapshot.preLaunchWebsite ? "Identify topical, local, trust, and external authority opportunities before Strategy generation." : "Analyze backlink and authority gaps before Strategy generation.", authorityBlockedBy ?? undefined), evidenceAt: snapshot.authorityEvidenceAt?.toISOString() ?? snapshot.gapEvidenceAt?.toISOString() ?? null, action: action(authorityStatus === "complete" ? "Review authority opportunities" : authorityStatus === "stale" ? "Refresh authority evidence" : "Analyze authority", authorityStatus === "stale" || snapshot.preLaunchWebsite ? `/gap-analysis?${projectQuery}` : `/backlinks?${projectQuery}`, authorityStatus === "complete" ? "review" : "generate"), ai: { ...aiRoles.intelligence, implementation: snapshot.preLaunchWebsite ? "AI defines topical and local authority clusters, trust assets, proof requirements, and future earning opportunities that the first website must support." : "AI identifies relevant authority gaps and safe earning opportunities, scores risk, and prepares assets or outreach for approval without spam automation." } });
 
   for (const item of intelligence) {
+    if (!searchRequired && item.key === "content_gap_analysis") { item.label = "Business Growth Gap Analysis"; item.description = "Evidence-backed website, conversion, offer and customer-journey gaps for the primary business goal."; }
+    if (!searchRequired && ["ai_citation_analysis", "authority_analysis", "keyword_intelligence", "competitor_intelligence"].includes(item.key)) {
+      item.required = false;
+      item.status = ["complete", "approved"].includes(item.status) ? item.status : "not_required";
+      item.reason = "Optional supporting search evidence for this business goal. Existing website, conversion and business evidence can establish the Strategy first.";
+    }
     const freshnessDays = WORKFLOW_EVIDENCE_FRESHNESS_DAYS[item.key] ?? 90;
     const evidenceAgeDays = item.evidenceAt ? Math.floor((Date.now() - new Date(item.evidenceAt).getTime()) / 86_400_000) : null;
     if (item.required && ["complete", "approved"].includes(item.status) && evidenceAgeDays != null && evidenceAgeDays > freshnessDays) {
@@ -720,6 +732,9 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
       websiteDeliveryStage = "growth_execution";
       nextBestAction = { title: "Continue Growth Execution", reason: "Website delivery and the applicable live and tracking checks are complete. Continue the approved growth work while Performance collects results.", expectedResult: "The next approved growth activity progresses through preparation, review, execution, and measurement.", action: action("Continue Growth Execution", `/growth?${projectQuery}`, "implement"), aiWill: ["Use the approved growth plan and remaining activities", "Continue measuring results alongside execution"], userWill: "Open Growth and continue the next available activity.", confidence: overallConfidence, explainability: "Initial baseline collection does not block approved growth execution. Measured reporting and learning remain required for the continuous growth loop." };
     }
+  } else if (snapshot.websiteSituationNeedsConfirmation) {
+    state = "discovery";
+    nextBestAction = { title: "Confirm website and domain details", reason: "A domain does not establish a live website. Confirm whether this project builds a new site, replaces the current site, or builds separately.", expectedResult: "An explicit website situation carried into research, Strategy, and Website Development.", action: action("Confirm website details", `/projects/new?edit=${snapshot.projectId}&step=website`, "review"), aiWill: ["Preserve saved planning work", "Skip live-site analysis until a website is confirmed"], userWill: "Confirm the existing website, domain ownership, and build intent.", confidence: overallConfidence, explainability: "Older ambiguous website records are never reclassified from their domain alone." };
   } else if (!snapshot.discoveryComplete) {
     state = "discovery";
     nextBestAction = { title: "Complete Business Discovery", reason: "Every AI recommendation and implementation depends on verified business context.", expectedResult: "A reusable Business Brain for all modules.", action: action("Continue discovery", `/guided-projects/${snapshot.projectId}/intake`, "generate"), aiWill: ["Reuse workspace and client defaults", "Summarize business, audience, offer, goals, and assets", "Identify missing or conflicting facts"], userWill: "Confirm the factual profile.", confidence: overallConfidence, explainability: "This is first because all research, strategy, content, and fixes need verified business facts." };
@@ -754,7 +769,7 @@ export function resolveProjectWorkflow(snapshot: WorkflowEvidenceSnapshot): Proj
     state = "execution_planning";
     nextBestAction = snapshot.websitePlanGenerationStatus
       ? { title: "SEO Page Map & Content Plan is in progress", reason: `The worker is ${snapshot.websitePlanGenerationStatus === "queued" ? "waiting to start" : "building the plan"}${snapshot.websitePlanGenerationProgress == null ? "." : ` at ${snapshot.websitePlanGenerationProgress}%.`}`, expectedResult: "One draft containing existing-page updates, proposed pages, keyword ownership, content and technical requirements, schema, trust, links, local coverage, and source evidence.", action: action("Open SEO Plan progress", `/seo-page-map?${projectQuery}`, "review"), aiWill: ["Continue the active generation job", "Save the completed draft for review", "Prevent duplicate generation while this job is active"], userWill: "Wait for generation to finish, or leave this page and return later.", confidence: overallConfidence, explainability: "An active worker job already owns this step, so the workflow shows progress instead of offering another Create action." }
-      : { title: "Create the SEO Page Map & Content Plan", reason: "Required evidence and the pre-change Growth diagnosis are ready to become one governed website plan.", expectedResult: "One draft containing existing-page updates, proposed pages, keyword ownership, content and technical requirements, schema, trust, links, local coverage, and source evidence.", action: action("Create SEO Plan", `/seo-page-map?${projectQuery}&autoPrepare=1`, "generate"), aiWill: ["Collect critical website findings from every applicable evidence module", "Keep the source module and affected URL attached to each proposed requirement", "Create draft decisions only; nothing is approved or published"], userWill: "Review the generated plan before approving any implementation.", confidence: overallConfidence, explainability: "The SEO Plan is created only after evidence and Growth prioritization are ready, and remains a separate draft decision." };
+      : { title: snapshot.preLaunchWebsite ? "Create the Website Plan" : "Create the SEO Page Map & Content Plan", reason: "Required evidence and the pre-change Growth diagnosis are ready to become one governed website plan.", expectedResult: "One draft containing existing-page updates, proposed pages, keyword ownership, content and technical requirements, schema, trust, links, local coverage, and source evidence.", action: action(snapshot.preLaunchWebsite ? "Create Website Plan" : "Create SEO Plan", `/seo-page-map?${projectQuery}&autoPrepare=1`, "generate"), aiWill: ["Collect critical website findings from every applicable evidence module", "Keep the source module and affected URL attached to each proposed requirement", "Create draft decisions only; nothing is approved or published"], userWill: "Review the generated plan before approving any implementation.", confidence: overallConfidence, explainability: "The SEO Plan is created only after evidence and Growth prioritization are ready, and remains a separate draft decision." };
   } else if (snapshot.websitePlanRequired && !snapshot.websitePlanApproved) {
     state = "execution_planning";
     const awaitingFinalApproval = ["submitted_for_approval", "needs_approval", "company_approval", "client_approval"].includes(snapshot.websitePlanTaskStatus ?? "");
@@ -975,7 +990,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
   const approvedStrategyRequiresWebsitePlan = Boolean(latestStrategy
     && (latestStrategy.status === "approved" || latestStrategy.approvedAt)
     && [latestStrategy.seoStrategy, latestStrategy.contentStrategy, latestStrategy.publishingStrategy].some((value) => typeof value === "string" && value.trim().length > 0));
-  const applicability = resolveProjectApplicability({ projectType: project.projectType, websiteStatus: project.websiteStatus, hasWebsite: Boolean(project.websiteId || project.websiteUrl || project.website?.rootUrl), websiteLaunched, targetMarketCount: targetLocations.length, contextText: goalText });
+  const applicability = resolveProjectApplicability({ projectType: project.projectType, primaryGoal: project.primaryGoal, websiteStatus: project.websiteStatus, hasWebsite: Boolean(websiteAnalysisUrl(project)), websiteLaunched, targetMarketCount: targetLocations.length, contextText: goalText });
   const localSeoApplicable = applicability.localSeo;
   const existingWebsite = applicability.existingWebsite;
   const preLaunchWebsite = applicability.preLaunchWebsite;
@@ -1027,7 +1042,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     ecommerceEvidenceAt,
   );
   const projectConfigured = Boolean(project.name && project.projectType && project.primaryGoal);
-  const situationConfigured = Boolean(project.websiteStatus && (project.websiteStatus !== "existing_website" || existingWebsite));
+  const situationConfigured = Boolean(project.websiteStatus && project.websiteStatus !== "undecided" && (project.websiteStatus !== "existing_website" || existingWebsite) && !websiteRoutingNeedsConfirmation(project));
   const discoveryComplete = Boolean(project.businessProfile && project.intakeAnswers.length && (project.businessName || project.agencyClient?.name || project.name) && project.niche && project.primaryGoal);
   const currentBrainVersion = project.workflowController?.businessBrainVersion ?? 0;
   const currentEvidenceVersion = project.workflowController?.evidenceVersion ?? 0;
@@ -1043,6 +1058,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
 
   const evidenceSnapshot: WorkflowEvidenceSnapshot = {
     projectId: project.id,
+    primaryGoal: project.primaryGoal,
     projectConfigured,
     workspaceConfigured: Boolean(project.clientId),
     situationConfigured,
@@ -1109,7 +1125,8 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
     executionPlanUpdatedAt: newest(activePlan?.updatedAt, ...project.executionTasks.map((task) => task.updatedAt)),
     openExecutionTasks: openTasks.length,
     completedExecutionTasks: completedTasks.length,
-    websitePlanRequired: approvedStrategyRequiresWebsitePlan || selectedActionRequiresWebsitePlan,
+    websiteSituationNeedsConfirmation: !websiteLaunched && websiteRoutingNeedsConfirmation(project),
+    websitePlanRequired: websiteBuildRequested(project) || approvedStrategyRequiresWebsitePlan || selectedActionRequiresWebsitePlan,
     websitePlanGenerated,
     websitePlanGenerationStatus,
     websitePlanGenerationProgress,
@@ -1150,6 +1167,7 @@ export async function getProjectWorkflowController(projectId: string): Promise<P
       name: project.name,
       projectType: project.projectType,
       websiteStatus: project.websiteStatus,
+      websiteContext: websitePlanningContext(project),
       businessName: project.businessName || project.agencyClient?.name || project.name,
       websiteUrl: project.websiteUrl,
       niche: project.niche,

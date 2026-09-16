@@ -1,3 +1,4 @@
+import { growthCategory, goalAlignment } from "@webtummy/core/growth-categories";
 import { GROWTH_INTELLIGENCE_CONTRACT_VERSION, scoreGrowthOpportunity } from "./growth-intelligence-engine.js";
 
 export const GROWTH_ENGINE_VERSION = GROWTH_INTELLIGENCE_CONTRACT_VERSION;
@@ -35,6 +36,8 @@ export type CandidateFactors = {
   learningValue: number;
   riskPenalty: number;
   reach?: number;
+  cost?: number | null;
+  timeToResultsDays?: number | null;
 };
 
 export type GrowthCandidate = {
@@ -104,6 +107,8 @@ export function scoreGrowthCandidate(factors: CandidateFactors) {
     ease: bounded(factors.efficiency),
     readiness: bounded(factors.readiness),
     risk: bounded(factors.riskPenalty),
+    cost: factors.cost,
+    timeToResultsDays: factors.timeToResultsDays,
   });
 }
 
@@ -158,6 +163,7 @@ type CandidateContext = {
   offer: string;
   market: string;
   scoreJson: Record<string, number>;
+  constraintScores?: Record<string, number>;
   openHighIssues: number;
   hasLeadMagnet: boolean;
   hasApprovedStrategy: boolean;
@@ -174,6 +180,8 @@ type CandidateContext = {
     channels: string[];
     successMeasures: string[];
     dependencies: string[];
+    cost?: number | null;
+    timeToResultsDays?: number | null;
   }>;
   evidenceStates?: Record<string, GrowthFinding["evidenceState"]>;
   mobileConversionIssue?: {
@@ -274,6 +282,26 @@ const actionTemplates: Record<string, {
     efficiency: 88,
     readiness: () => 84,
   },
+  revenue: {
+    actionType: "sales_revenue", route: "content", title: () => "Address the measured sales constraint",
+    recommendation: (ctx) => `Review the recorded sales loss for ${ctx.offer}, validate the cause and prepare one offer or purchase-path change against the saved baseline.`,
+    impact: "Recovers a measured sales opportunity from existing demand.", effort: "medium", risk: "medium", efficiency: 75, readiness: () => 85,
+  },
+  ecommerce: {
+    actionType: "ecommerce_conversion", route: "content", title: () => "Improve the measured buying journey",
+    recommendation: () => "Use the recorded checkout or product evidence to identify one purchase barrier and prepare a merchandising or checkout experiment with its baseline and validation requirement.",
+    impact: "Helps more existing shoppers complete a relevant purchase.", effort: "medium", risk: "medium", efficiency: 75, readiness: () => 85,
+  },
+  reputation: {
+    actionType: "local_reputation", route: "local_seo", title: () => "Resolve the evidenced local trust gap",
+    recommendation: () => "Review the recorded local visibility or reputation evidence and prepare the supported business-profile, review-response or conversion-path correction.",
+    impact: "Helps qualified local customers find and trust the business.", effort: "low", risk: "low", efficiency: 85, readiness: () => 85,
+  },
+  measurement: {
+    actionType: "measurement_setup", route: "technical", title: () => "Validate business outcome measurement",
+    recommendation: () => "Validate the goal KPI, source, event mapping and baseline before interpreting performance or starting experiments.",
+    impact: "Makes the next business decision measurable.", effort: "low", risk: "low", efficiency: 85, readiness: () => 90,
+  },
   retention: {
     actionType: "retention_referral",
     route: "content",
@@ -289,18 +317,20 @@ const actionTemplates: Record<string, {
 
 export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKeys: ReadonlySet<string> = new Set()) {
   const dimensions = Object.entries(ctx.scoreJson).sort((a, b) => a[1] - b[1]);
-  const candidates: GrowthCandidate[] = dimensions.flatMap(([dimension, score], index) => {
+  const candidates: GrowthCandidate[] = dimensions.flatMap(([dimension, readinessScore], index) => {
+    const score = ctx.constraintScores?.[dimension] ?? readinessScore;
     const template = actionTemplates[dimension];
     if (!template) return [];
     const evidenceState = ctx.evidenceStates?.[dimension] ?? "hypothesis";
     if (evidenceState !== "observed") {
+      if (goalAlignment(ctx.primaryGoal, growthCategory(dimension)) < 80) return [];
       const dedupeKey = `growth:${ctx.projectId}:measurement_setup:${dimension}`;
       if (excludedDedupeKeys.has(dedupeKey)) return [];
       const factors: CandidateFactors = {
         impact: 78,
         confidence: 96,
         urgency: evidenceState === "unavailable" ? 88 : 72,
-        strategicFit: ctx.hasApprovedStrategy ? 94 : 58,
+        strategicFit: goalAlignment(ctx.primaryGoal, growthCategory(dimension)),
         efficiency: 86,
         readiness: 94,
         learningValue: 96,
@@ -326,18 +356,19 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
         priorityScore: scoreGrowthCandidate(factors),
       }];
     }
+    if (ctx.constraintScores && (ctx.constraintScores[dimension] == null || ctx.constraintScores[dimension] >= 70)) return [];
     const dedupeKey = `growth:${ctx.projectId}:${template.actionType}:${dimension}`;
     if (excludedDedupeKeys.has(dedupeKey)) return [];
     const urgency = bounded(100 - score);
     const riskPenalty = template.risk === "high" ? 16 : template.risk === "medium" ? 8 : 2;
     const factors: CandidateFactors = {
       impact: bounded(96 - score * 0.35),
-      confidence: bounded(88 - index * 4),
+      confidence: 75,
       urgency,
-      strategicFit: ctx.hasApprovedStrategy ? 92 : 58,
+      strategicFit: goalAlignment(ctx.primaryGoal, growthCategory(template.actionType)),
       efficiency: template.efficiency,
       readiness: template.readiness(ctx),
-      learningValue: bounded(84 - index * 3),
+      learningValue: 75,
       riskPenalty,
     };
     return [{
@@ -345,7 +376,7 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
       actionType: template.actionType,
       title: template.title(ctx),
       recommendation: template.recommendation(ctx),
-      reasoningSummary: `${humanize(dimension)} is currently ${bounded(score)}/100 and ranks #${index + 1} among the measured constraints. This action is sequenced against the approved goal: ${ctx.primaryGoal}.`,
+      reasoningSummary: `${humanize(dimension)} is currently ${bounded(score)}/100 and ranks #${index + 1} among the measured constraints. Compared with other applicable business actions for ${ctx.primaryGoal}; goal fit is ${goalAlignment(ctx.primaryGoal, growthCategory(template.actionType))}/100. Cost and time remain uncertain unless separately estimated.`,
       expectedImpact: template.impact,
       businessGoal: ctx.primaryGoal,
       route: template.route,
@@ -420,16 +451,18 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
     });
   }
 
-  for (const [index, focus] of (ctx.strategyFocusAreas ?? []).slice(0, 6).entries()) {
+  for (const [index, focus] of (ctx.strategyFocusAreas ?? []).entries()) {
     const normalizedKey = focus.key.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `focus-${index + 1}`;
     const dedupeKey = boundedStorageText(`growth:${ctx.projectId}:approved-strategy:${ctx.strategyId ?? "current"}:${normalizedKey}`, 191);
     if (excludedDedupeKeys.has(dedupeKey)) continue;
     const base = strategyPriorityScore(focus.priority);
     const factors: CandidateFactors = {
       impact: base,
-      confidence: 94,
-      urgency: bounded(base - index * 3),
-      strategicFit: 100,
+      confidence: 65,
+      cost: focus.cost ?? null,
+      timeToResultsDays: focus.timeToResultsDays ?? null,
+      urgency: base,
+      strategicFit: goalAlignment(ctx.primaryGoal, growthCategory(`${focus.key} ${focus.title}`)),
       efficiency: focus.priority === "critical" ? 82 : 76,
       readiness: focus.dependencies.length ? 68 : 92,
       learningValue: 80,
@@ -440,7 +473,7 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
       actionType: `strategy_${normalizedKey}`.slice(0, 80),
       title: focus.title,
       recommendation: [focus.objective, focus.actions[0]].filter(Boolean).join(" Next: "),
-      reasoningSummary: `${focus.whyNow} This recommendation comes directly from approved Strategy v${ctx.strategyVersion ?? "current"} and is sequenced ahead of disconnected channel work.`,
+      reasoningSummary: `${focus.whyNow} This recommendation comes from approved Strategy v${ctx.strategyVersion ?? "current"}; its planning assumptions still require outcome validation.`,
       expectedImpact: focus.successMeasures.join(" · ") || "Advances the approved strategic objective with a measurable result.",
       businessGoal: ctx.primaryGoal,
       route: strategyRoute(focus.channels),
@@ -449,7 +482,7 @@ export function generateGrowthCandidates(ctx: CandidateContext, excludedDedupeKe
       riskLevel: "low",
       urgency: factors.urgency,
       targetEntities: ["approved_strategy", focus.key, ...focus.channels.map((channel) => channel.toLowerCase().replace(/\s+/g, "_"))],
-      dependencies: [],
+      dependencies: [...focus.dependencies],
       evidenceKeys: [`strategy:${ctx.strategyId ?? "approved"}`, `strategy-focus:${focus.key}`],
       factors,
       priorityScore: scoreGrowthCandidate(factors),

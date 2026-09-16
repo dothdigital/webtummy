@@ -1,3 +1,4 @@
+import { FixedTermAccessNotice } from "../components/FixedTermAccessNotice.js";
 import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
@@ -128,6 +129,7 @@ export default function Billing() {
 
   return (
     <div className="space-y-6">
+      {billing?.fixedTermAccess && <FixedTermAccessNotice access={billing.fixedTermAccess} />}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-charcoal-900">Plan &amp; AI Capacity</h1>

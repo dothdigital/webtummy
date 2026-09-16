@@ -1,3 +1,4 @@
+import { buildResearchMarketLabels } from "@webtummy/core/research-markets";
 import { createHash } from "node:crypto";
 import { Router } from "express";
 import type { Request } from "express";
@@ -527,7 +528,7 @@ localSeoRouter.post("/local/business/:id/keywords", async (req, res) => {
   const business = await scopedBusiness(req, req.params.id);
   if (!business) return res.status(404).json({ error: "business not found" });
   const input = parsed.data;
-  const targetLocations = cleanGeographicTargetMarkets(input.targetLocations);
+  const targetLocations = projectAnalysisLocationLabels(input.targetLocations, { country: input.country, stateProvince: business.region ?? "" });
   if (!targetLocations.length) return res.status(400).json({
     error: "Choose at least one named city, neighbourhood, region, province or state, or country before saving Local SEO targets.",
   });
@@ -1733,14 +1734,11 @@ async function cachedSearchData(endpoint: string, request: Record<string, unknow
 }
 
 function searchLocationName(business: { region?: string | null }, city: string, country: string): string {
-  const cleanCity = cleanText(city);
-  const cleanCountry = cleanText(country);
-  const region = provinceName(cleanText(business.region ?? ""));
-  if (/^canada$/i.test(cleanCountry) && region) {
-    if (/^toronto$/i.test(cleanCity) && /^ontario$/i.test(region)) return "Toronto,Toronto,Ontario,Canada";
-    return [cleanCity, region, cleanCountry].filter(Boolean).join(",");
-  }
-  return [cleanCity, cleanCountry].filter(Boolean).join(",");
+  const labels = buildResearchMarketLabels([cleanText(city)], provinceName(cleanText(business.region ?? "")), cleanText(country));
+  if (labels.length !== 1) throw new Error("Choose one exact location per tracking target. Replace Atlantic Canada with its four provinces before tracking.");
+  // Preserve the provider-specific canonical spelling used by existing Toronto tracking.
+  if (labels[0] === "Toronto, Ontario, Canada") return "Toronto,Toronto,Ontario,Canada";
+  return labels[0].split(",").map((part) => part.trim()).join(",");
 }
 
 const SEARCH_COUNTRY_LOCATIONS = [

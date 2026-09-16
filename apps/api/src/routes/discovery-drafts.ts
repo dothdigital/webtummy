@@ -1,3 +1,5 @@
+import { websiteProjectFields, websiteAnalysisUrl, normalizeWebsiteContext } from "@webtummy/core/website-context";
+import { validateWebsiteContext } from "../website-context.js";
 import { Router, type NextFunction, type Request, type Response } from "express";
 import { Worker } from "bullmq";
 import { createHash } from "node:crypto";
@@ -349,7 +351,7 @@ function normalizeDiscoveryResearch(value: unknown, fallback: DiscoveryFallback)
   const rawDelivery = firstText(understanding.deliveryMode, understanding.delivery, root.deliveryMode, fallback.deliveryMode, "unclear").toLowerCase();
   const deliveryMode = rawDelivery.includes("hybrid") || rawDelivery.includes("both") ? "hybrid" : rawDelivery.includes("local") ? "local" : rawDelivery.includes("online") ? "online" : "unclear";
   const requestedGoal = canonicalPrimaryGoal(firstText(understanding.primaryGoal, root.primaryGoal));
-  const primaryGoal = fallback.allowedGoals.includes(requestedGoal) ? requestedGoal : fallback.allowedGoals[0] ?? "Generate More Leads";
+  const primaryGoal = fallback.allowedGoals.includes(requestedGoal) ? requestedGoal : fallback.allowedGoals[0] ?? "Generate More Qualified Leads";
   const audience = firstText(understanding.audience, understanding.targetAudience, root.audience, root.targetAudience, "Audience to validate");
   const revenueModel = firstText(understanding.revenueModel, understanding.monetization, root.revenueModel, "Revenue model to validate");
   const businessModel = firstText(understanding.businessModel, understanding.model, root.businessModel, "Business opportunity");
@@ -784,6 +786,7 @@ async function generateDiscoveryDraft(req: Request, res: Response, next: NextFun
 
 Start path: ${draft.startPath}
 Allowed Primary Goals: ${allowedGoals.join("; ")}
+Website facts: hasWebsite and hasDomain are independent explicit answers. A domain or URL alone is not proof of a live website. Preserve websiteIntent (new, replace, separate, improve), existingWebsiteUrl as the current-site reference, domainUrl as the intended destination, and replacementDomain (same/different). A new-site or replacement goal must result in website-building plans, not just SEO improvements. For a separate website the old site is an optional reference, not a crawl prerequisite or publishing destination. Do not invent missing website answers.
 User answers: ${JSON.stringify(answers).slice(0, 50_000)}
 User feedback or source text: ${String(draft.sourceText ?? "").slice(0, 20_000)}
 Fine-tuning instruction: ${input.feedback || "No additional fine-tuning instruction."}
@@ -813,7 +816,7 @@ Rules:
 - Include applicable compliance areas only (for example privacy, consumer protection, professional licensing, marketplace payments, advertising, sector rules, or local permits). Compliance is advisory guidance for the later quality and approval checklist, not legal advice and not a project, approval, or publishing blocker. Always return blocking as false. Unsafe or unsupported website copy is evaluated separately by Website Quality.
 - Include a small ordered validation workflow with concrete success signals. Do not turn it into the downstream Project workflow.
 - Include a lean launch strategy for after validation: a narrow beachhead market, evidence-safe positioning, first offer, launch channels, budget guardrail, 2-4 phases with actions and success signals, and measurable go/no-go criteria. Keep it appropriate to the user's constraints; do not assume validation has passed.
-- Choose one Primary Goal using an exact value from the allowed list.
+- Choose one Primary Goal using an exact value from the allowed list. If the user selected "Not Sure — Help Me Decide", use business evidence to explain a recommended outcome and supporting secondary goals for the strategy.
 - Return one Next Best Action with an expected outcome.
 - Keep the JSON concise enough to finish. Use short paragraphs and compact lists while still completing every required field.
 
@@ -1105,20 +1108,19 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
     const answers = jsonRecord(draft.answersJson);
     const modelText = String(idea.businessModel ?? summary.businessModel ?? "").toLocaleLowerCase();
     const deliveryMode = String(summary.deliveryMode ?? "unclear");
-    const websiteUrlCandidate = answerText(answers, "websiteOrProfile");
-    const normalizedWebsite = normalizeDiscoveryWebsiteUrl(websiteUrlCandidate);
-    if (websiteUrlCandidate && !normalizedWebsite) return res.status(400).json({ error: "Enter a valid website, store, or profile link, such as example.com or https://example.com." });
-    const websiteUrl = normalizedWebsite?.rootUrl ?? null;
     const selectedBusinessType = String(answers.businessType ?? "").toLowerCase();
-    const projectType = ["ecommerce_store", "marketplace_seller"].includes(selectedBusinessType) || /ecommerce|store|marketplace/.test(modelText)
-      ? "ecommerce"
-      : selectedBusinessType === "local_business" || deliveryMode === "local" || /local service/.test(modelText)
-        ? "local_seo"
-        : websiteUrl ? "existing_website" : "new_business";
-    const websiteStatus = websiteUrl ? "existing_website" : answerText(answers, "websiteNeeded") === "no" ? "no_website_required" : "website_planned";
     const allowedGoals = primaryGoalsForWorkspace(context.workspace.workspaceType);
     const canonicalGoal = canonicalPrimaryGoal(String(summary.primaryGoal ?? ""));
-    const primaryGoal = allowedGoals.includes(canonicalGoal as (typeof allowedGoals)[number]) ? canonicalGoal : projectType === "local_seo" ? "Improve Local SEO" : projectType === "ecommerce" ? "Increase Sales" : "Generate More Leads";
+    const primaryGoal = allowedGoals.includes(canonicalGoal as (typeof allowedGoals)[number]) ? canonicalGoal : "Generate More Qualified Leads";
+    const websiteContextJson = normalizeWebsiteContext(answers, primaryGoal);
+    const websiteError = validateWebsiteContext(websiteContextJson, primaryGoal);
+    if (websiteError) return res.status(400).json({ error: `Confirm the website details in your discovery draft before creating the project. ${websiteError}` });
+    const { websiteStatus, websiteUrl } = websiteProjectFields(websiteContextJson, primaryGoal);
+    const sourceUrl = websiteAnalysisUrl({ websiteContextJson });
+    const normalizedWebsite = sourceUrl ? normalizeDiscoveryWebsiteUrl(sourceUrl) : null;
+    const projectType = ["ecommerce_store", "marketplace_seller"].includes(selectedBusinessType) || /ecommerce|store|marketplace/.test(modelText)
+      ? "ecommerce" : selectedBusinessType === "local_business" || deliveryMode === "local" || /local service/.test(modelText)
+        ? "local_seo" : sourceUrl ? "existing_website" : "new_business";
     const businessName = String(summary.businessName ?? "").trim() || draft.title;
     const niche = String(summary.industry ?? idea.businessModel ?? "Business opportunity").slice(0, 180);
     const businessSummary = idea.description;
@@ -1140,6 +1142,7 @@ discoveryDraftsRouter.post("/discovery-drafts/:draftId/convert", async (req, res
         name: draft.title,
         projectType,
         websiteStatus,
+        websiteContextJson,
         websiteUrl,
         businessName: draft.agencyClientId ? null : businessName,
         niche,

@@ -1,3 +1,4 @@
+import { requiresSearchResearch } from "@webtummy/core/growth-categories";
 import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
@@ -1323,13 +1324,15 @@ gapAnalysisRouter.post(gapRoutes("/run"), (req, res) => routeAction(res, async (
   const completedKeywordRuns = await prisma.keywordResearchRun.findMany({ where: { projectId: evidence.project.id }, select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } });
   const approvedKeywords = approvedKeywordEntries(evidence.project.keywordGroups);
   const missingKeywordResearch = missingApprovedKeywordResearch(evidence.project.keywordGroups, completedKeywordRuns, projectAnalysisLocationLabels(evidence.project.targetLocations, evidence.project.businessLocationJson));
-  if (!approvedKeywords.length || missingKeywordResearch.length) {
+  if (requiresSearchResearch(evidence.project.primaryGoal, Boolean(evidence.crawl)) && (!approvedKeywords.length || missingKeywordResearch.length)) {
     const error = new Error(!approvedKeywords.length
       ? "Approve Primary or Secondary keywords and complete Keyword Analysis before running SEO & Gap Analysis."
       : `Complete Keyword Analysis for all approved Primary and Secondary keywords before running SEO & Gap Analysis. ${missingKeywordResearch.length} still need analysis: ${missingKeywordResearch.slice(0, 8).join(", ")}${missingKeywordResearch.length > 8 ? "…" : ""}`);
     error.name = "workflow_incomplete";
     throw error;
   }
+  // Optional research must not allow unvalidated intake seeds into search-demand findings.
+  if (!approvedKeywords.length || missingKeywordResearch.length) evidence.project.keywordGroups = [];
   const recommendations = buildGapRecommendations(evidence);
   const highImpact = recommendations.filter((item) => item.score >= 78);
   const result = await prisma.$transaction(async (tx) => {

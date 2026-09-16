@@ -617,7 +617,7 @@ export default function GapAnalysis() {
     try {
       const result = await api.post<{ report: { id: string; approvalStatus: string } }>("/api/project-reports/generate", {
         projectId: selectedProjectId,
-        reportType: "seo_audit",
+        reportType: "seo_website",
         exportFormat: "pdf",
       });
       await api.download(`/api/project-reports/${result.report.id}/download`);

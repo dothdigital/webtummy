@@ -44,7 +44,7 @@ describe("Growth Engine decision core", () => {
       readiness: 80,
       learningValue: 70,
       riskPenalty: 10,
-    })).toBe(56);
+    })).toBe(41);
   });
 
   it("returns exactly one ready next-best action", () => {
@@ -186,7 +186,7 @@ describe("Growth Engine decision core", () => {
     });
     const aligned = candidates.find((candidate) => candidate.evidenceKeys.includes("strategy:strategy-2"));
     expect(aligned?.title).toBe("Resolve canonical page ownership");
-    expect(aligned?.factors.strategicFit).toBe(100);
+    expect(aligned?.factors.strategicFit).toBe(65);
     expect(aligned?.reasoningSummary).toContain("Strategy v2");
   });
 
@@ -216,4 +216,27 @@ describe("Growth Engine decision core", () => {
     expect(stored.actionType.length).toBeLessThanOrEqual(80);
     expect(stored.route.length).toBeLessThanOrEqual(80);
   });
+});
+
+it.each([
+  ["Generate More Qualified Leads", "leadCapture", "lead_capture"],
+  ["Increase Sales and Revenue", "revenue", "sales_revenue"],
+  ["Improve Local Visibility", "reputation", "local_reputation"],
+])("prioritizes the evidenced business outcome for %s", (primaryGoal, dimension, expected) => {
+  const scoreJson = { traffic: 40, [dimension]: 40 };
+  const candidates = generateGrowthCandidates({ ...baseContext, primaryGoal, scoreJson, hasLeadMagnet: false,
+    evidenceStates: { traffic: "observed", [dimension]: "observed" }, constraintScores: scoreJson });
+  expect(selectNextBestAction(candidates)?.actionType).toBe(expected);
+  expect(candidates.every(candidate => candidate.expectedImpact && candidate.evidenceKeys.length)).toBe(true);
+});
+
+it("does not turn readiness into an optimization when outcome evidence improved", () => {
+  const candidates = generateGrowthCandidates({ ...baseContext, scoreJson: { conversion: 15 }, evidenceStates: { conversion: "observed" }, constraintScores: { conversion: 100 } });
+  expect(candidates).toHaveLength(0);
+});
+
+it("preserves approved focus prerequisites and selects ready work", () => {
+  const candidates = generateGrowthCandidates({ ...baseContext, scoreJson: {}, strategyFocusAreas: [{ key: "checkout", title: "Improve checkout", priority: "critical", objective: "Recover lost purchases", whyNow: "Checkout failures recorded", actions: ["Repair checkout"], channels: ["Website"], successMeasures: ["Completed orders"], dependencies: ["Verify payment integration"] }] });
+  expect(candidates[0].dependencies).toEqual(["Verify payment integration"]);
+  expect(selectNextBestAction(candidates)).toBeNull();
 });

@@ -1,13 +1,13 @@
+import { websiteAnalysisUrl } from "@webtummy/core/website-context";
 import type { GuidedProject, Website } from "./types.js";
 
 export function projectHasWebsite(project?: GuidedProject, website?: Website | null) {
-  return Boolean(project?.websiteId || project?.websiteUrl || project?.website || website);
+  return Boolean(project && websiteAnalysisUrl({ ...project, websiteUrl: project.websiteUrl || project.website?.rootUrl || website?.rootUrl }));
 }
 
 export function isExistingWebsiteFlow(project?: GuidedProject, website?: Website | null) {
   if (!project) return false;
-  if (project.websiteStatus) return project.websiteStatus === "existing_website";
-  return project.projectType === "existing_website";
+  return projectHasWebsite(project, website);
 }
 
 export function requiresSiteAnalysisBeforeStrategy(project?: GuidedProject, website?: Website | null) {

@@ -1,3 +1,4 @@
+import { growthCategory, growthCategories, outcomeGroup } from "@webtummy/core/growth-categories";
 import GrowthExecutionWorkspace from "../components/GrowthExecutionWorkspace.js";
 import { growthGuide } from "@webtummy/core/growth-execution";
 import { formatDisplayDate } from "@webtummy/core/display-date";
@@ -287,11 +288,13 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
           <div className="flex flex-wrap items-center gap-2">
             {primary && <span className="rounded-full bg-brand-600 px-2.5 py-1 text-xs font-bold text-white">Next Best Action</span>}
             <span className={`rounded-full px-2.5 py-1 text-xs font-bold ${statusBadge(action.status)}`}>{titleCase(action.status)}</span>
-            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{titleCase(action.route)}</span>
+            <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-bold text-slate-600">{growthCategories[growthCategory(`${action.actionType} ${action.title}`)].label}</span>
           </div>
           <h3 className="mt-3 text-lg font-bold text-charcoal-950">{action.title}</h3>
           <div className="mt-3 rounded-xl border border-brand-100 bg-brand-50/60 p-4">
-            <div className="text-[10px] font-bold uppercase tracking-wide text-brand-700">What to do</div>
+            <div className="text-[10px] font-bold uppercase tracking-wide text-brand-700">Expected business benefit</div>
+            <p className="mt-1 text-sm leading-6 text-slate-700">{action.expectedImpact}</p>
+            <div className="mt-3 text-[10px] font-bold uppercase tracking-wide text-brand-700">What to do</div>
             <p className="mt-1 text-sm leading-6 text-slate-700">{action.recommendation}</p>
           </div>
           <div className="mt-3 text-[10px] font-bold uppercase tracking-wide text-slate-400">Why now</div>
@@ -305,7 +308,7 @@ function RecommendationCard({ action, projectId, primary, busy, onDecision }: {
       </div>
       <div className="mt-4 grid gap-3 md:grid-cols-3">
         <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold uppercase text-slate-400">Expected impact</span>{action.expectedImpact}</div>
-        <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold uppercase text-slate-400">Effort / risk</span>{titleCase(action.estimatedEffort)} effort · {titleCase(action.riskLevel)} risk</div>
+        <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold uppercase text-slate-400">Effort / risk</span>{titleCase(action.estimatedEffort)} effort · {titleCase(action.riskLevel)} risk<div className="mt-1 text-xs text-slate-500">Cost: {typeof factors.cost === "number" ? `${factors.cost}/100 relative estimate` : "Not estimated"} · Time to results: {typeof factors.timeToResultsDays === "number" ? `${factors.timeToResultsDays} days (estimate)` : "Not estimated"}</div></div>
         <div className="rounded-lg bg-slate-50 p-3 text-sm"><span className="block text-xs font-bold uppercase text-slate-400">Goal</span>{action.businessGoal || "Project growth goal"}</div>
       </div>
       {Object.keys(factors).length > 0 && (
@@ -963,7 +966,7 @@ export default function GrowthEngine() {
               {data.growth.selectedAction?.followupTask ? (() => { const workspace = growthActionWorkspace(data.growth.selectedAction!, projectId); return <Link to={workspace.url} className="block w-full rounded-lg border border-brand-200 bg-brand-50/40 p-3 text-left hover:bg-brand-50"><div className="font-bold text-charcoal-950">{data.growth.selectedAction!.title}</div><div className="mt-1 text-sm text-slate-500">{workspace.preparation}</div><div className="mt-3 text-xs font-bold text-brand-700">{workspace.label} →</div></Link>; })() : data.growth.selectedAction ? (
                 <button type="button" disabled={busy} onClick={() => void decideRecommendation(data.growth.selectedAction!, "accepted")} className="w-full rounded-xl border-2 border-brand-300 bg-brand-50 p-5 text-left shadow-sm hover:border-brand-500 hover:bg-brand-100 disabled:opacity-50">
                   <div className="font-bold text-charcoal-950">{data.growth.selectedAction.title}</div>
-                  <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction.recommendation}</div>
+                  <div className="mt-1 text-sm text-slate-500">{data.growth.selectedAction.expectedImpact}</div>
                   <div className="mt-3 text-xs font-bold text-brand-700">Start Next Big Action with AI →</div>
                 </button>
               ) : (
@@ -1232,9 +1235,10 @@ export default function GrowthEngine() {
           {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).length > 0 && (
             <div className="space-y-3">
               <h2 className="text-lg font-bold text-charcoal-950">Other scored candidates and prior decisions</h2>
-              {data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id).map((action) => (
-                <RecommendationCard key={action.id} action={action} projectId={projectId} busy={busy} onDecision={decideRecommendation} />
-              ))}
+              {[...new Set(data.growth.candidateActions.map((action) => outcomeGroup(growthCategory(`${action.actionType} ${action.title}`), action.businessGoal ?? "")))].map((group) => {
+                const actions = data.growth.candidateActions.filter((action) => action.id !== data.growth.selectedAction?.id && outcomeGroup(growthCategory(`${action.actionType} ${action.title}`), action.businessGoal ?? "") === group);
+                return actions.length ? <section key={group} className="space-y-3"><h3 className="font-bold text-charcoal-950">{group}</h3>{actions.map((action) => <RecommendationCard key={action.id} action={action} projectId={projectId} busy={busy} onDecision={decideRecommendation} />)}</section> : null;
+              })}
             </div>
           )}
         </div>

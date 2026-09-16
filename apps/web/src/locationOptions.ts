@@ -1,3 +1,4 @@
+import { buildResearchMarketLabels } from "@webtummy/core/research-markets";
 import { geographicTargetMarkets } from "./utils/projectLocations";
 
 export const COUNTRY_ALIASES = new Map([
@@ -121,28 +122,8 @@ export function buildLocationName(city: string, region: string, country: string)
 }
 
 export function buildLocationNames(cities: string, region: string, country: string): string[] {
-  const regionLower = region.trim().toLowerCase();
-  const countryLower = country.trim().toLowerCase();
-  const seen = new Set<string>();
-  const parsed = citiesFromText(cities)
-    // Intake can contain a natural-language service area such as
-    // "Etobicoke and west Toronto". Research providers require one exact
-    // market per request, so split composite markets before adding the
-    // shared region and country. A country value containing "and" is removed
-    // by the country filter below before this split is applied.
-    .filter((part) => part.toLowerCase() !== regionLower && part.toLowerCase() !== countryLower)
-    .flatMap((part) => part.split(/\s+(?:and|&)\s+/i).map((market) => market.trim()).filter(Boolean))
-    .filter((part) => {
-      const value = part.toLowerCase();
-      return value !== regionLower && value !== countryLower;
-    })
-    .filter((city) => {
-      const key = city.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  return (parsed.length ? parsed : [cities.trim()].filter(Boolean)).map((city) => buildLocationName(city, region, country));
+  const markets = geographicTargetMarkets(cities);
+  return buildResearchMarketLabels(markets, region, country);
 }
 
 function countryOption(value: string) {
@@ -156,18 +137,7 @@ function countryOption(value: string) {
  * always inherit the business address's province and country.
  */
 export function buildProjectMarketLocationNames(markets: string[], region: string, country: string): string[] {
-  const regionKey = region.trim().toLowerCase();
-  const countryKey = country.trim().toLowerCase();
-  const labels = geographicTargetMarkets(markets).map((market) => {
-    const normalized = market.trim().toLowerCase();
-    const matchedCountry = countryOption(market);
-    if (matchedCountry) return matchedCountry.value;
-    if (normalized === regionKey) return buildLocationName(region, "", country);
-    if (market.includes(",")) return market.split(",").map((part) => part.trim()).filter(Boolean).join(", ");
-    if (normalized === countryKey) return country.trim();
-    return buildLocationName(market, region, country);
-  });
-  return [...new Map(labels.filter(Boolean).map((label) => [label.toLowerCase(), label])).values()];
+  return buildResearchMarketLabels(geographicTargetMarkets(markets), region, country);
 }
 
 export function projectAnalysisLocations(input: {

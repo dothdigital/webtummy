@@ -6,7 +6,15 @@ import { canonicalSecondaryGoal } from "@webtummy/core/project-goals";
 describe("DEV-005 primary and secondary goals", () => {
   it.each(["personal", "business", "ecommerce"])("uses business goals in %s", (workspaceType) => {
     expect(primaryGoalsForWorkspace(workspaceType)).not.toContain(agencyPrimaryGoal);
-    expect(normalizeProjectGoals("Generate More Leads", ["Build Backlinks", "build backlinks"], workspaceType)).toEqual({ primaryGoal: "Generate More Leads", secondaryGoals: ["Build Backlinks"] });
+    expect(normalizeProjectGoals("Generate More Leads", ["Build Backlinks", "build backlinks"], workspaceType)).toEqual({ primaryGoal: "Generate More Qualified Leads", secondaryGoals: ["Build Backlinks"] });
+  });
+  it("accepts every new goal without changing its meaning", () => {
+    for (const goal of primaryGoalsForWorkspace("agency")) {
+      expect(normalizeProjectGoals(goal, [], "agency").primaryGoal).toBe(goal);
+    }
+    expect(normalizeProjectGoals("Improve Website Conversions", [], "business").primaryGoal).toBe("Improve Website Conversions");
+    expect(normalizeProjectGoals("Not Sure — Help Me Decide", [], "business").primaryGoal).toBe("Not Sure — Help Me Decide");
+    expect(normalizeProjectGoals("Build Content Authority", [], "business").primaryGoal).toBe("Build Brand Authority and Trust");
   });
   it("allows the Proposal/Audit primary goal only for Agency", () => {
     expect(normalizeProjectGoals(agencyPrimaryGoal, [], "agency").primaryGoal).toBe(agencyPrimaryGoal);
@@ -22,7 +30,7 @@ describe("DEV-005 primary and secondary goals", () => {
     expect(canonicalSecondaryGoal("Attract more patients needing custom braces or orthotics")).toBe("Increase Organic Traffic");
   });
   it("provides primary and secondary goals to downstream AI context", () => {
-    expect(goalContext("Improve SEO Rankings", ["Improve AI Visibility", "Build Backlinks"])).toEqual({ primaryGoal: "Improve SEO Rankings", secondaryGoals: ["Improve AI Visibility", "Build Backlinks"], summary: "Improve SEO Rankings; Improve AI Visibility; Build Backlinks" });
+    expect(goalContext("Improve SEO Rankings", ["Improve AI Visibility", "Build Backlinks"])).toEqual({ primaryGoal: "Increase Visibility in Search and AI", secondaryGoals: ["Improve AI Visibility", "Build Backlinks"], summary: "Increase Visibility in Search and AI; Improve AI Visibility; Build Backlinks" });
   });
   it("uses secondary goals to prioritize execution and reporting context", () => {
     const tasks = buildCampaignExecutionTasks({ projectType: "existing_website", primaryGoal: "Improve SEO Rankings", secondaryGoals: ["Build Backlinks", "Improve AI Visibility"], targetLocations: ["Canada"] });

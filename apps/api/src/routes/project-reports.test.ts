@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clientReportSections, documentQa, reportCanBeArchived, reportDeliveryModeForWorkspace, reportVersionPeriod } from "./project-reports.js";
+import { generateSchema, clientReportSections, documentQa, reportCanBeArchived, reportDeliveryModeForWorkspace, reportVersionPeriod } from "./project-reports.js";
 
 const baseContent = {
   project: { id: "project-1", name: "Acme Growth" },
@@ -94,5 +94,28 @@ describe("Client report template differentiation", () => {
     expect(scope?.items).toContain("Analysis markets: Canada, United States");
     expect(learning?.items).toContain("Constraint: The first offer still needs validation");
     expect(next?.items?.[0]).toContain("Open Project Intake");
+  });
+});
+
+
+describe("Strategy report generation regression", () => {
+  it("accepts the existing Strategy PDF button payload", () => {
+    expect(generateSchema.parse({ projectId: "project-1", reportType: "strategy", exportFormat: "pdf" })).toMatchObject({ reportType: "strategy", exportFormat: "pdf" });
+  });
+
+  it("keeps Strategy on its dedicated PDF layout instead of campaign sections", () => {
+    expect(clientReportSections("strategy", baseContent)).toEqual([]);
+  });
+
+  it("rejects unknown report types", () => {
+    expect(generateSchema.safeParse({ projectId: "project-1", reportType: "unknown" }).success).toBe(false);
+  });
+});
+
+ describe("SEO findings download compatibility", () => {
+  it("accepts old download buttons and saves the canonical SEO report type", () => {
+    expect(generateSchema.parse({ projectId: "project-1", reportType: "seo_audit", exportFormat: "pdf" }).reportType).toBe("seo_website");
+    expect(generateSchema.parse({ projectId: "project-1", reportType: "seo_website", exportFormat: "pdf" }).reportType).toBe("seo_website");
+    expect(generateSchema.safeParse({ projectId: "project-1", reportType: "unknown_report" }).success).toBe(false);
   });
 });

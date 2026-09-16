@@ -23,7 +23,7 @@ describe("project reporting catalog", () => {
 
   it("defines the passive weekly summary, five on-demand client reports, and the separate proposal workflow", () => {
     expect(clientReportTypes).toEqual(["weekly_growth", "monthly_growth", "seo_website", "local_visibility", "leads_conversion", "campaign_project"]);
-    expect(projectReportTypes).toEqual([...clientReportTypes, "agency_proposal"]);
+    expect(projectReportTypes).toEqual([...clientReportTypes, "strategy", "agency_proposal"]);
   });
 
   it("applies the DEV-065 plan matrix without lowering core intelligence", () => {

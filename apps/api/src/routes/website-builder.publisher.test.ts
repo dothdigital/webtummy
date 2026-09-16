@@ -150,8 +150,12 @@ describe("ongoing WordPress publishing schema", () => {
     expect(wordpressProductionCanonicalUrl("https://example.com/", "https://example.com/home/", true)).toBe("https://example.com/");
   });
 
-  it("derives a production website from a domain-shaped project name", () => {
-    expect(productionWebsiteUrl({ name: "exampleinsurance.ca", websiteUrl: null })).toEqual({ domain: "exampleinsurance.ca", rootUrl: "https://exampleinsurance.ca" });
+  it("does not treat a domain-shaped project name as a confirmed destination", () => {
+    expect(productionWebsiteUrl({ name: "exampleinsurance.ca", websiteUrl: null })).toBeNull();
+  });
+
+  it("keeps the confirmed project domain ahead of an old-site integration", () => {
+    expect(productionWebsiteUrl({ websiteUrl: "https://new.example.com" }, "https://old.example.com")).toEqual({ domain: "new.example.com", rootUrl: "https://new.example.com" });
   });
 
   it("prefers the real publishing destination for tracking identity", () => {

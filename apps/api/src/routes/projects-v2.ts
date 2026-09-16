@@ -1,3 +1,6 @@
+import { websiteAnalysisUrl, websiteContext, websitePlanningContext } from "@webtummy/core/website-context";
+import { websiteContextSchema, validateWebsiteContext, websiteProjectFields } from "../website-context.js";
+import { requiresSearchResearch } from "@webtummy/core/growth-categories";
 import { keywordEvidenceList, keywordIntent } from "../keyword-evidence.js";
 import { keywordListSchema, keywordGroupUpdateSchema } from "../keyword-input.js";
 import { getWebsiteHandoffReview } from "../website-handoff-review.js";
@@ -55,6 +58,7 @@ function normalizeIntakeKeywords(values: string[], targetLocations: unknown) {
 }
 
 const createProjectSchema = z.object({
+  websiteContextJson: websiteContextSchema.optional(),
   name: z.string().min(2).max(180),
   projectType: z.enum(projectTypes),
   websiteStatus: z.enum(websiteStatuses),
@@ -96,6 +100,7 @@ const createProjectSchema = z.object({
 });
 
 const conversationalDraftSchema = z.object({
+  websiteContextJson: websiteContextSchema.optional(),
   name: z.string().trim().min(2).max(180),
   projectType: z.enum(projectTypes),
   websiteStatus: z.union([z.enum(websiteStatuses), z.literal("undecided")]),
@@ -108,8 +113,9 @@ const conversationalDraftSchema = z.object({
   primaryGoal: z.string().trim().max(255).optional().default(""),
 });
 const conversationalDraftUpdateSchema = z.object({
+  websiteContextJson: websiteContextSchema.optional(),
   projectName: z.string().trim().min(2).max(180).optional(), businessName: z.string().trim().max(180).optional(), industryNiche: z.string().trim().max(180).optional(),
-  websiteStatus: z.enum(websiteStatuses).optional(), websiteUrl: z.string().trim().max(512).optional(), businessDescription: z.string().trim().max(10000).optional(),
+  websiteStatus: z.union([z.enum(websiteStatuses), z.literal("undecided")]).optional(), websiteUrl: z.string().trim().max(512).optional(), businessDescription: z.string().trim().max(10000).optional(),
   targetAudience: z.string().trim().max(10000).optional(), productsServices: z.string().trim().max(10000).optional(),
   businessLocation: z.object({ country: z.string().trim().max(120), stateProvince: z.string().trim().max(120), city: z.string().trim().max(120), streetAddress: z.string().trim().max(255), postalCode: z.string().trim().max(40) }).optional(),
   targetMarkets: z.array(z.string().trim().min(1).max(180)).max(50).optional(), primaryGoal: z.string().trim().max(255).optional(), secondaryGoals: z.array(z.string().trim().min(1).max(255)).max(20).optional(),
@@ -1148,7 +1154,9 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
     : null;
   const workflowKeywordLocations = projectAnalysisLocationLabels(project.targetLocations, workflowBusinessLocation);
   const missingKeywordResearch = missingApprovedKeywordResearch(project.keywordGroups, project.keywordResearchRuns, workflowKeywordLocations);
+  const searchRequired = requiresSearchResearch(project.primaryGoal, websiteLaunched || project.websiteStatus === "existing_website") || project.projectType === "local_seo";
   const keywordAnalysisComplete = approvedKeywords.length > 0 && missingKeywordResearch.length === 0;
+  const keywordPrerequisiteSatisfied = !searchRequired || keywordAnalysisComplete;
   const marketAndContentIntelligenceComplete = project.gapAnalysisRuns.length > 0;
   const siteAnalysisComplete = Boolean(project.website?.crawlJobs.some((crawl) => crawl.status === "completed" && crawl.pagesCrawled > 0) || project.executionTasks.some((task) => task.moduleName === "site_analysis" && ["completed", "skipped"].includes(task.status)));
   const siteAnalysisRequiredBeforeStrategy = websiteLaunched || requiresSiteAnalysisBeforeStrategy(project);
@@ -1175,7 +1183,9 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
       : readinessComplete
         ? { status: "ready", actionUrl: "/opportunities", readyReason: "Intake is complete and opportunities can be generated." }
         : { status: "pending", actionUrl: `/guided-projects/${project.id}`, readyReason: "Waiting for intake completion." },
-    keyword_analysis: keywordAnalysisComplete
+    keyword_analysis: !searchRequired && !keywordAnalysisComplete
+      ? { status: "skipped", actionUrl: "/keywords", completionReason: "Search research is optional for the current business goal; no completed research is claimed." }
+      : keywordAnalysisComplete
       ? { status: "completed", actionUrl: "/keywords", sourceType: "keyword_research", completionReason: "Keyword analysis exists for this project or connected website.", completedAt: new Date() }
       : selectedOpportunity
         ? { status: "ready", actionUrl: "/keywords", readyReason: isNewWebsiteLaunch ? "Research the approved seed directions across target markets before the website Strategy is created." : "Use the project profile and opportunity direction to run keyword analysis before full execution planning." }
@@ -1186,12 +1196,12 @@ async function syncProjectWorkflow(tx: Prisma.TransactionClient, projectId: stri
         ? { status: "skipped", actionUrl: "/site-architect", completionReason: "Site analysis is only required for an existing website.", completedAt: new Date() }
         : !hasWebsite
         ? { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for the existing website URL." }
-        : keywordAnalysisComplete
+        : keywordPrerequisiteSatisfied
           ? { status: "ready", actionUrl: "/site-analysis", readyReason: "Keyword analysis exists and the connected website can now be crawled." }
           : { status: "pending", actionUrl: "/site-analysis", readyReason: "Waiting for keyword analysis." },
     strategy: strategyGenerated
       ? { status: "completed", actionUrl: "/strategy", sourceType: "strategy_plan", sourceId: latestStrategy?.id, completionReason: "A strategy plan exists.", completedAt: new Date() }
-      : selectedOpportunity && keywordAnalysisComplete && marketAndContentIntelligenceComplete && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
+      : selectedOpportunity && keywordPrerequisiteSatisfied && marketAndContentIntelligenceComplete && intakeComplete && (!siteAnalysisRequiredBeforeStrategy || siteAnalysisComplete)
         ? { status: "ready", actionUrl: "/strategy", readyReason: isNewWebsiteLaunch ? "Opportunity, market, keyword, Local SEO, and content-gap evidence are ready for Website Strategy and the Unified Strategy." : "All approved keywords and required site discovery are ready for Strategy." }
         : { status: "pending", actionUrl: "/strategy", readyReason: !selectedOpportunity ? "Select an opportunity or confirm the existing direction first." : !approvedKeywords.length ? "Approve at least one Primary or Secondary keyword first." : missingKeywordResearch.length ? `${missingKeywordResearch.length} approved keyword${missingKeywordResearch.length === 1 ? " still needs" : "s still need"} analysis.` : !marketAndContentIntelligenceComplete ? "Complete Opportunity, Market, and Content Gap intelligence first." : siteAnalysisRequiredBeforeStrategy ? "Waiting for site analysis on the existing website." : "Waiting for intake completion." },
     strategy_approval: strategyApproved
@@ -2845,6 +2855,9 @@ guidedProjectsRouter.post("/projects-v2/intake-draft", async (req, res) => {
   const parsed = conversationalDraftSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
+  if (data.websiteContextJson) {
+    Object.assign(data, websiteProjectFields(data.websiteContextJson, data.primaryGoal, data.websiteStatus));
+  }
   const context = await workspaceContext(req);
   requireWorkspaceRole(context, "editor");
   await assertWorkspaceResourceAvailable(context.workspace.id, "activeProjects");
@@ -2854,7 +2867,7 @@ guidedProjectsRouter.post("/projects-v2/intake-draft", async (req, res) => {
   const agencyClient = data.agencyClientId ? await prisma.agencyClient.findFirst({ where: { id: data.agencyClientId, workspaceId: context.workspace.id, status: "active" } }) : null;
   if (data.agencyClientId && (!agencyClient || !await canAccessAgencyClient(context, data.agencyClientId))) return res.status(404).json({ error: "agency client not found" });
   const normalized = data.websiteUrl ? normalizeUrl(data.websiteUrl) : null;
-  if (data.websiteStatus === "existing_website" && !data.websiteUrl) return res.status(400).json({ error: "Website URL is required for Existing Website." });
+  if (data.websiteStatus === "existing_website" && !websiteAnalysisUrl(data)) return res.status(400).json({ error: "Website URL is required for Existing Website." });
   if (data.websiteUrl && !normalized) return res.status(400).json({ error: "Enter a valid Website URL or leave it blank." });
   const locationDetails = data.businessLocationDetails ?? null;
   const location = locationDetails ? [locationDetails.streetAddress, locationDetails.city, locationDetails.stateProvince, locationDetails.postalCode, locationDetails.country].filter(Boolean).join(", ") : "";
@@ -2862,7 +2875,7 @@ guidedProjectsRouter.post("/projects-v2/intake-draft", async (req, res) => {
   const project = await prisma.$transaction(async (tx) => {
     const row = await tx.project.create({ data: {
       clientId, agencyClientId: agencyClient?.id ?? null, name: data.name, projectType: projectTypeForWebsiteSituation(data.projectType, data.websiteStatus),
-      websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? null, businessName: agencyClient ? null : (data.businessName || null),
+      websiteStatus: data.websiteStatus, websiteContextJson: data.websiteContextJson, websiteUrl: data.websiteUrl || normalized?.rootUrl || null, businessName: agencyClient ? null : (data.businessName || null),
       niche: data.niche || null, businessLocation: location || null, businessLocationJson: locationDetails ?? Prisma.DbNull, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180) || null, primaryGoal: data.primaryGoal || null, status: "intake_draft", currentStep: "intake",
     } });
     if (!context.roles.has("owner") && !context.roles.has("admin")) await tx.projectMemberAssignment.create({ data: { projectId: row.id, membershipId: context.membership.id, assignmentRole: context.roles.has("manager") ? "manager" : "contributor" } });
@@ -2888,7 +2901,8 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/intake-draft", async (req, r
   await prisma.$transaction(async (tx) => {
     await tx.project.update({ where: { id: project.id }, data: {
       ...(data.projectName ? { name: data.projectName } : {}), ...(data.businessName !== undefined ? { businessName: data.businessName || null } : {}), ...(data.industryNiche !== undefined ? { niche: data.industryNiche || null } : {}),
-      ...(data.websiteStatus ? { websiteStatus: data.websiteStatus } : {}), ...(data.websiteUrl !== undefined ? { websiteUrl: normalized?.rootUrl ?? null } : {}),
+      ...(data.websiteContextJson ? websiteProjectFields(data.websiteContextJson, data.primaryGoal ?? project.primaryGoal, data.websiteStatus ?? project.websiteStatus) : {}),
+      ...(data.websiteStatus && !data.websiteContextJson ? { websiteStatus: data.websiteStatus } : {}), ...(data.websiteUrl !== undefined ? { websiteUrl: data.websiteUrl || normalized?.rootUrl || null } : {}),
       ...(location ? formattedLocation ? { businessLocation: formattedLocation, businessLocationJson: location as Prisma.InputJsonValue } : { businessLocation: null, businessLocationJson: Prisma.DbNull } : {}), ...(targetMarkets !== undefined ? { targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180) || null } : {}),
       ...(data.primaryGoal !== undefined ? { primaryGoal: data.primaryGoal || null } : {}), ...(data.secondaryGoals ? { secondaryGoals: data.secondaryGoals } : {}), ...(data.competitors ? { competitors: data.competitors } : {}),
       ...(data.brandVoice !== undefined ? { brandVoice: data.brandVoice || null } : {}), ...(data.preferredOutputs ? { preferredOutputs: data.preferredOutputs } : {}), ...(data.targetLaunchTimeline !== undefined ? { targetLaunchTimeline: data.targetLaunchTimeline || null } : {}),
@@ -2907,10 +2921,10 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/intake-draft", async (req, r
   });
   const websiteUrlChanged = data.websiteUrl !== undefined && (normalized?.rootUrl ?? null) !== project.websiteUrl;
   if (websiteUrlChanged) {
-    await recordWorkspaceActivity(prisma, { context, action: "project.website_url_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus }, nextJson: { websiteUrl: normalized?.rootUrl ?? null, websiteStatus: data.websiteStatus ?? project.websiteStatus } });
+    await recordWorkspaceActivity(prisma, { context, action: "project.website_url_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { websiteUrl: project.websiteUrl, websiteStatus: project.websiteStatus }, nextJson: { websiteUrl: data.websiteUrl || normalized?.rootUrl || null, websiteStatus: data.websiteStatus ?? project.websiteStatus } });
   }
   const workflow = websiteUrlChanged
-    ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_website", sourceId: project.id, idempotencyKey: `project.website-url:${project.id}:${Date.now()}`, payload: { reason: "User added or changed the project website URL.", provenance: "user_entered", actorUserId: context.membership.userId, previousWebsiteUrl: project.websiteUrl, websiteUrl: normalized?.rootUrl ?? null, impactedModules: ["business_brain", "website_intelligence", "growth_plan", "seo_plan", "execution_plan", "next_best_action"] } })
+    ? await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_website", sourceId: project.id, idempotencyKey: `project.website-url:${project.id}:${Date.now()}`, payload: { reason: "User added or changed the project website URL.", provenance: "user_entered", actorUserId: context.membership.userId, previousWebsiteUrl: project.websiteUrl, websiteUrl: data.websiteUrl || normalized?.rootUrl || null, impactedModules: ["business_brain", "website_intelligence", "growth_plan", "seo_plan", "execution_plan", "next_best_action"] } })
     : await getProjectWorkflowController(project.id);
   res.json({ saved: true, projectId: project.id, savedAt: new Date().toISOString(), workflow });
 });
@@ -2919,6 +2933,11 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const parsed = createProjectSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
   const data = parsed.data;
+  if (data.websiteContextJson) {
+    const websiteError = validateWebsiteContext(data.websiteContextJson, data.primaryGoal);
+    if (websiteError) return res.status(400).json({ error: websiteError });
+    Object.assign(data, websiteProjectFields(data.websiteContextJson, data.primaryGoal, data.websiteStatus));
+  }
   const targetLocations = cleanGeographicTargetMarkets(cleanLocations(data.targetLocations, data.targetLocation));
   const workspace = await workspaceContext(req);
   requireWorkspaceRole(workspace, "editor");
@@ -2976,8 +2995,8 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
   const websiteUrl = data.websiteStatus === "existing_website" ? clean(data.websiteUrl) || defaults.websiteUrl : clean(data.websiteUrl);
   const creationErrors = validateProjectCreation({ ...data, websiteUrl, businessLocation: effectiveBusinessLocation, targetLocations: effectiveTargetLocations, primaryGoal: effectivePrimaryGoal }, workspace.workspace.workspaceType);
   if (creationErrors.length) return res.status(400).json({ error: creationErrors.join(" ") });
-  const normalized = normalizeUrl(websiteUrl);
-  if (websiteUrl && !normalized) return res.status(400).json({ error: "Enter a valid Website URL or leave it blank." });
+  const normalized = normalizeUrl(data.websiteContextJson ? websiteAnalysisUrl(data) : data.websiteStatus === "existing_website" ? websiteUrl : null);
+  if (websiteAnalysisUrl(data) && !normalized) return res.status(400).json({ error: "Enter a valid Website URL or leave it blank." });
   const effectiveProjectType = projectTypeForWebsiteSituation(data.projectType, data.websiteStatus);
   const result = await prisma.$transaction(async (tx) => {
     let website = normalized
@@ -3012,9 +3031,9 @@ guidedProjectsRouter.post("/projects-v2", async (req, res) => {
         websiteId: website?.id ?? null,
         name: data.name.trim(),
         projectType: effectiveProjectType,
-        websiteStatus: data.websiteStatus,
+        websiteStatus: data.websiteStatus, websiteContextJson: data.websiteContextJson,
         businessName: agencyClient ? null : clean(data.businessName) || (typeof sharedBusinessProfile.businessName === "string" ? sharedBusinessProfile.businessName : null),
-        websiteUrl: normalized?.rootUrl ?? clean(data.websiteUrl),
+        websiteUrl: clean(data.websiteUrl) || normalized?.rootUrl || null,
         niche: clean(data.niche),
         businessLocation: effectiveBusinessLocation,
         businessLocationJson: effectiveBusinessLocationDetails ?? undefined,
@@ -3371,6 +3390,11 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
   const project = await scopedProject(req, req.params.projectId);
   if (!project || project.status === "archived") return res.status(project ? 409 : 404).json({ error: project ? "Restore the project before editing it." : "project not found" });
   const data = parsed.data;
+  if (data.websiteContextJson) {
+    const websiteError = validateWebsiteContext(data.websiteContextJson, data.primaryGoal);
+    if (websiteError) return res.status(400).json({ error: websiteError });
+    Object.assign(data, websiteProjectFields(data.websiteContextJson, data.primaryGoal, data.websiteStatus));
+  }
   const context = await workspaceContext(req);
   const conversationSession = data.aiConversationSessionId ? await prisma.workspaceAiIntakeSession.findFirst({ where: { id: data.aiConversationSessionId, workspaceId: context.workspace.id, userId: context.membership.userId, contextType: "project", mode: { in: ["business_discovery", "conversation"] }, status: { in: ["active", "applied"] }, appliedProjectId: project.id } }) : null;
   if (data.aiConversationSessionId && !conversationSession) return res.status(400).json({ error: "This saved AI conversation does not belong to this project." });
@@ -3378,12 +3402,12 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
   if (context.workspace.workspaceType === "agency" && !data.agencyClientId) return res.status(400).json({ error: "Agency Workspace projects require a client." });
   const agencyClient = data.agencyClientId ? await prisma.agencyClient.findFirst({ where: { id: data.agencyClientId, workspaceId: context.workspace.id, status: "active" } }) : null;
   if (data.agencyClientId && (!agencyClient || !await canAccessAgencyClient(context, data.agencyClientId))) return res.status(404).json({ error: "agency client not found" });
-  if (data.websiteStatus === "existing_website" && !data.websiteUrl?.trim()) return res.status(400).json({ error: "Website URL is required for Existing Website." });
+  if (data.websiteStatus === "existing_website" && !websiteAnalysisUrl(data)) return res.status(400).json({ error: "Website URL is required for Existing Website." });
   const targetMarkets = cleanGeographicTargetMarkets(data.targetLocations);
   if (!data.businessLocationDetails || !targetMarkets.length) return res.status(400).json({ error: "Business Location and at least one geographic Target Market are required." });
   const goals = normalizeProjectGoals(data.primaryGoal, data.secondaryGoals, context.workspace.workspaceType);
   const location = [data.businessLocationDetails.streetAddress, data.businessLocationDetails.city, data.businessLocationDetails.stateProvince, data.businessLocationDetails.postalCode, data.businessLocationDetails.country].filter(Boolean).join(", ");
-  const normalized = normalizeUrl(data.websiteUrl);
+  const normalized = normalizeUrl(data.websiteContextJson ? websiteAnalysisUrl(data) : data.websiteStatus === "existing_website" ? data.websiteUrl : null);
   if (data.websiteStatus === "existing_website" && !normalized) return res.status(400).json({ error: "Existing Website requires a valid Website URL." });
   const primaryKeywords = normalizeIntakeKeywords(data.primaryKeywords, targetMarkets);
   const secondaryKeywords = normalizeIntakeKeywords(data.secondaryKeywords, targetMarkets);
@@ -3392,7 +3416,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     let website = normalized ? await tx.website.findFirst({ where: { clientId: project.clientId, domain: normalized.domain, status: "active" } }) : null;
     if (!website && normalized && effectiveProjectType !== "new_business") website = await tx.website.create({ data: { clientId: project.clientId, domain: normalized.domain, rootUrl: normalized.rootUrl, status: "active", targetCountry: targetMarkets[0], targetCities: targetMarkets } });
     else if (website) website = await tx.website.update({ where: { id: website.id }, data: { rootUrl: normalized?.rootUrl, targetCountry: targetMarkets[0], targetCities: targetMarkets } });
-    const updatedProject = await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: normalized?.rootUrl ?? (data.websiteUrl?.trim() || null), businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
+    const updatedProject = await tx.project.update({ where: { id: project.id }, data: { status: "active", agencyClientId: agencyClient?.id ?? null, websiteId: website?.id ?? null, name: data.name.trim(), projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteContextJson: data.websiteContextJson, websiteUrl: data.websiteUrl?.trim() || normalized?.rootUrl || null, businessName: agencyClient ? null : (data.businessName?.trim() || null), niche: data.niche?.trim() || null, businessLocation: location, businessLocationJson: data.businessLocationDetails, targetLocations: targetMarkets, targetLocation: targetMarkets.join(", ").slice(0, 180), primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals, competitors: data.competitors, notes: data.notes, brandVoice: data.brandVoice, analyticsPlatforms: data.analyticsPlatforms, cmsPlatform: data.cmsPlatform, targetLaunchTimeline: data.targetLaunchTimeline, preferredOutputs: data.preferredOutputs, preferredPublishingMethod: data.preferredPublishingMethod } });
     if (website) await captureWebsiteTracking(tx, { websiteId: website.id, clientId: project.clientId, domain: website.domain, rootUrl: website.rootUrl, project: updatedProject, createdByUserId: context.membership.userId });
     if (data.businessDescription || data.targetAudience || data.productsServices || conversationSession || projectLaunchSession) {
       const previousIntelligence = project.businessProfile?.intelligenceJson && typeof project.businessProfile.intelligenceJson === "object" && !Array.isArray(project.businessProfile.intelligenceJson) ? project.businessProfile.intelligenceJson as Record<string, unknown> : {};
@@ -3420,7 +3444,7 @@ guidedProjectsRouter.patch("/projects-v2/:projectId/settings", async (req, res) 
     }
     if (project.status === "intake_draft") await createInitialPlan(tx, { id: project.id, clientId: project.clientId, websiteId: website?.id ?? null });
     else await syncProjectWorkflow(tx, project.id);
-    await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
+    await recordWorkspaceActivity(tx, { context, action: "project.settings_updated", entityType: "project", entityId: project.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { name: project.name, projectType: project.projectType, websiteStatus: project.websiteStatus, websiteUrl: project.websiteUrl, businessLocation: project.businessLocation, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal, secondaryGoals: project.secondaryGoals }, nextJson: { name: data.name, projectType: effectiveProjectType, websiteStatus: data.websiteStatus, websiteContextJson: data.websiteContextJson, websiteUrl: data.websiteUrl, businessLocation: location, targetLocations: targetMarkets, primaryGoal: goals.primaryGoal, secondaryGoals: goals.secondaryGoals } });
   });
   const workflow = await publishProjectWorkflowEvent({ projectId: project.id, eventType: "business_brain.user_fact_updated", sourceModule: "project_settings", sourceId: project.id, idempotencyKey: `business-brain.user-fact:${project.id}:${Date.now()}`, payload: { source: "project_settings", provenance: "user_entered", impactedModules: ["business_brain", "opportunity_finder", "keyword_targeting", "growth_plan", "seo_plan", "next_best_action"] } });
   res.json({ project: await scopedProject(req, project.id), workflow });
@@ -4261,6 +4285,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
       name: ctx.name,
       projectType: project.projectType,
       websiteStatus: project.websiteStatus,
+      websiteContext: websitePlanningContext(project),
       website: project.website?.rootUrl ?? project.websiteUrl ?? null,
       niche: ctx.niche,
       primaryGoal: ctx.goal,
@@ -4321,7 +4346,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
     throw error;
   }
   const unifiedPlan = generatedStrategy.result;
-  const decisionSet = buildStrategyDecisionSet({
+  const decisionSet = buildStrategyDecisionSet({ primaryGoal: project.primaryGoal,
     projectId: project.id,
     workspaceId: context.workspace.id,
     modelPipelineReference: `${strategyAiRoute.provider}:${generatedStrategy.model}:${strategyAiRoute.routingRuleId ?? "default"}`,
@@ -4447,7 +4472,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
         sourceId: row.id,
         title: decisionSet.nextBestAction.title,
         recommendation: decisionSet.nextBestAction.actions.join("\n"),
-        reasoningSummary: decisionSet.nextBestAction.whyNow,
+        reasoningSummary: decisionSet.nextBestAction.why,
         expectedImpact: decisionSet.nextBestAction.expectedImpact,
         confidence: decisionSet.nextBestAction.confidence,
         estimatedEffort: decisionSet.nextBestAction.effort,
@@ -4458,7 +4483,7 @@ async function performStrategyGeneration(req: Request, res: Response) {
         businessGoal: decisionSet.nextBestAction.businessObjective.slice(0, 255),
         targetEntitiesJson: decisionSet.nextBestAction.affectedPages as Prisma.InputJsonValue,
         estimatedImpactJson: { statement: decisionSet.nextBestAction.expectedImpact, disclaimer: "Expected impact is directional and must be confirmed against a recorded baseline." },
-        scoreJson: { formula: decisionSet.formula, impact: decisionSet.nextBestAction.impact, confidence: decisionSet.nextBestAction.confidence, goalAlignment: decisionSet.nextBestAction.goalAlignment, urgency: decisionSet.nextBestAction.urgency, effort: decisionSet.nextBestAction.effort, priorityScore: decisionSet.nextBestAction.priorityScore },
+        scoreJson: { cost: decisionSet.nextBestAction.cost ?? null, timeToResultsDays: decisionSet.nextBestAction.timeToResultsDays ?? null, dependencies: decisionSet.nextBestAction.dependencies, formula: decisionSet.formula, impact: decisionSet.nextBestAction.impact, confidence: decisionSet.nextBestAction.confidence, goalAlignment: decisionSet.nextBestAction.goalAlignment, urgency: decisionSet.nextBestAction.urgency, effort: decisionSet.nextBestAction.effort, priorityScore: decisionSet.nextBestAction.priorityScore },
         dependencyIdsJson: decisionSet.nextBestAction.dependencies as Prisma.InputJsonValue,
         approvalType: "strategy_approval",
         riskLevel: decisionSet.nextBestAction.requiredPermissions.includes("Approval before public or protected changes") ? "medium" : "low",
@@ -4903,13 +4928,13 @@ guidedProjectsRouter.post("/projects-v2/:projectId/strategy/analyze", async (req
   const unifiedEntry = priorEntries.find((item) => item && typeof item === "object" && !Array.isArray(item) && (item as { analysisKey?: unknown }).analysisKey === "unified_strategy_plan") as Record<string, unknown> | undefined;
   const retainedGapRecommendations = priorEntries.filter((item) => item && typeof item === "object" && !Array.isArray(item) && /^gap_/.test(String((item as { analysisKey?: unknown }).analysisKey ?? ""))) as StrategyRecommendation[];
   const previousScoreBreakdown = strategy.scoreBreakdown && typeof strategy.scoreBreakdown === "object" && !Array.isArray(strategy.scoreBreakdown) ? strategy.scoreBreakdown as Record<string, unknown> : {};
-  const decisionSet = buildStrategyDecisionSet({ projectId: project.id, workspaceId: context.workspace.id, modelPipelineReference: String(previousScoreBreakdown.model ?? "saved-strategy-candidates"), approval: { status: "pending" }, plan: unifiedPlan, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, workflowConfidence: workflowGate.confidence, externalRecommendations: [...retainedGapRecommendations, ...advanced.recommendations], completionState: strategyCompletionState(project) });
+  const decisionSet = buildStrategyDecisionSet({ primaryGoal: project.primaryGoal, projectId: project.id, workspaceId: context.workspace.id, modelPipelineReference: String(previousScoreBreakdown.model ?? "saved-strategy-candidates"), approval: { status: "pending" }, plan: unifiedPlan, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, workflowConfidence: workflowGate.confidence, externalRecommendations: [...retainedGapRecommendations, ...advanced.recommendations], completionState: strategyCompletionState(project) });
   const nextUnifiedEntry = { ...(unifiedEntry ?? { analysisKey: "unified_strategy_plan", plan: unifiedPlan }), decisionSet: { engineVersion: decisionSet.engineVersion, businessBrainVersion: decisionSet.businessBrainVersion, evidenceVersion: decisionSet.evidenceVersion, generatedAt: decisionSet.generatedAt, formula: decisionSet.formula, nextBestActionKey: decisionSet.nextBestActionKey, nextBestAction: decisionSet.nextBestAction, audit: decisionSet.audit } };
   const nextRecommendations = [nextUnifiedEntry, ...decisionSet.decisions];
   await prisma.$transaction(async (tx) => {
     await tx.strategyPlan.update({ where: { id: strategy.id }, data: { advancedAnalysis: decisionSet.decisions as Prisma.InputJsonValue, prioritizedRecommendations: nextRecommendations as Prisma.InputJsonValue, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, confidenceJson: workflowGate.confidence as unknown as Prisma.InputJsonValue, explainabilityJson: { generatedFrom: { businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion }, decisionAudit: decisionSet.audit, nextBestAction: decisionSet.nextBestAction, nextBestActionExplainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), engineVersion: decisionSet.engineVersion } } });
     await tx.nextBestAction.deleteMany({ where: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, status: "proposed" } });
-    await tx.nextBestAction.create({ data: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, title: decisionSet.nextBestAction.title, recommendation: decisionSet.nextBestAction.actions.join("\n"), reasoningSummary: decisionSet.nextBestAction.whyNow, expectedImpact: decisionSet.nextBestAction.expectedImpact, confidence: decisionSet.nextBestAction.confidence, estimatedEffort: decisionSet.nextBestAction.effort, route: decisionSet.nextBestAction.destination, priorityScore: decisionSet.nextBestAction.priorityScore, evidenceJson: { references: decisionSet.nextBestAction.evidenceReferences, explainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), destinationUrl: decisionSet.nextBestAction.destinationUrl, successMeasure: decisionSet.nextBestAction.successMeasure }, actionType: "strategy_decision", businessGoal: decisionSet.nextBestAction.businessObjective.slice(0, 255), targetEntitiesJson: decisionSet.nextBestAction.affectedPages as Prisma.InputJsonValue, estimatedImpactJson: { statement: decisionSet.nextBestAction.expectedImpact, disclaimer: "Expected impact is directional and must be measured." }, scoreJson: { formula: decisionSet.formula, priorityScore: decisionSet.nextBestAction.priorityScore }, dependencyIdsJson: decisionSet.nextBestAction.dependencies as Prisma.InputJsonValue, approvalType: "strategy_approval", riskLevel: "medium", urgency: decisionSet.nextBestAction.urgency, engineVersion: decisionSet.engineVersion, dedupeKey: `strategy-decision:${strategy.id}:${decisionSet.nextBestAction.key}`, status: "proposed" } });
+    await tx.nextBestAction.create({ data: { projectId: project.id, sourceType: "strategy_decision_engine", sourceId: strategy.id, title: decisionSet.nextBestAction.title, recommendation: decisionSet.nextBestAction.actions.join("\n"), reasoningSummary: decisionSet.nextBestAction.why, expectedImpact: decisionSet.nextBestAction.expectedImpact, confidence: decisionSet.nextBestAction.confidence, estimatedEffort: decisionSet.nextBestAction.effort, route: decisionSet.nextBestAction.destination, priorityScore: decisionSet.nextBestAction.priorityScore, evidenceJson: { references: decisionSet.nextBestAction.evidenceReferences, explainability: composeStrategyDecisionExplainability(decisionSet.nextBestAction), destinationUrl: decisionSet.nextBestAction.destinationUrl, successMeasure: decisionSet.nextBestAction.successMeasure }, actionType: "strategy_decision", businessGoal: decisionSet.nextBestAction.businessObjective.slice(0, 255), targetEntitiesJson: decisionSet.nextBestAction.affectedPages as Prisma.InputJsonValue, estimatedImpactJson: { statement: decisionSet.nextBestAction.expectedImpact, disclaimer: "Expected impact is directional and must be measured." }, scoreJson: { cost: decisionSet.nextBestAction.cost ?? null, timeToResultsDays: decisionSet.nextBestAction.timeToResultsDays ?? null, dependencies: decisionSet.nextBestAction.dependencies, formula: decisionSet.formula, priorityScore: decisionSet.nextBestAction.priorityScore }, dependencyIdsJson: decisionSet.nextBestAction.dependencies as Prisma.InputJsonValue, approvalType: "strategy_approval", riskLevel: "medium", urgency: decisionSet.nextBestAction.urgency, engineVersion: decisionSet.engineVersion, dedupeKey: `strategy-decision:${strategy.id}:${decisionSet.nextBestAction.key}`, status: "proposed" } });
     await tx.aiRun.create({ data: { projectId: project.id, clientId: project.clientId, moduleName: "strategy_decision_engine", promptVersion: STRATEGY_DECISION_ENGINE_VERSION, inputSnapshotJson: { strategyId: strategy.id, version: strategy.version, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion }, outputJson: { candidateCount: decisionSet.audit.candidateCount, nextBestActionKey: decisionSet.nextBestActionKey, priorityScore: decisionSet.nextBestAction.priorityScore }, outputText: `Compared ${decisionSet.audit.candidateCount} valid Strategy actions and selected ${decisionSet.nextBestAction.title}.`, status: "completed" } });
     await recordWorkspaceActivity(tx, { context, action: "strategy.decisions_recalculated", entityType: "strategy_plan", entityId: strategy.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { analysisCount: Array.isArray(strategy.advancedAnalysis) ? strategy.advancedAnalysis.length : 0 }, nextJson: { version: strategy.version, status: strategy.status, businessBrainVersion: workflowGate.businessBrainVersion, evidenceVersion: workflowGate.evidenceVersion, candidateCount: decisionSet.audit.candidateCount, nextBestAction: decisionSet.nextBestAction.title } });
   });

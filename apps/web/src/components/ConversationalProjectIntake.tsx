@@ -1,3 +1,5 @@
+import WebsiteSituationFields from "./WebsiteSituationFields.js";
+import { normalizeWebsiteContext, websiteContextFields, websiteContextQuestions, websiteProjectFields, websiteAnalysisUrl, type WebsiteContext } from "@webtummy/core/website-context";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
@@ -30,7 +32,7 @@ type ProjectLaunchProposal = {
   missingInformation: string[];
 };
 
-export type ConversationalProjectDraft = {
+export type ConversationalProjectDraft = WebsiteContext & {
   agencyClientId: string; name: string; clientProjectType: string; websiteStatus: string; websiteUrl: string; hasDomain: "" | "yes" | "no"; businessName: string; niche: string;
   businessDescription: string; targetAudience: string; productsServices: string; businessLocation: string; locationCountry: string; locationStateProvince: string;
   locationCity: string; locationStreetAddress: string; locationPostalCode: string; targetLocations: string[]; primaryGoal: string; secondaryGoals: string[];
@@ -181,7 +183,9 @@ export default function ConversationalProjectIntake(props: Props) {
       // context, but it must not replace the project's identity with a goal.
       if (update.field === "businessName") next.businessName = text(update.value);
       if (update.field === "websiteUrl") next.websiteUrl = text(update.value);
-      if (update.field === "websiteStatus") { next.websiteStatus = text(update.value); if (next.websiteStatus !== "existing_website") next.websiteUrl = ""; }
+      if (websiteContextFields.includes(update.field as keyof WebsiteContext)) Object.assign(next, { [update.field]: text(update.value) });
+      if (update.field === "hasDomain" && ["yes", "no"].includes(text(update.value))) { next.hasDomain = text(update.value) as "yes" | "no"; if (next.hasDomain === "no") next.domainUrl = ""; }
+      if (update.field === "websiteStatus") next.websiteStatus = text(update.value);
       if (update.field === "clientProjectType") next.clientProjectType = text(update.value);
       if (update.field === "streetAddress") next.locationStreetAddress = text(update.value);
       if (update.field === "businessDescription") next.businessDescription = text(update.value);
@@ -210,13 +214,15 @@ export default function ConversationalProjectIntake(props: Props) {
       } else if (update.field === "businessLocation") next.businessLocation = text(update.value);
     }
     if (advancedChanged) next.advancedIntake = advancedIntake;
-    patch(next);
+    const context = normalizeWebsiteContext({ ...draft, ...next }, next.primaryGoal || draft.primaryGoal);
+    const derived = websiteProjectFields(context, next.primaryGoal || draft.primaryGoal, next.websiteStatus || draft.websiteStatus);
+    patch({ ...next, ...context, websiteStatus: derived.websiteStatus, websiteUrl: derived.websiteUrl || "" });
   }
 
   function currentDraft() {
     return {
-      projectName: draft.name, businessName: draft.businessName, serviceType: draft.niche, projectType: selectedType?.label, clientProjectType: draft.clientProjectType, websiteStatus: draft.websiteStatus, hasDomain: draft.hasDomain,
-      websiteUrl: draft.websiteUrl, businessDescription: draft.businessDescription, targetAudience: draft.targetAudience, productsServices: draft.productsServices,
+      projectName: draft.name, businessName: draft.businessName, serviceType: draft.niche, projectType: selectedType?.label, clientProjectType: draft.clientProjectType, websiteStatus: draft.websiteStatus, ...Object.fromEntries(websiteContextFields.map((key) => [key, draft[key]])),
+      websiteContextJson: normalizeWebsiteContext(draft, draft.primaryGoal), websiteUrl: draft.websiteUrl, businessDescription: draft.businessDescription, targetAudience: draft.targetAudience, productsServices: draft.productsServices,
       businessLocation: { country: draft.locationCountry, stateProvince: draft.locationStateProvince, city: draft.locationCity, streetAddress: draft.locationStreetAddress, postalCode: draft.locationPostalCode },
       targetMarkets: geographicTargetMarkets(draft.targetLocations), primaryGoal: draft.primaryGoal, secondaryGoals: draft.secondaryGoals, primaryKeywords: normalizedKeywords(draft.primaryKeywords, draft.targetLocations),
       secondaryKeywords: normalizedKeywords(draft.secondaryKeywords, draft.targetLocations), competitors: list(draft.competitorsText), brandVoice: draft.brandVoice, preferredOutputs: draft.preferredOutputs,
@@ -243,7 +249,7 @@ export default function ConversationalProjectIntake(props: Props) {
     const nextMessages: Message[] = [...messages, { role: "user", text: question }];
     setComposer(""); setMessages(nextMessages); setLoading(true); setError("");
     try {
-      const analyzeWebsite = draft.websiteStatus === "existing_website" && Boolean(draft.websiteUrl) && !websiteContextLoaded;
+      const analyzeWebsite = Boolean(websiteAnalysisUrl({ websiteContextJson: draft })) && !websiteContextLoaded;
       const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId: draft.savedProjectId, sessionId: draft.aiConversationSessionId || undefined, messages: nextMessages.slice(-30), totalUserTurns: usedAiRequests + 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, directSelection, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(BUSINESS_DISCOVERY_REQUEST_TIMEOUT_MS) });
       if (result.websiteContextLoaded || analyzeWebsite) { setWebsiteContextLoaded(true); patch({ websiteContextLoaded: true }); }
       const completed = dedupeConsecutiveMessages([...nextMessages, { role: "assistant" as const, text: result.message }]);
@@ -266,7 +272,7 @@ export default function ConversationalProjectIntake(props: Props) {
       const opening = "Tell me your idea in your own words. I’ll organize it into a Business Brain and ask only the most useful follow-up questions.";
       const initialMessages: Message[] = [{ role: "assistant", text: opening }, { role: "user", text: draft.businessDescription.trim() }];
       setMessages(initialMessages); setStarted(true); setLoading(true);
-      const analyzeWebsite = draft.websiteStatus === "existing_website" && Boolean(draft.websiteUrl);
+      const analyzeWebsite = Boolean(websiteAnalysisUrl({ websiteContextJson: draft }));
       const result = await api.post<ConversationResponse>("/api/ai-intake/business-discovery", { projectId, messages: initialMessages, totalUserTurns: 1, draft: currentDraft(), workspaceType: props.workspaceType, analyzeWebsite, websiteUrl: draft.websiteUrl, intakeMode: "business_discovery" }, { signal: AbortSignal.timeout(BUSINESS_DISCOVERY_REQUEST_TIMEOUT_MS) });
       const completed = dedupeConsecutiveMessages([...initialMessages, { role: "assistant" as const, text: result.message }]);
       setMessages(completed); setServerUsageCount(result.usage.used); setKeywordSuggestions(result.keywordSuggestions); setWebsiteContextLoaded(Boolean(result.websiteContextLoaded || analyzeWebsite));
@@ -401,8 +407,7 @@ export default function ConversationalProjectIntake(props: Props) {
         <Captured label={props.isAgency ? "Client" : "Business"} value={selectedClientName} required />
         <Captured label="Project" value={draft.name} required />
         <Captured label="Project type" value={selectedType?.label ?? draft.clientProjectType} required />
-        <Captured label="Website status" value={props.websiteStatuses[draft.websiteStatus]?.label ?? draft.websiteStatus} required />
-        {draft.websiteStatus === "existing_website" && <Captured label="Website URL" value={draft.websiteUrl} required />}
+        <WebsiteSituationFields value={draft} onChange={patch} />
         <Captured label="Service / niche" value={draft.niche} required />
         <Captured label="Business description" value={draft.businessDescription} source={captured.businessDescription} onRemove={(item) => removeCaptured("businessDescription", item)} />
         <Captured label="Audience" value={draft.targetAudience} source={captured.targetAudience} onRemove={(item) => removeCaptured("targetAudience", item)} />
@@ -542,6 +547,7 @@ const governedMultiSelectFields = new Set(["targetMarkets", "secondaryGoals", "p
 function allowsMultipleChoices(message: string, field?: string) {
   // Field semantics are authoritative. AI wording can vary, but geographic
   // Target Markets and other governed list fields must never become radios.
+  if (field && websiteContextFields.includes(field as keyof WebsiteContext)) return false;
   if (field && governedMultiSelectFields.has(field)) return true;
   const singleValueDecision = /primary goal|single most important goal|website situation|website status|already have a live website|public website url|business location|physical business address|project type/i.test(message);
   return !singleValueDecision;
@@ -549,6 +555,7 @@ function allowsMultipleChoices(message: string, field?: string) {
 
 function choiceFieldFromMessage(message: string) {
   const normalized = message.toLocaleLowerCase();
+  for (const key of websiteContextFields) if (normalized.includes(websiteContextQuestions[key].split("?")[0].toLowerCase())) return key;
   const advanced = Object.entries(advancedIntakeLabels).find(([, label]) => normalized.includes(label.toLocaleLowerCase()));
   if (advanced) return advanced[0];
   const coreFields: Array<[string, string[]]> = [

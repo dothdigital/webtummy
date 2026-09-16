@@ -251,7 +251,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
     });
   };
 
-  const coverHeading = reportType === "agency_proposal" ? "Agency Growth Proposal" : reportType === "seo_audit" ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType);
+  const coverHeading = reportType === "agency_proposal" ? "Agency Growth Proposal" : (reportType === "seo_audit" || (reportType === "seo_website" && Boolean(content.seoAudit))) ? "Complete SEO Findings Report" : reportType === "strategy" ? "Complete Strategy Report" : workspaceHeading(brand.workspaceType);
   const documentTitle = display(content.title);
   const logoMatch = brand.logoDataUrl?.match(/^data:image\/(?:png|jpeg);base64,(.+)$/i);
   const coverHeadingWidth = logoMatch ? 340 : 480;
@@ -513,7 +513,7 @@ export function createProfessionalReportPdf(contentValue: unknown, brand: PdfBra
       bullets("KPIs and success metrics", strategy.kpis);
       narrative("Client next step", "Regenerate this project with the Unified Strategy Engine, review the complete plan, and approve the exact version before creating or refreshing Execution Plan tasks.", "#10B981");
     }
-  } else if (reportType === "seo_audit") {
+  } else if ((reportType === "seo_audit" || (reportType === "seo_website" && Boolean(content.seoAudit)))) {
     const audit = record(content.seoAudit);
     const summary = record(audit.summary);
     const categoryCounts = record(audit.categoryCounts);

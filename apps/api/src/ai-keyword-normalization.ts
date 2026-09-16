@@ -26,7 +26,7 @@ const semanticNormalizationSchema = z.object({
     canonicalTopic: z.string().trim().min(2).max(180),
     searchIntent: intentSchema,
     reason: z.string().trim().min(5).max(300),
-  })).max(100),
+  })),
 });
 
 export type AiKeywordNormalizationResult = {
@@ -56,7 +56,7 @@ export async function normalizeKeywordsWithAi(input: {
   const keywords = [...new Map(input.keywords
     .map(cleanKeywordPhrase)
     .filter(Boolean)
-    .map((keyword) => [normalizeKeywordPhrase(keyword), keyword] as const)).values()].slice(0, 100);
+    .map((keyword) => [normalizeKeywordPhrase(keyword), keyword] as const)).values()];
   if (!keywords.length) {
     return {
       version: "ai_keyword_semantics_v1",
@@ -65,6 +65,24 @@ export async function normalizeKeywordsWithAi(input: {
       acceptedCount: 0,
       deterministicProtectedCount: 0,
       semanticKeywords: [],
+    };
+  }
+
+  // Keep provider responses bounded while reviewing the entire approved set.
+  // Never silently discard keywords beyond the first request.
+  const batchSize = 50;
+  if (keywords.length > batchSize) {
+    const batches: AiKeywordNormalizationResult[] = [];
+    for (let offset = 0; offset < keywords.length; offset += batchSize) {
+      batches.push(await normalizeKeywordsWithAi({ ...input, keywords: keywords.slice(offset, offset + batchSize) }));
+    }
+    return {
+      version: "ai_keyword_semantics_v1",
+      mode: "ai_assisted",
+      reviewedCount: batches.reduce((sum, batch) => sum + batch.reviewedCount, 0),
+      acceptedCount: batches.reduce((sum, batch) => sum + batch.acceptedCount, 0),
+      deterministicProtectedCount: batches.reduce((sum, batch) => sum + batch.deterministicProtectedCount, 0),
+      semanticKeywords: batches.flatMap((batch) => batch.semanticKeywords),
     };
   }
 
@@ -102,7 +120,8 @@ Rules:
   });
 
   const parsed = semanticNormalizationSchema.parse(generated.result);
-  const returnedByOriginal = new Map(parsed.keywords.map((entry) => [
+  const requested = new Set(keywords.map(normalizeKeywordPhrase));
+  const returnedByOriginal = new Map(parsed.keywords.filter((entry) => requested.has(normalizeKeywordPhrase(entry.original))).map((entry) => [
     normalizeKeywordPhrase(entry.original),
     entry,
   ]));

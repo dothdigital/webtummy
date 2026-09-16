@@ -7,6 +7,7 @@ import { processStoredJvZooEvent, reconcileJvZooLifecycle } from "../commercial-
 import { activateJvZooPurchase, inspectJvZooActivation, requestJvZooActivation } from "../jvzoo-activation.js";
 import { jvZooProcessingQueue, queueConnection, type JvZooProcessingQueueJobData } from "../queue.js";
 import { acceptJvZooWebhook } from "../jvzoo-intake.js";
+import { startJvZooActivationReminders } from "../jvzoo-activation-reminders.js";
 import { authRateLimit } from "../auth-rate-limit.js";
 
 export const jvZooRouter = Router();
@@ -107,5 +108,7 @@ export function startJvZooQueueWorker() {
   }, 5 * 60 * 1_000);
   lifecycleTimer.unref();
   void reconcileJvZooLifecycle().catch((error) => console.error("[jvzoo] initial lifecycle reconciliation failed", error));
+  const stopReminders = startJvZooActivationReminders();
+  worker.on("closed", () => { clearInterval(lifecycleTimer); stopReminders(); });
   return worker;
 }

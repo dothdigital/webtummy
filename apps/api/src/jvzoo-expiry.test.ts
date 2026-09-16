@@ -18,7 +18,7 @@ describe("JVZoo paid-term expiry", () => {
     db.externalSubscription.findMany.mockResolvedValue([external]);
     db.$transaction.mockImplementation(fn => fn(tx));
     expect(await reconcileJvZooLifecycle(end)).toEqual({ cancelled: 1 });
-    expect(db.externalSubscription.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { provider: "jvzoo", status: "cancel_at_period_end", currentPeriodEnd: { lte: end } } }));
+    expect(db.externalSubscription.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { provider: "jvzoo", OR: [{ status: "cancel_at_period_end" }, { status: "active", planCode: { in: ["growth-activation-30-day", "growth-advantage-6-month"] } }], currentPeriodEnd: { lte: end } } }));
     expect(tx.workspace.update).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ commercialState: "cancelled", accessMode: "read_only" }) }));
     expect(tx.workspaceNotification.upsert).toHaveBeenCalledWith(expect.objectContaining({ create: expect.objectContaining({ type: "billing_subscription_ended", emailStatus: "pending" }) }));
     expect(tx.user.update).not.toHaveBeenCalled();
@@ -26,6 +26,20 @@ describe("JVZoo paid-term expiry", () => {
     tx.externalSubscription.updateMany.mockResolvedValue({ count: 0 });
     expect(await reconcileJvZooLifecycle(end)).toEqual({ cancelled: 0 });
     expect(tx.workspaceNotification.upsert).toHaveBeenCalledTimes(1);
+  });
+  it("expires the 30-day purchase without revoking a newer six-month upgrade", async () => {
+    const end = new Date("2026-10-13T00:00:00Z");
+    const external = { id: "old-purchase", workspaceId: "workspace", priceId: "30-day-price", planCode: "growth-activation-30-day", status: "cancelled", currentPeriodEnd: end };
+    const tx = {
+      externalSubscription: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), findUniqueOrThrow: vi.fn().mockResolvedValue(external) },
+      workspaceSubscription: { findFirst: vi.fn().mockResolvedValue({ id: "subscription", priceId: "six-month-price" }) },
+      workspace: { update: vi.fn() }, workspaceNotification: { upsert: vi.fn() }, commercialAuditEvent: { create: vi.fn() },
+    };
+    db.externalSubscription.findMany.mockResolvedValue([{ ...external, status: "active" }]);
+    db.$transaction.mockImplementation(fn => fn(tx));
+    expect(await reconcileJvZooLifecycle(end)).toEqual({ cancelled: 1 });
+    expect(tx.workspace.update).not.toHaveBeenCalled();
+    expect(tx.workspaceNotification.upsert).not.toHaveBeenCalled();
   });
   it("leaves subscriptions alone when none have reached their paid-through date", async () => {
     db.externalSubscription.findMany.mockResolvedValue([]);

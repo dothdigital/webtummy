@@ -19,7 +19,7 @@ const plan = unifiedStrategyPlanSchema.parse({
 });
 
 describe("unified Strategy contract", () => {
-  it("completes undersupplied AI focus, phase, journey, action, and KPI sections before validation", () => {
+  it("preserves a single supported focus without inventing extra priorities", () => {
     const incomplete = {
       ...plan,
       audience: { ...plan.audience, journey: plan.audience.journey.slice(0, 1) },
@@ -30,7 +30,7 @@ describe("unified Strategy contract", () => {
     };
     const completed = unifiedStrategyPlanSchema.parse(completeUnifiedStrategyPlan(incomplete));
     expect(completed.audience.journey.length).toBeGreaterThanOrEqual(2);
-    expect(completed.focusAreas.length).toBeGreaterThanOrEqual(4);
+    expect(completed.focusAreas).toEqual(incomplete.focusAreas);
     expect(completed.phases.length).toBeGreaterThanOrEqual(3);
     expect(completed.topActions.length).toBeGreaterThanOrEqual(5);
     expect(completed.kpis.length).toBeGreaterThanOrEqual(3);

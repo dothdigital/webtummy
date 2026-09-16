@@ -130,3 +130,12 @@ describe("professional project report PDF", () => {
     expect(pdf.length).toBeGreaterThan(7000);
   });
 });
+
+ it("renders the complete findings layout for the canonical SEO report type", async () => {
+    const content = { title: "Complete SEO Findings Report", generatedAt: "2026-09-14T12:00:00.000Z", project: { name: "Acme" }, seoAudit: { summary: { pagesCrawled: 2, totalRecommendations: 1 }, recommendations: [{ category: "technical", title: "Repair broken links", recommendedAction: "Update the affected links", exactFindings: [] }] } };
+    const brand = { workspaceName: "Acme", workspaceType: "business" };
+    const legacy = await createProfessionalReportPdf({ ...content, reportType: "seo_audit" }, brand);
+    const current = await createProfessionalReportPdf({ ...content, reportType: "seo_website" }, brand);
+    expect(current.subarray(0, 4).toString()).toBe("%PDF");
+    expect(current.length).toBe(legacy.length);
+ });

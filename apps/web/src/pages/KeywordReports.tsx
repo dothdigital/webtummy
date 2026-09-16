@@ -1,3 +1,4 @@
+import { websiteAnalysisUrl } from "@webtummy/core/website-context";
 import { KeywordResearchConfirmModal, type KeywordResearchEstimate } from "../components/KeywordResearchConfirmModal.js";
 import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useRef, useState } from "react";
@@ -146,14 +147,6 @@ function marketKey(values: string[]) {
   return [...new Set(values.map((value) => value.trim().toLocaleLowerCase()).filter(Boolean))].sort().join("|");
 }
 
-function exactResearchMarketIssue(value: string): string | null {
-  const normalized = value.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  if (["gta", "greater toronto area", "toronto gta"].includes(normalized)) {
-    return "GTA is a regional abbreviation, not an exact location supported by the research provider. Replace it with Toronto, Mississauga, Brampton, another specific city, Ontario, or Canada.";
-  }
-  return null;
-}
-
 export default function KeywordReports() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -178,6 +171,7 @@ export default function KeywordReports() {
   const [researchConfirmation, setResearchConfirmation] = useState<{ estimate: KeywordResearchEstimate | null; error: string | null } | null>(null);
   const confirmationResolver = useRef<((confirmed: boolean) => void) | null>(null);
   const estimateRequestVersion = useRef(0);
+  const pendingResearchChecks = useRef<Array<{ seedKeyword: string; locationName: string; languageCode: string; device: string; targetUrl?: string | null; targetDomain?: string | null }>>([]);
   const closeResearchConfirmation = (confirmed: boolean) => {
     estimateRequestVersion.current += 1;
     confirmationResolver.current?.(confirmed);
@@ -187,12 +181,28 @@ export default function KeywordReports() {
   const confirmKeywordResearch = (checks: Array<{ seedKeyword: string; locationName: string; languageCode: string; device: string; targetUrl?: string | null; targetDomain?: string | null }>) => new Promise<boolean>((resolve) => {
     confirmationResolver.current?.(false);
     confirmationResolver.current = resolve;
+    pendingResearchChecks.current = checks;
+    refreshResearchEstimate();
+  });
+  const refreshResearchEstimate = () => {
+    const checks = pendingResearchChecks.current;
     const version = ++estimateRequestVersion.current;
     setResearchConfirmation({ estimate: null, error: null });
     void api.post<KeywordResearchEstimate>("/api/keyword-research/batch/estimate", { projectId: guidedProject?.id ?? null, websiteId: websiteId || null, checks })
       .then((estimate) => { if (version === estimateRequestVersion.current) setResearchConfirmation({ estimate, error: null }); })
       .catch((error) => { if (version === estimateRequestVersion.current) setResearchConfirmation({ estimate: null, error: error instanceof Error ? error.message : "Could not calculate AI consumption. Please try again." }); });
-  });
+  };
+  const removeInvalidResearchLocations = (locations: string[]) => {
+    const removedLocations = new Set(locations);
+    pendingResearchChecks.current = pendingResearchChecks.current.filter((check) => !removedLocations.has(check.locationName));
+    setSelectedCheckIds(pendingResearchChecks.current.map((check) => keywordResearchRequestIdentity({ keyword: check.seedKeyword, location: check.locationName, languageCode: check.languageCode, device: check.device })));
+    if (!pendingResearchChecks.current.length) {
+      estimateRequestVersion.current += 1;
+      setResearchConfirmation({ estimate: null, error: "No checks remain. Edit your selection to add a supported location." });
+      return;
+    }
+    refreshResearchEstimate();
+  };
   useEffect(() => () => { estimateRequestVersion.current += 1; confirmationResolver.current?.(false); }, []);
   const [savingMarkets, setSavingMarkets] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
@@ -207,6 +217,58 @@ export default function KeywordReports() {
   const [editingSuggestion, setEditingSuggestion] = useState<string | null>(null);
   const [editingSuggestionValue, setEditingSuggestionValue] = useState("");
   const [queuedKeywords, setQueuedKeywords] = useState<QueuedKeywordRun[]>([]);
+  const [locationChecks, setLocationChecks] = useState<Record<string, { message: string; invalid: boolean }>>({});
+  const [checkingLocations, setCheckingLocations] = useState(false);
+  const locationValidationKey = JSON.stringify([...new Set([
+    ...projectMarketLocationNames(selectedTargetMarkets, locationRegion, locationCountry),
+    ...buildLocationNames(locationCity, locationRegion, locationCountry),
+    ...queuedKeywords.flatMap((item) => item.locationNames),
+  ])].filter((name) => name.trim().length >= 2).sort());
+  useEffect(() => {
+    let active = true;
+    const names: string[] = JSON.parse(locationValidationKey);
+    setLocationChecks({});
+    setCheckingLocations(names.length > 0);
+    const timer = window.setTimeout(async () => {
+      const checks: Record<string, { message: string; invalid: boolean }> = {};
+      try {
+        for (let offset = 0; offset < names.length; offset += 100) {
+          const result = await api.post<{ valid: Array<{ requested: string; resolved: string; metricScope: string; metricSource: string }>; invalid: Array<{ requested: string; reason: string }> }>("/api/keyword-research/validate-locations", { locationNames: names.slice(offset, offset + 100) });
+          for (const item of result.valid) checks[item.requested] = {
+            invalid: item.metricSource === "parent_city",
+            message: item.metricSource === "parent_city"
+              ? `Invalid research location: this area is not supported as one exact location. Select ${item.metricScope} for city-only research, or select the individual cities you want to cover.`
+              : `${item.requested}: research location verified as ${item.metricScope}.`,
+          };
+          for (const item of result.invalid) checks[item.requested] = { invalid: true, message: item.reason };
+        }
+      } catch {
+        for (const name of names) checks[name] ??= { invalid: false, message: "Location verification is temporarily unavailable. It will be checked again before research starts." };
+      }
+      if (active) { setLocationChecks(checks); setCheckingLocations(false); }
+    }, 300);
+    return () => { active = false; window.clearTimeout(timer); };
+  }, [locationValidationKey]);
+  const researchLocationCheck = (value: string) => {
+    const names = projectMarketLocationNames([value], locationRegion, locationCountry);
+    if (names.length > 1) return {
+      invalid: true,
+      message: `Invalid research location: ${value} is not supported as one exact location. Select its individual locations instead: ${names.join(" · ")}.`,
+    };
+    return locationChecks[value] ?? locationChecks[names[0]];
+  };
+  const exactResearchMarketIssue = (value: string): string | null => {
+    const check = researchLocationCheck(value);
+    return check?.invalid ? check.message : null;
+  };
+  const locationCoverageNotice = (names: string[]) => <div aria-live="polite" className="mt-3 space-y-2 text-xs leading-5">
+    {checkingLocations && <p>Checking research coverage…</p>}
+    {names.map((name) => {
+      const check = researchLocationCheck(name);
+      return check?.invalid && <p key={name} role="alert" className="rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-amber-950"><b>{name}: </b>{check.message}</p>;
+    })}
+  </div>;
+
   const [selectedCheckIds, setSelectedCheckIds] = useState<string[] | null>(null);
   const [retryQueueMode, setRetryQueueMode] = useState(false);
   const [formError, setFormError] = useState<FormError | null>(null);
@@ -311,10 +373,9 @@ export default function KeywordReports() {
             ? `${failedChecks.length} failed keyword-location check${failedChecks.length === 1 ? " is" : "s are"} ready to retry. Completed checks will not be rerun.`
             : `${preselectedKeywords.length} remaining approved keyword${preselectedKeywords.length === 1 ? " is" : "s are"} selected. Review the analysis settings, then continue to start the research.`);
         }
-        setTargetUrl(guided.project.websiteUrl ?? "");
-        if (guided.project.websiteUrl) {
-          try { setTargetDomain(new URL(guided.project.websiteUrl).hostname.replace(/^www\./, "")); } catch { setTargetDomain(guided.project.websiteUrl); }
-        }
+        const liveWebsiteUrl = websiteAnalysisUrl(guided.project) || "";
+        setTargetUrl(liveWebsiteUrl);
+        setTargetDomain(liveWebsiteUrl ? new URL(/^https?:\/\//i.test(liveWebsiteUrl) ? liveWebsiteUrl : `https://${liveWebsiteUrl}`).hostname.replace(/^www\./, "") : "");
         if (projectLocation.country) setLocationCountry(projectLocation.country);
         if (projectLocation.region) setLocationRegion(projectLocation.region);
         if (projectLocation.markets.length) {
@@ -323,7 +384,7 @@ export default function KeywordReports() {
           setLocationCity(projectLocation.markets.join(", "));
         }
         if (remainingOnly && (preselectedKeywords.length || (failedOnly && failedChecks.length))) {
-          const nextTargetUrl = guided.project.websiteUrl ?? "";
+          const nextTargetUrl = websiteAnalysisUrl(guided.project) || "";
           let nextTargetDomain = nextTargetUrl;
           try { nextTargetDomain = nextTargetUrl ? new URL(nextTargetUrl).hostname.replace(/^www\./, "") : ""; } catch { /* Keep the saved value for review. */ }
           setQueuedKeywords(failedOnly
@@ -331,8 +392,8 @@ export default function KeywordReports() {
                 id: `retry-${run.id}`,
                 sourceGroupId: selectedGroups.find((group) => splitKeywordEntries(group.keywords).some((keyword) => normalizeKeywordPhrase(keyword) === normalizeKeywordPhrase(run.seedKeyword)))?.id,
                 keyword: run.seedKeyword,
-                targetUrl: run.targetUrl ?? nextTargetUrl,
-                targetDomain: run.targetDomain ?? nextTargetDomain,
+                targetUrl: nextTargetUrl ? run.targetUrl || nextTargetUrl : "",
+                targetDomain: nextTargetUrl ? run.targetDomain || nextTargetDomain : "",
                 locationCountry: projectLocation.country,
                 locationRegion: projectLocation.region,
                 locationCity: run.locationName,
@@ -424,9 +485,12 @@ export default function KeywordReports() {
         serpDepth: Number(queued.serpDepth) || 20,
         keywordLimit: Number(queued.keywordLimit) || 25,
       })));
-      const checks = selectKeywordResearchChecks(availableChecks.filter((check) => !exactResearchMarketIssue(check.locationName)), selectedBatchIdentities);
+      let checks = selectKeywordResearchChecks(availableChecks.filter((check) => !exactResearchMarketIssue(check.locationName)), selectedBatchIdentities);
       if (!checks.length) throw new Error("Select at least one keyword-location check to run.");
       if (!await confirmKeywordResearch(checks)) return;
+      const confirmedIds = new Set(pendingResearchChecks.current.map(checkIdentity));
+      checks = checks.filter((check) => confirmedIds.has(checkIdentity(check)));
+      if (!checks.length) return;
       if (checks.length > KEYWORD_RESEARCH_MAX_SELECTED_CHECKS) throw new Error(KEYWORD_RESEARCH_SELECTION_LIMIT_MESSAGE);
       setMessage(`Starting ${checks.length} keyword-location check${checks.length === 1 ? "" : "s"}…`);
       const result = await api.post<{
@@ -821,7 +885,7 @@ export default function KeywordReports() {
       const key = normalizeKeywordPhrase(check.keyword);
       checksByKeyword.set(key, [...(checksByKeyword.get(key) ?? []), check]);
     }
-    const nextTargetUrl = guidedProject.websiteUrl ?? "";
+    const nextTargetUrl = websiteAnalysisUrl(guidedProject) || "";
     let nextTargetDomain = nextTargetUrl;
     try { nextTargetDomain = nextTargetUrl ? new URL(nextTargetUrl).hostname.replace(/^www\./, "") : ""; } catch { /* Keep the supplied value. */ }
     const queue = [...checksByKeyword.entries()].map(([key, checks], index) => ({
@@ -979,6 +1043,7 @@ export default function KeywordReports() {
                 </label>
                 <Input label="Cities" value={locationCity} onChange={setLocationCity} placeholder="Enter cities or service areas" />
                 <Input label="State / province" value={locationRegion} onChange={setLocationRegion} placeholder="Enter state or province" />
+                <div className="col-span-full">{locationCoverageNotice(buildLocationNames(locationCity, locationRegion, locationCountry))}</div>
                 <label className="block">
                   <span className="mb-1 block text-sm font-medium text-slate-600">Language</span>
                   <select
@@ -1147,6 +1212,8 @@ export default function KeywordReports() {
                   })}
                   {!targetMarkets.length && <span className="text-xs text-charcoal-500">No analysis markets selected yet.</span>}
                 </div>
+                {selectedTargetMarkets.length > 0 && <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-charcoal-700"><b>Locations used for research:</b> {projectMarketLocationNames(selectedTargetMarkets, locationRegion, locationCountry).join(" · ")}<p className="mt-1">The checkmarks show your selected markets. Research coverage is checked when you select a location and again before research starts. Provinces use their own country; Regional group names are not valid as a single research location. Select individual provinces instead; duplicate checks are counted only once.</p></div>}
+                {locationCoverageNotice(selectedTargetMarkets)}
                 {blockedMarketIssues.map((check) => <div key={check.location.toLocaleLowerCase()} className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-950"><span className="font-black">{check.location} cannot run:</span> {check.reason}</div>)}
                 <div className="mt-4 flex flex-col gap-2 sm:flex-row">
                   <input
@@ -1286,7 +1353,7 @@ export default function KeywordReports() {
           </div>
         ))}
       </Card>
-      {researchConfirmation && <KeywordResearchConfirmModal estimate={researchConfirmation.estimate} error={researchConfirmation.error} onCancel={() => closeResearchConfirmation(false)} onConfirm={() => closeResearchConfirmation(true)} />}
+      {researchConfirmation && <KeywordResearchConfirmModal estimate={researchConfirmation.estimate} error={researchConfirmation.error} onCancel={() => closeResearchConfirmation(false)} onConfirm={() => closeResearchConfirmation(true)} onRetry={pendingResearchChecks.current.length ? refreshResearchEstimate : undefined} requestedLocations={pendingResearchChecks.current.map((check) => check.locationName)} onRemoveLocation={(location) => removeInvalidResearchLocations([location])} onRemoveLocations={removeInvalidResearchLocations} />}
     </div>
   );
 }

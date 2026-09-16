@@ -24,8 +24,8 @@ function clientPresentation(reportType: string, value: unknown) {
   return withClientReportPresentation(reportType, clientSafeReportContent(value) as Prisma.JsonObject) as Record<string, unknown>;
 }
 
-const generateSchema = z.object({
-  projectId: z.string().min(1), reportType: z.enum(projectReportTypes), exportFormat: z.enum(["pdf", "html", "secure_link"]).default("secure_link"),
+export const generateSchema = z.object({
+  projectId: z.string().min(1), reportType: z.preprocess((value) => value === "seo_audit" ? "seo_website" : value, z.enum(projectReportTypes)), exportFormat: z.enum(["pdf", "html", "secure_link"]).default("secure_link"),
   templateId: z.enum(agencyProposalTemplateIds).optional(), selectedServices: z.array(z.string().trim().min(1).max(500)).max(50).default([]), selectedFindings: z.array(z.string().trim().min(1).max(1000)).max(50).default([]),
   periodStart: z.coerce.date().optional(), periodEnd: z.coerce.date().optional(), useAiNarrative: z.boolean().default(true),
 }).superRefine((value, ctx) => { if (value.periodStart && value.periodEnd && value.periodStart > value.periodEnd) ctx.addIssue({ code: "custom", path: ["periodEnd"], message: "Reporting period end must be after its start." }); });
@@ -177,7 +177,7 @@ const reportValues = (value: unknown) => Array.isArray(value) ? value : [];
 const unavailableText = "No connected evidence is available for this section in the selected period.";
 
 export function clientReportSections(reportType: typeof projectReportTypes[number], content: Record<string, unknown>): ClientReportSection[] {
-  if (reportType === "agency_proposal") return [];
+  if (reportType === "agency_proposal" || reportType === "strategy") return [];
   const narrative = reportRecord(content.clientNarrative); const execution = reportRecord(content.execution); const performance = reportRecord(content.performance); const seo = reportRecord(content.seo);
   const evidence = reportRecord(content.evidence); const site = reportRecord(evidence.siteAnalysis); const local = reportRecord(content.localSeo); const reputation = reportRecord(content.reputation);
   const growth = reportRecord(content.growth); const social = reportRecord(content.socialEmail); const citation = reportRecord(content.aiCitationVisibility); const monitoring = reportRecord(citation.monitoring); const publishing = reportRecord(content.contentPublishing);
@@ -731,7 +731,9 @@ projectReportsRouter.post("/project-reports/generate", async (req, res) => {
   const context = await workspaceContext(req);
   if (context.roles.size === 1 && context.roles.has("client_viewer")) return res.status(403).json({ error: "Client Viewers can view only approved documents shared with them." });
   if (!hasWorkspacePermission(context, "export_reports")) return res.status(403).json({ error: "Report generation permission is required." });
-  const data = generateSchema.parse(req.body);
+  const parsed = generateSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: parsed.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ") });
+  const data = parsed.data;
   const project = await scopedProject(context, data.projectId);
   const definition = projectReportCatalog.find((item) => item.type === data.reportType)!;
   if ("ecommerceOnly" in definition && definition.ecommerceOnly && context.workspace.workspaceType !== "ecommerce" && project.projectType !== "ecommerce") return res.status(400).json({ error: "Ecommerce Reports are available only for store projects." });

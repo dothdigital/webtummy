@@ -1,3 +1,4 @@
+import { FIXED_TERM_PLAN_CODES, fixedTermEnd, fixedTermExpired, isFixedTermPlan } from "./fixed-term-offers.js";
 import crypto from "node:crypto";
 import { jvZooDate, paidPeriodEnd, queueJvZooLifecycleNotice } from "./jvzoo-lifecycle.js";
 import { prisma, type Prisma } from "@webtummy/db";
@@ -14,6 +15,7 @@ export const COMMERCIAL_PLAN_VERSION = 2;
 
 export function workspaceTypeForCommercialPlan(planCode: string | null | undefined) {
   const raw = String(planCode || "").trim().toLowerCase();
+  if (isFixedTermPlan(raw)) return "personal";
   if (!["mini", "starter", "personal", "entrepreneur", "basic", "standard", "growth", "business", "pro", "agency"].includes(raw)) {
     throw Object.assign(new Error("The commercial plan does not map to a supported workspace type."), { statusCode: 409, code: "unsupported_plan_mapping" });
   }
@@ -492,8 +494,7 @@ export async function commercialCatalog(input: { includeInactive?: boolean; work
   await ensureCommercialDefaults();
   const planVersions = await prisma.commercialPlanVersion.findMany({
     where: {
-      billingPlan: { code: { in: ["entrepreneur", "business", "agency"] } },
-      ...(input.includeInactive ? {} : { status: "active" }),
+      ...(input.includeInactive ? {} : { billingPlan: { code: { in: ["entrepreneur", "business", "agency"] } }, status: "active" }),
     },
     orderBy: [{ billingPlan: { sortOrder: "asc" } }, { version: "desc" }],
     include: {
@@ -550,6 +551,7 @@ export async function workspaceCommercialSummary(workspaceId: string) {
     effectiveCommercialEntitlements(workspaceId),
   ]);
   const subscription = entitlements.subscription;
+  const termExpired = subscription?.provider === COMMERCIAL_PROVIDER && fixedTermExpired(subscription.planVersion.billingPlan.code, subscription.currentPeriodEnd);
   const [activeProjects, archivedProjects, activeClients, memberships, assignedSeats, capacity, recentEvents, providerLifecycle] = await Promise.all([
     workspace.legacyClientId ? prisma.project.count({ where: { clientId: workspace.legacyClientId, status: { not: "archived" } } }) : 0,
     workspace.legacyClientId ? prisma.project.count({ where: { clientId: workspace.legacyClientId, status: "archived" } }) : 0,
@@ -578,8 +580,8 @@ export async function workspaceCommercialSummary(workspaceId: string) {
       id: workspace.id,
       name: workspace.name,
       workspaceType: workspace.workspaceType,
-      commercialState: workspace.commercialState,
-      accessMode: workspace.accessMode,
+      commercialState: termExpired ? "cancelled" : workspace.commercialState,
+      accessMode: termExpired ? "read_only" : workspace.accessMode,
       retentionEndsAt: workspace.retentionEndsAt,
       deletionScheduledAt: workspace.deletionScheduledAt,
     },
@@ -637,7 +639,10 @@ export async function workspaceCommercialSummary(workspaceId: string) {
 }
 
 export async function assertWorkspaceFeature(workspaceId: string, featureKey: string) {
-  const { features } = await effectiveCommercialEntitlements(workspaceId);
+  const { features, subscription } = await effectiveCommercialEntitlements(workspaceId);
+  if (subscription?.provider === COMMERCIAL_PROVIDER && fixedTermExpired(subscription.planVersion.billingPlan.code, subscription.currentPeriodEnd)) {
+    throw Object.assign(new Error("Your paid access has ended. Upgrade from Billing to continue using SEnuke AI."), { statusCode: 402, code: "fixed_term_access_expired" });
+  }
   const featureFlags = features as Record<string, unknown>;
   const workspace = await prisma.workspace.findUniqueOrThrow({ where: { id: workspaceId } });
   if (workspace.accessMode !== "full" && workspace.accessMode !== "grace") {
@@ -1152,7 +1157,7 @@ export async function attachExternalSubscriptionInTransaction(
   input: { externalSubscriptionId: string; workspaceId: string; userId?: string | null },
 ) {
   const current = await tx.externalSubscription.findUniqueOrThrow({ where: { id: input.externalSubscriptionId } });
-  if (!["active", "cancel_at_period_end"].includes(current.status)) {
+  if (!["active", "cancel_at_period_end"].includes(current.status) || fixedTermExpired(current.planCode, current.currentPeriodEnd)) {
     throw Object.assign(new Error("This JVZoo purchase is not currently eligible for activation."), { statusCode: 409, code: "purchase_not_eligible" });
   }
   if (current.workspaceId && current.workspaceId !== input.workspaceId) {
@@ -1263,6 +1268,10 @@ export async function processStoredJvZooEvent(eventId: string) {
     const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: error === "product_not_mapped" ? "unmapped_product" : "unresolved", error } });
     return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
   }
+  if (isFixedTermPlan(price.planVersion.billingPlan.code) && ["BILL", "REBILL"].includes(normalized.transactionType)) {
+    const unresolved = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "unresolved", error: "fixed_term_product_does_not_renew" } });
+    return { event: unresolved, duplicate: false, workspaceId: external?.workspaceId ?? null };
+  }
   const renewalValidationError = external ? validateJvZooRenewalPayment({
     transactionType: normalized.transactionType,
     nextStatus: nextState.status,
@@ -1286,7 +1295,7 @@ export async function processStoredJvZooEvent(eventId: string) {
     const stale = await prisma.commercialBillingEvent.update({ where: { id: event.id }, data: { status: "stale", processedAt: new Date(), externalSubscriptionId: external.id, error: "out_of_order_event" } });
     return { event: stale, duplicate: false, workspaceId: external.workspaceId };
   }
-  const currentPeriodEnd = normalized.currentPeriodEnd
+  const currentPeriodEnd = fixedTermEnd(price.planVersion.billingPlan.code, external?.purchasedAt ?? occurredAt) ?? normalized.currentPeriodEnd
     ?? (nextState.status === "active"
       ? periodEndFrom(price.billingInterval, occurredAt)
       : nextState.status === "cancel_at_period_end"
@@ -1307,7 +1316,7 @@ export async function processStoredJvZooEvent(eventId: string) {
       currency: normalized.currencyProvided ? normalized.currency : external?.currency ?? price.currency,
       amountCents: amountCents(normalized.amount) ?? external?.amountCents ?? price.amountCents,
       status: externalStatus,
-      currentPeriodStart: nextState.status === "active" ? occurredAt : external?.currentPeriodStart ?? occurredAt,
+      currentPeriodStart: isFixedTermPlan(price.planVersion.billingPlan.code) ? external?.purchasedAt ?? occurredAt : nextState.status === "active" ? occurredAt : external?.currentPeriodStart ?? occurredAt,
       currentPeriodEnd,
       cancelAtPeriodEnd: nextState.cancelAtPeriodEnd,
       foundingMember: price.priceClass === "founding" || external?.foundingMember === true,
@@ -1375,20 +1384,24 @@ export async function processJvZooIpn(payload: JsonObject) {
 
 export async function reconcileJvZooLifecycle(now = new Date()) {
   const expiring = await prisma.externalSubscription.findMany({
-    where: { provider: COMMERCIAL_PROVIDER, status: "cancel_at_period_end", currentPeriodEnd: { lte: now } },
+    where: { provider: COMMERCIAL_PROVIDER, OR: [{ status: "cancel_at_period_end" }, { status: "active", planCode: { in: FIXED_TERM_PLAN_CODES } }], currentPeriodEnd: { lte: now } },
     take: 250,
   });
   let cancelled = 0;
   for (const external of expiring) {
     const changed = await prisma.$transaction(async (tx) => {
       const claimed = await tx.externalSubscription.updateMany({
-        where: { id: external.id, status: "cancel_at_period_end", currentPeriodEnd: { lte: now } },
+        where: { id: external.id, OR: [{ status: "cancel_at_period_end" }, { status: "active", planCode: { in: FIXED_TERM_PLAN_CODES } }], currentPeriodEnd: { lte: now } },
         data: { status: "cancelled", cancelAtPeriodEnd: false, cancelledAt: external.cancelledAt ?? now, lastEventAt: now },
       });
       if (claimed.count !== 1) return false;
       const updated = await tx.externalSubscription.findUniqueOrThrow({ where: { id: external.id } });
-      if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
-      await queueJvZooLifecycleNotice(tx, updated, "ended");
+      const workspaceSubscription = updated.workspaceId ? await tx.workspaceSubscription.findFirst({ where: { workspaceId: updated.workspaceId, provider: COMMERCIAL_PROVIDER }, orderBy: { createdAt: "desc" } }) : null;
+      // Expiring an earlier purchase must not revoke a subsequent upgrade.
+      if (!workspaceSubscription?.priceId || workspaceSubscription.priceId === updated.priceId) {
+        if (updated.workspaceId) await syncExternalToWorkspace(tx, updated.id, updated.workspaceId);
+        await queueJvZooLifecycleNotice(tx, updated, "ended");
+      }
       await tx.commercialAuditEvent.create({
         data: {
           workspaceId: updated.workspaceId,

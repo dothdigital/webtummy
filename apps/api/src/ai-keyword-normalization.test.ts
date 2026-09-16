@@ -6,7 +6,7 @@ vi.mock("./central-ai-service.js", () => ({ centralAiJson }));
 import { normalizeKeywordsWithAi } from "./ai-keyword-normalization.js";
 
 describe("hybrid AI keyword normalization", () => {
-  beforeEach(() => centralAiJson.mockReset());
+  beforeEach(() => { centralAiJson.mockReset(); });
 
   it("accepts an AI clarification only when it matches the original or an approved service", async () => {
     centralAiJson.mockResolvedValue({
@@ -68,4 +68,24 @@ describe("hybrid AI keyword normalization", () => {
       services: ["Life Insurance"],
     })).rejects.toMatchObject({ code: "ai_keyword_normalization_incomplete" });
   });
+  it("reviews more than 100 approved keywords in bounded batches without dropping any", async () => {
+    const keywords = Array.from({ length: 121 }, (_, index) => `specialist service ${index}`);
+    centralAiJson.mockImplementation(async ({ prompt }) => {
+      const batch = JSON.parse(prompt.split("Approved phrases to interpret:\n")[1].split("\n\nRules:")[0]) as string[];
+      return { result: { keywords: batch.map((original) => ({ original, canonicalTopic: original, searchIntent: "commercial_service", reason: "Preserves the approved service topic." })) } };
+    });
+    const result = await normalizeKeywordsWithAi({ keywords, locations: [], services: [] });
+    expect(centralAiJson).toHaveBeenCalledTimes(3);
+    expect(result.reviewedCount).toBe(121);
+    expect(result.semanticKeywords.map((entry) => entry.keyword)).toEqual(keywords);
+  });
+
+  it("ignores repeated and unsolicited AI rows without the 100-element error", async () => {
+    const row = { original: "life insurance", canonicalTopic: "life insurance", searchIntent: "commercial_service", reason: "Preserves the approved service topic." };
+    centralAiJson.mockResolvedValue({ result: { keywords: [...Array.from({ length: 101 }, () => row), { ...row, original: "unsolicited keyword" }] } });
+    const result = await normalizeKeywordsWithAi({ keywords: ["life insurance"], locations: [], services: [] });
+    expect(result.reviewedCount).toBe(1);
+    expect(result.semanticKeywords.map((entry) => entry.keyword)).toEqual(["life insurance"]);
+  });
+
 });

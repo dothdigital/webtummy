@@ -5,6 +5,8 @@ import { config } from "./config.js";
 import { sendMail } from "./email.js";
 import { attachExternalSubscriptionInTransaction, workspaceTypeForCommercialPlan } from "./commercial-service.js";
 
+import { activationReminderContent, activationReminderDay, type ActivationReminderDay } from "./jvzoo-activation-reminder-policy.js";
+
 const ACTIVATION_TTL_MS = 72 * 60 * 60 * 1000;
 
 function normalizeEmail(value: string) {
@@ -34,12 +36,13 @@ async function usableToken(token: string) {
   return record;
 }
 
-export async function issueJvZooActivationEmail(externalSubscriptionId: string) {
+export async function issueJvZooActivationEmail(externalSubscriptionId: string, options: { reminderDay?: ActivationReminderDay; reminderEnrolledAfter?: Date } = {}) {
   const external = await prisma.externalSubscription.findUniqueOrThrow({ where: { id: externalSubscriptionId } });
   if (external.activationStatus === "activated") return { sent: false, reason: "already_activated" };
+  if (options.reminderDay && (!options.reminderEnrolledAfter || activationReminderDay(external, options.reminderEnrolledAfter, new Date()) !== options.reminderDay)) return { sent: false, reason: "not_eligible" };
   const token = randomBytes(32).toString("base64url");
   await prisma.$transaction(async (tx) => {
-    await tx.externalSubscriptionActivationToken.updateMany({
+    if (!options.reminderDay) await tx.externalSubscriptionActivationToken.updateMany({
       where: { externalSubscriptionId, usedAt: null },
       data: { usedAt: new Date() },
     });
@@ -49,6 +52,10 @@ export async function issueJvZooActivationEmail(externalSubscriptionId: string) 
   });
   const link = `${config.webAppUrl.replace(/\/$/, "")}/activate/jvzoo?token=${encodeURIComponent(token)}`;
   try {
+    if (options.reminderDay) {
+      const current = await prisma.externalSubscription.findUniqueOrThrow({ where: { id: externalSubscriptionId } });
+      if (!options.reminderEnrolledAfter || activationReminderDay(current, options.reminderEnrolledAfter, new Date()) !== options.reminderDay) return { sent: false, reason: "not_eligible" };
+    }
     await sendMail({
       to: external.providerCustomerEmail,
       subject: "Activate your SEnuke AI workspace",
@@ -78,6 +85,7 @@ The SEnuke AI Team`,
 <p>Welcome to SEnuke AI.</p>
 <p>The SEnuke AI Team</p>
 </div>`,
+      ...(options.reminderDay ? { ...activationReminderContent(options.reminderDay, link, config.supportEmail), timeoutMs: 30_000 } : {}),
     });
     await prisma.externalSubscription.update({ where: { id: external.id }, data: { activationEmailSentAt: new Date(), activationEmailError: null } });
     return { sent: true };

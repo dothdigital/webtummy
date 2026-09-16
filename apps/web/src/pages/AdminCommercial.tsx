@@ -18,6 +18,8 @@ type CommercialPlan = {
 };
 
 type AdminCommercialData = {
+  activationReminderPolicy?: { enabled: boolean; startedAt: string | null };
+  activationReminders?: Array<{ correlationId: string | null; reasonCode: string; afterJson: { day?: number; status?: string; completedAt?: string } | null }>;
   registrationPolicy: { id: string; trialEnabled: boolean; trialDays: number; updatedAt: string };
   catalog: CommercialPlan[];
   policies: Array<{ id: string; code: string; version: number; status: string; graceDays: number; retentionDays: number; suspensionAfterDays: number; effectiveFrom: string }>;
@@ -89,6 +91,7 @@ export default function AdminCommercial() {
   const [data, setData] = useState<AdminCommercialData | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState<string | null>(null);
+  const [activationFilter, setActivationFilter] = useState<"all" | "pending">("all");
   const [busy, setBusy] = useState<string | null>(null);
   const [priceDrafts, setPriceDrafts] = useState<Record<string, { amount: string; providerProductRef: string; checkoutUrl: string }>>({});
   const [addonDrafts, setAddonDrafts] = useState<Record<string, { amount: string; units: string; providerProductRef: string; checkoutUrl: string }>>({});
@@ -119,6 +122,9 @@ export default function AdminCommercial() {
   useEffect(() => {
     void load();
   }, []);
+
+  const pendingActivations = data?.externalSubscriptions.filter((subscription) => subscription.activationStatus === "unclaimed") ?? [];
+  const visiblePurchases = activationFilter === "pending" ? pendingActivations : data?.externalSubscriptions ?? [];
 
   const unresolvedEvents = useMemo(() => data?.events.filter((event) => ["unresolved", "unmapped_product", "failed", "rejected"].includes(event.status)) ?? [], [data]);
 
@@ -312,6 +318,19 @@ export default function AdminCommercial() {
 
       {message && <Card className="border-brand-200 bg-brand-50 p-4 text-sm text-brand-900">{message}</Card>}
 
+      <Card className="border-amber-200 bg-amber-50 p-5">
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <h2 className="text-lg font-bold text-charcoal-950">JVZoo buyers awaiting activation <span className="ml-2 rounded-full bg-amber-200 px-3 py-1 text-sm">{pendingActivations.length}</span></h2>
+            <p className="mt-1 text-sm text-charcoal-600">Unclaimed purchases among the latest 100 purchases. Open the list to resend an activation email.</p>
+            <p className="mt-2 text-sm text-charcoal-700">{data?.activationReminderPolicy?.enabled && data.activationReminderPolicy.startedAt
+              ? `Automatic activation reminders: day 1, day 3 and day 7 after purchase. Only new purchases from ${dateLabel(data.activationReminderPolicy.startedAt)} are included. Reminders stop on activation or when the purchase is no longer eligible.`
+              : "Automatic activation reminders are not currently enabled."}</p>
+          </div>
+          <Button onClick={() => { setActivationFilter("pending"); document.getElementById("jvzoo-activation-list")?.scrollIntoView({ behavior: "smooth", block: "start" }); }}>View awaiting activation</Button>
+        </div>
+      </Card>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric label="Commercial plans" value={data?.catalog.length ?? 0} />
         <Metric label="Workspaces" value={data?.workspaces.length ?? 0} />
@@ -458,18 +477,24 @@ export default function AdminCommercial() {
       </Card>
 
       <Card className="overflow-hidden">
-        <div className="border-b border-slate-200 p-5"><h2 className="text-lg font-bold text-charcoal-950">JVZoo purchases and activation</h2><p className="text-sm text-charcoal-500">Provider-owned purchases remain here even before a user or workspace exists.</p></div>
+        <div className="border-b border-slate-200 p-5"><h2 id="jvzoo-activation-list" className="scroll-mt-24 text-lg font-bold text-charcoal-950">JVZoo purchases and activation</h2><p className="text-sm text-charcoal-500">Provider-owned purchases remain here even before a user or workspace exists.</p></div>
+        <div className="flex gap-2 border-b border-slate-200 px-5 py-3" role="group" aria-label="Filter JVZoo purchases">
+          <Button variant={activationFilter === "all" ? "primary" : "ghost"} aria-pressed={activationFilter === "all"} onClick={() => setActivationFilter("all")}>All purchases</Button>
+          <Button variant={activationFilter === "pending" ? "primary" : "ghost"} aria-pressed={activationFilter === "pending"} onClick={() => setActivationFilter("pending")}>Awaiting activation ({pendingActivations.length})</Button>
+        </div>
         <div className="overflow-x-auto"><table className="min-w-full divide-y divide-slate-200 text-sm">
           <thead className="bg-slate-50 text-left text-xs font-bold uppercase tracking-wide text-charcoal-500"><tr><th className="px-4 py-3">Customer and receipt</th><th className="px-4 py-3">Product and plan</th><th className="px-4 py-3">Lifecycle</th><th className="px-4 py-3">Important dates</th><th className="px-4 py-3">Activation</th><th className="px-4 py-3">Action</th></tr></thead>
-          <tbody className="divide-y divide-slate-100">{data?.externalSubscriptions.map((subscription) => <tr key={subscription.id} className="align-top">
+          <tbody className="divide-y divide-slate-100">{visiblePurchases.map((subscription) => <tr key={subscription.id} className="align-top">
             <td className="px-4 py-3"><b>{subscription.providerCustomerEmail}</b><div className="mt-1 text-xs text-charcoal-500">Receipt: {subscription.providerTransactionId}</div>{subscription.providerSubscriptionRef && <div className="text-xs text-charcoal-500">Subscription: {subscription.providerSubscriptionRef}</div>}</td>
             <td className="px-4 py-3"><div className="capitalize">{subscription.planCode ?? "Unmapped"} · {subscription.billingInterval ?? "—"}</div><div className="mt-1 text-xs text-charcoal-500">Product {subscription.providerProductRef}</div><div className="text-xs text-charcoal-500">{subscription.amountCents == null ? "Amount unavailable" : `${(subscription.amountCents / 100).toFixed(2)} ${subscription.currency}`}</div></td>
             <td className="px-4 py-3"><StatusPill status={subscription.status} /><div className="mt-2 text-xs text-charcoal-500">Last event: {dateLabel(subscription.lastEventAt)}</div></td>
             <td className="px-4 py-3 text-xs leading-5 text-charcoal-600"><div>Purchased: {dateLabel(subscription.purchasedAt)}</div><div>Access end: {dateLabel(subscription.currentPeriodEnd)}</div>{subscription.cancelledAt && <div>Cancelled: {dateLabel(subscription.cancelledAt)}</div>}{subscription.refundedAt && <div>Refunded: {dateLabel(subscription.refundedAt)}</div>}{subscription.chargebackAt && <div>Chargeback: {dateLabel(subscription.chargebackAt)}</div>}</td>
-            <td className="px-4 py-3"><StatusPill status={subscription.activationStatus} />{subscription.activationEmailError && <div className="mt-1 max-w-xs text-xs text-rose-700">{subscription.activationEmailError}</div>}</td>
+            <td className="px-4 py-3"><StatusPill status={subscription.activationStatus} />
+              {(data?.activationReminders ?? []).filter((reminder) => reminder.correlationId === subscription.id).map((reminder) => <div key={reminder.reasonCode} className="mt-1 text-xs text-charcoal-600">Day {reminder.afterJson?.day}: {reminder.afterJson?.status === "delivery_unconfirmed" ? "delivery unconfirmed — check before resending" : reminder.afterJson?.status === "sending" ? "delivery pending confirmation" : reminder.afterJson?.status ?? "pending"}{reminder.afterJson?.completedAt ? ` · ${dateLabel(reminder.afterJson.completedAt)}` : ""}</div>)}
+              {subscription.activationEmailError && <div className="mt-1 max-w-xs text-xs text-rose-700">{subscription.activationEmailError}</div>}</td>
             <td className="px-4 py-3">{subscription.activationStatus !== "activated" && <Button variant="ghost" onClick={() => void resendActivation(subscription.id)} disabled={busy === subscription.id}>{busy === subscription.id ? "Sending…" : "Resend activation"}</Button>}</td>
           </tr>)}</tbody>
-        </table>{!data?.externalSubscriptions.length && <div className="p-5 text-sm text-charcoal-500">No JVZoo purchases received yet.</div>}</div>
+        </table>{!visiblePurchases.length && <div className="p-5 text-sm text-charcoal-500">{activationFilter === "pending" ? "No purchases awaiting activation among the latest 100 purchases." : "No JVZoo purchases received yet."}</div>}</div>
       </Card>
 
       <div className="grid gap-5 xl:grid-cols-2">

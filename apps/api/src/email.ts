@@ -8,6 +8,7 @@ interface MailInput {
   html: string;
   text: string;
   replyTo?: string;
+  timeoutMs?: number;
 }
 
 const resolveAwsCredentials = defaultProvider();
@@ -87,6 +88,7 @@ async function sendWithSes(input: MailInput) {
 
   const response = await fetch(endpoint, {
     method: "POST",
+    ...(input.timeoutMs ? { signal: AbortSignal.timeout(input.timeoutMs) } : {}),
     headers: {
       ...headers,
       Authorization: `AWS4-HMAC-SHA256 Credential=${credentials.accessKeyId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`,
@@ -103,6 +105,7 @@ async function sendWithSes(input: MailInput) {
 async function sendWithResend(input: MailInput) {
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
+    ...(input.timeoutMs ? { signal: AbortSignal.timeout(input.timeoutMs) } : {}),
     headers: {
       Authorization: `Bearer ${config.resendApiKey}`,
       "Content-Type": "application/json",

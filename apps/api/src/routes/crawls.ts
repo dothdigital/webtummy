@@ -1,3 +1,4 @@
+import { websiteAnalysisUrl } from "@webtummy/core/website-context";
 import { getWebsiteHandoffReview } from "../website-handoff-review.js";
 import { canAccessProject, hasWorkspacePermission, workspaceContext } from "../workspace-access.js";
 // Crawl routes: start a crawl, poll status, read results — all tenant-scoped.
@@ -53,6 +54,8 @@ const CRAWL_REFRESH_COOLDOWN_MS = 72 * 60 * 60 * 1000;
 crawlsRouter.post("/websites/:websiteId/crawls", async (req, res) => {
   const website = await getScopedWebsite(req, req.params.websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
+  const linkedProjects = await prisma.project.findMany({ where: { websiteId: website.id, status: { not: "archived" } }, select: { websiteStatus: true, websiteUrl: true, websiteContextJson: true, primaryGoal: true } });
+  if (linkedProjects.length && !linkedProjects.some((project) => Boolean(websiteAnalysisUrl(project)))) return res.status(409).json({ error: "Site Analysis requires a confirmed live website. Owning a domain is not enough. Confirm the website details in Project Settings after the site is live." });
   if (website.status === "archived") return res.status(409).json({ error: "website is archived", message: "Archived website reports are view-only. Replace or reactivate the website before starting new tracking." });
 
   const parsed = startSchema.safeParse(req.body ?? {});

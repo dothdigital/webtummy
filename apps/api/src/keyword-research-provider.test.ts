@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { providerRetryDelay, displaySearchProviderLocation, keywordIdeaRelevance, matchSearchProviderLocation, parseKeywordIdea, resolveExactSearchLocation, resolveSearchLocation, retryableSearchProviderError } from "./routes/keyword-research.js";
 
 describe("keyword provider resilience", () => {
@@ -94,4 +94,31 @@ it("recognizes the provider's plural rates-limit error and waits for its minute 
   const message = "The rates limit per minute has been exceeded: 12 >= 12.";
   expect(retryableSearchProviderError(message)).toBe(true);
   expect(providerRetryDelay(message, 1)).toBeGreaterThanOrEqual(60000);
+});
+
+
+it("preserves regional labels and discloses verified city coverage", async () => {
+  vi.stubEnv("SEARCH_DATA_PROVIDER_AUTH_BASE64", "test");
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+    ok: true,
+    json: async () => ({ tasks: [{ result: [
+      { location_code: 1002451, location_name: "Toronto,Ontario,Canada", country_iso_code: "CA", location_type: "City" },
+    ] }] }),
+  }));
+  try {
+    for (const name of ["GTA", "Toronto GTA", "Greater Toronto Area"]) {
+      const requested = `${name}, Ontario, Canada`;
+      expect(await resolveExactSearchLocation(requested)).toMatchObject({
+        displayName: requested,
+        keywordMetrics: { location_code: 1002451 },
+        metricScopeName: "Toronto, Ontario, Canada",
+        metricSource: "parent_city",
+      });
+    }
+    await expect(resolveExactSearchLocation("NCR, Canada")).rejects.toThrow(/unambiguous provider location/i);
+    await expect(resolveExactSearchLocation("Greater Unknown Area, Canada")).rejects.toThrow(/unambiguous provider location/i);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  }
 });

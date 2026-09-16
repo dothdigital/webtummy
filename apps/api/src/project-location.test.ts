@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { cleanGeographicTargetMarkets, cleanTargetMarkets, explicitlyTargetsGeographicMarket, formatBusinessLocation, isPlausibleGeographicTargetMarket, locationIsComplete, projectAnalysisLocationLabels } from "./project-location.js";
 
 describe("DEV-004 business location and target markets", () => {
+  it("uses the same four Atlantic provinces for the completion gate as the browser", () => {
+    const business = { country: "Canada", stateProvince: "New Brunswick", city: "Moncton" };
+    expect(projectAnalysisLocationLabels(["Newfoundland", "PEI", "Nova scotia", "New Brunswick", "Atlantic Canada"], business)).toEqual(["Newfoundland and Labrador, Canada", "Prince Edward Island, Canada", "Nova Scotia, Canada", "New Brunswick, Canada"]);
+    expect(projectAnalysisLocationLabels(["Newfoundland and Labrador, Canada", "PEI, Canada", "Moncton"], business)).toEqual(["Newfoundland and Labrador, Canada", "Prince Edward Island, Canada", "Moncton, New Brunswick, Canada"]);
+    expect(cleanGeographicTargetMarkets(["Newfoundland and Labrador, Canada"])).toEqual(["Newfoundland and Labrador, Canada"]);
+  });
+
   it("stores one structured business location", () => {
     const location = { country: "Canada", stateProvince: "Ontario", city: "Toronto", streetAddress: "1 King St", postalCode: "M5H 1A1" };
     expect(locationIsComplete(location)).toBe(true);

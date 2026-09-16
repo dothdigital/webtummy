@@ -1,3 +1,5 @@
+import { websiteContext, normalizeWebsiteContext, websiteContextFields, websiteContextQuestions, missingWebsiteContext, websiteProjectFields, websiteAnalysisUrl, websitePlanningContext, type WebsiteContext } from "@webtummy/core/website-context";
+import { isOwnedDomainIntake } from "../intake-domain.js";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { Router } from "express";
@@ -275,6 +277,7 @@ function questionnaireProjectType(draft: Record<string, unknown>, storedProjectT
 
 function coreFieldAskedBy(message: string) {
   const normalized = message.toLocaleLowerCase();
+  for (const key of websiteContextFields) if (normalized.includes(websiteContextQuestions[key].split("?")[0].toLowerCase())) return key;
   if (normalized.includes("who is the main audience this project should attract")) return "targetAudience";
   if (normalized.includes("what does the business do and what problem does it solve")) return "businessDescription";
   if (normalized.includes("which main products or services should this project promote")) return "productsServices";
@@ -304,6 +307,14 @@ function typedAnswerForCoreField(field: string, answer: string) {
     .replace(/\b(\w+)(?:\s+\1\b)+/gi, "$1")
     .replace(/^(?:regarding|about)\s+(?:the\s+)?(?:audience|question)[,:;\s-]*/i, "")
     .trim();
+  if (field === "hasWebsite" || field === "hasDomain") {
+    if (/^(?:no|not yet|none)\b/i.test(cleaned)) return "no";
+    if (/^(?:yes|i do|we do)\b/i.test(cleaned)) return "yes";
+    return undefined;
+  }
+  if (field === "websiteIntent") return /replace|rebuild|redesign/i.test(cleaned) ? "replace" : /separate/i.test(cleaned) ? "separate" : /improve/i.test(cleaned) ? "improve" : undefined;
+  if (field === "replacementDomain") return /same/i.test(cleaned) ? "same" : /different|new/i.test(cleaned) ? "different" : undefined;
+  if (field === "existingWebsiteUrl" || field === "domainUrl") return typedAnswerForCoreField("websiteUrl", cleaned);
   if (cleaned.length < 3 || /^(?:help|suggest|show|explain|what do you mean|i don'?t know)\b/i.test(cleaned)) return undefined;
   if (field === "targetMarkets") {
     const markets = normalizedTargetMarkets(cleaned);
@@ -358,6 +369,7 @@ function normalizedKeywordValues(value: unknown, draft: Record<string, unknown>)
   }).map((item) => [item.toLocaleLowerCase(), item])).values()].slice(0, 30);
 }
 const mandatoryCoreQuestions: Record<string, { label: string; question: string }> = {
+  ...Object.fromEntries(websiteContextFields.map((key) => [key, { label: key, question: websiteContextQuestions[key] }])),
   businessDescription: { label: "business description", question: "In one or two sentences, what does the business do and what problem does it solve?" },
   targetAudience: { label: "target audience", question: "Who is the main audience this project should attract?" },
   productsServices: { label: "products or services", question: "Which actual products or services should this project promote? Enter the customer-facing service or product names the business truly provides." },
@@ -566,7 +578,7 @@ async function limitedCrawl(raw: string) { const requestedRoot = await safeUrl(r
 const fieldShape = `For every field return {"value": string|string[]|object|number|null, "confidence":"high|medium|low|unresolved", "reason":string, "evidence":string[], "inferred":boolean}. Score fields must be 0-100 AI estimates, never measured facts. Fields: ${aiIntakeSuggestionFields.join(", ")}.`;
 async function generate(input: { mode: string; workspaceType: string; contextType: string; source: unknown; model: string }) { const prompt = `Prepare review-only business intake suggestions for a ${input.workspaceType} workspace ${input.contextType}. ${fieldShape}\nRules: never invent claims, credentials, products, locations, technologies or competitors; mark inference; unresolved values must be null; concise language; target markets are geographic countries, provinces/states, regions, cities, or neighbourhoods only—never audiences, industries, services, or keywords; a business base is not automatically a target market; preserve confirmed known values instead of replacing them; return no more than five additional questions. Return {suggestions:{...},additionalQuestions:string[]}\nMode: ${input.mode}\nEvidence/input:\n${JSON.stringify(input.source).slice(0, 72_000)}`; let last: unknown; for (let attempt = 0; attempt < 2; attempt++) { try { const generated = await centralAiJson({ system: "You are the Central SEnuke AI - AI Growth Operating System Intake Service. Produce evidence-grounded, reviewable suggestions only.", prompt: attempt ? `${prompt}\nThe prior output failed validation. Return every required field exactly and no more than five additional questions.` : prompt, model: input.model, maxInputBytes: 80_000, maxOutputTokens: 6_000 }); const parsed = aiIntakeOutputSchema.parse(generated.result); const suggestions = sanitizeReviewSuggestions(parsed.suggestions); return { ...generated, result: { suggestions, additionalQuestions: canonicalReviewQuestions(suggestions) } }; } catch (error) { last = error; } } if (last instanceof z.ZodError) throw Object.assign(new Error("SEnuke AI returned an incomplete intake analysis twice. No client information was applied; retry the analysis."), { code: "ai_intake_output_invalid", statusCode: 502, publicMessage: true }); throw last; }
 
-async function runAnalysis(req: Parameters<typeof aiIntakeRouter.post>[1] extends never ? never : any, res: any, mode: "website" | "guided") { const parsed = requestSchema.parse(req.body ?? {}); const context = await workspaceContext(req); if (!hasWorkspacePermission(context, "run_ai_analysis")) throw Object.assign(new Error("AI assistance is unavailable for this role."), { statusCode: 403 }); if (context.roles.has("client_viewer")) throw Object.assign(new Error("Client Viewers cannot generate intake suggestions."), { statusCode: 403 }); if (mode === "website" && !parsed.websiteUrl) throw Object.assign(new Error("Enter a website URL before analysis."), { statusCode: 400 }); if (mode === "guided" && !Object.values(parsed.answers).some(Boolean) && !Object.values(parsed.knownInfo).some(Boolean)) throw Object.assign(new Error("Tell SEnuke AI - AI Growth Operating System a little about the business idea, offer, audience, location, or goal first."), { statusCode: 400 }); const clientId = context.workspace.legacyClientId; if (!clientId) throw Object.assign(new Error("Workspace billing context is required for AI assistance."), { statusCode: 409 });
+async function runAnalysis(req: Parameters<typeof aiIntakeRouter.post>[1] extends never ? never : any, res: any, mode: "website" | "guided") { const parsed = requestSchema.parse(req.body ?? {}); const context = await workspaceContext(req); if (!hasWorkspacePermission(context, "run_ai_analysis")) throw Object.assign(new Error("AI assistance is unavailable for this role."), { statusCode: 403 }); if (context.roles.has("client_viewer")) throw Object.assign(new Error("Client Viewers cannot generate intake suggestions."), { statusCode: 403 }); if (mode === "website" && parsed.contextType === "project" && !websiteAnalysisUrl({ websiteContextJson: parsed.knownInfo.websiteContextJson })) throw Object.assign(new Error("Confirm an existing live website before Site Analysis. A domain alone is not a website."), { statusCode: 400 }); if (mode === "website" && !parsed.websiteUrl) throw Object.assign(new Error("Enter a website URL before analysis."), { statusCode: 400 }); if (mode === "guided" && !Object.values(parsed.answers).some(Boolean) && !Object.values(parsed.knownInfo).some(Boolean)) throw Object.assign(new Error("Tell SEnuke AI - AI Growth Operating System a little about the business idea, offer, audience, location, or goal first."), { statusCode: 400 }); const clientId = context.workspace.legacyClientId; if (!clientId) throw Object.assign(new Error("Workspace billing context is required for AI assistance."), { statusCode: 409 });
   let crawl: Awaited<ReturnType<typeof limitedCrawl>> | null = null; if (mode === "website") crawl = await limitedCrawl(parsed.websiteUrl!); const domain = crawl?.root.hostname.toLowerCase() ?? null; if (domain && parsed.contextType === "client") { const clients = await prisma.agencyClient.findMany({ where: { workspaceId: context.workspace.id }, select: { id: true, name: true, websites: true } }); const match = clients.find((item) => Array.isArray(item.websites) && item.websites.some((site) => { try { return new URL(String(site)).hostname.toLowerCase() === domain; } catch { return false; } })); if (match) return res.status(409).json({ error: `${match.name} already uses ${domain}. Open the existing client instead of creating a duplicate.`, duplicateClient: match }); }
   const session = await prisma.workspaceAiIntakeSession.create({ data: { workspaceId: context.workspace.id, userId: context.membership.userId, contextType: parsed.contextType, mode, websiteUrl: crawl?.root.toString(), websiteDomain: domain, status: "running", inputJson: jsonInput({ knownInfo: parsed.knownInfo, answers: parsed.answers }), pagesAnalyzed: crawl?.pages.map((item) => item.url) ?? [] } }); await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "ai_intake.analysis_started", entityType: "ai_intake_session", entityId: session.id, nextJson: { mode, contextType: parsed.contextType, domain, startedAt: session.startedAt, pageLimit: 10 } })); let usageEventId: string | null = null;
   try { const plan = await prisma.client.findUnique({ where: { id: clientId }, select: { plan: true } }); const model = await modelForFeature("ai_assisted_intake", plan?.plan, config.openaiModel); const usage = await preflightUsage({ clientId, userId: context.membership.userId, featureKey: "ai_assisted_intake", actionKey: mode === "website" ? "Analyze Website with AI" : "Help Me Define This with AI", idempotencyKey: `ai-intake:${session.id}` }); usageEventId = usage.usageEventId; const generated = await generate({ mode, workspaceType: context.workspace.workspaceType, contextType: parsed.contextType, source: mode === "website" ? { knownInfo: parsed.knownInfo, pages: crawl!.pages } : { knownInfo: parsed.knownInfo, guidedAnswers: parsed.answers }, model }); const updated = await prisma.$transaction(async (tx) => { const row = await tx.workspaceAiIntakeSession.update({ where: { id: session.id }, data: { status: "completed", suggestionsJson: generated.result.suggestions, evidenceJson: { additionalQuestions: generated.result.additionalQuestions }, model: generated.model, completedAt: new Date() } }); await recordWorkspaceActivity(tx, { context, action: "ai_intake.suggestions_generated", entityType: "ai_intake_session", entityId: session.id, nextJson: { mode, domain, status: "completed", pagesAnalyzed: crawl?.pages.map((item) => item.url) ?? [], suggestedFields: Object.keys(generated.result.suggestions) } }); await createWorkspaceNotification(tx, { context, userId: context.membership.userId, type: "ai_intake_ready", title: "AI suggestions ready for review", body: mode === "website" ? `${domain} was analyzed using ${crawl?.pages.length ?? 0} limited public pages. Review every suggestion before applying it.` : "Your guided answers were analyzed. Review every suggestion before applying it.", actionUrl: null, emailEligible: false }); return row; }); await commitUsage({ usageEventId, provider: "openai", model: generated.model, inputTokens: generated.inputTokens, outputTokens: generated.outputTokens }); return res.status(201).json({ session: updated, suggestions: generated.result.suggestions, additionalQuestions: generated.result.additionalQuestions }); }
@@ -628,10 +640,12 @@ aiIntakeRouter.post(["/ai-intake/converse", "/ai-intake/business-discovery"], as
       const latestAssistantForWebsite = [...input.messages].reverse().find((message) => message.role === "assistant")?.text ?? "";
       const websiteWasAsked = coreFieldAskedBy(latestAssistantForWebsite) === "websiteUrl";
       const websiteAnswerThisTurn = typedAnswerForCoreField("websiteUrl", latestUserForWebsite);
+      const ownedDomainContext = isOwnedDomainIntake(String(input.draft.websiteStatus ?? project?.websiteStatus ?? ""), latestUserForWebsite);
       const submittedWebsiteUrl = typeof websiteAnswerThisTurn === "string" && websiteAnswerThisTurn !== NO_CURRENT_WEBSITE ? websiteAnswerThisTurn : "";
-      const effectiveWebsiteUrl = submittedWebsiteUrl || input.websiteUrl || (typeof input.draft.websiteUrl === "string" ? input.draft.websiteUrl.trim() : "");
+      const effectiveWebsiteUrl = websiteAnalysisUrl({ websiteContextJson: input.draft, primaryGoal: String(input.draft.primaryGoal || "") }) || "";
       const previouslyAnalyzedWebsiteUrl = typeof storedEvidence.websiteAnalysisUrl === "string" ? storedEvidence.websiteAnalysisUrl : "";
-      const shouldAnalyzeWebsite = Boolean(effectiveWebsiteUrl)
+      const confirmedAnalysisUrl = websiteAnalysisUrl({ websiteContextJson: input.draft, primaryGoal: String(input.draft.primaryGoal || "") });
+      const shouldAnalyzeWebsite = Boolean(confirmedAnalysisUrl) && !ownedDomainContext && Boolean(effectiveWebsiteUrl)
         && (input.analyzeWebsite || websiteWasAsked || Boolean(submittedWebsiteUrl))
         && effectiveWebsiteUrl !== previouslyAnalyzedWebsiteUrl;
       let websiteEvidence: unknown = null;
@@ -723,6 +737,7 @@ ${businessDiscoveryRules}
 - Suggestions are never confirmed data. Only add a suggested value to fieldUpdates after the user selects, repeats, edits, or clearly approves it.
 - Never ask for a field that already has a confirmed value in the structured draft or saved advanced answers unless the user asks to change it.
 - For select and multiselect fields, explain the choices briefly in the message and only capture values from the listed options. Do not invent extra options.
+- If the Primary Goal is "Not Sure — Help Me Decide", accept it as a valid single selection and use the business context and analysis to recommend an outcome with a short explanation. Do not repeatedly require a different goal or treat uncertainty as an error. Identify useful secondary goals during analysis for the strategy.
 - Do not set readyForReview until the project has a business description, audience, products/services, complete Business Location, at least one Target Market, one Primary Goal, and the user has considered Primary and Secondary Keywords. Secondary goals and secondary keywords may be explicitly confirmed as none.
 - Do not set readyForReview while any applicable required Advanced Setup field is missing.
 - readyForReview means the essential intake is complete and the user may finish the project. Unanswered optional Advanced Setup fields do not block completion.
@@ -737,6 +752,10 @@ ${businessDiscoveryRules}
 - Target Market suggestions must be named, researchable geographic places such as a city, neighbourhood name, region, province/state, or country. Never suggest vague labels such as “nearby neighbourhoods”, “surrounding areas”, “local communities”, or “other cities”. If the intended area is unknown, ask the user to name it.
 - Never say that a summary follows unless the message actually lists the current project details. A project summary must show labeled values for the available identity, niche, website, audience, offer, location, target markets, goals, competitors, and selected keywords.
 - Use these core field names whenever applicable: businessName, industryNiche, businessDescription, targetAudience, productsServices, businessLocation, streetAddress, targetMarkets, primaryGoal, secondaryGoals, primaryKeywords, secondaryKeywords, competitors, brandVoice, preferredOutputs, targetLaunchTimeline, websiteUrl, websiteStatus, clientProjectType.
+- Capture hasWebsite (yes/no) and hasDomain (yes/no) independently from explicit user statements. A domain/URL alone confirms neither a live website nor ownership. Never infer hasWebsite=yes from a URL, successful HTTP response, parking page, or an Existing Business choice.
+- Use existingWebsiteUrl for the confirmed current live website; domainUrl for the intended domain of this project. Ask whether a new website replaces the current site (websiteIntent=replace) or is separate (websiteIntent=separate). Use improve only when that is the confirmed goal; new when no website exists. Never change Build a New Website to improvement merely because an existing site exists.
+- For replacement, ask replacementDomain=same/different. For separate, the existing URL is an optional reference, not a crawl prerequisite or destination. For replace, current-site analysis informs migration, content preservation and redirects. Nothing replaces the live site until explicit launch approval.
+- Ask the missing website/domain facts one at a time using hasWebsite, existingWebsiteUrl, websiteIntent, replacementDomain, hasDomain, domainUrl. Reuse explicit answers from the conversation, but do not assume an answer from inherited defaults. Never mark intake complete with these questions unresolved.
 - websiteStatus must be exactly existing_website, new_website_required, website_planned, or no_website_required once confirmed. Never preserve undecided as a completed answer.
 - Use the exact snake_case key from the Advanced Setup field guide for advanced fieldUpdates.
 - Return JSON: {message,questionField,question,questionOptions,fieldUpdates:[{field,value,confidence,reason}],keywordSuggestions:{primary,secondary},missingFields,readyForReview}. questionField is the single core or Advanced Setup field being asked. question contains only the question. questionOptions contains 3-5 contextual selectable answers. Omit all three only when no question is asked.
@@ -763,7 +782,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       // analysis to exceed the browser deadline before anything was shown.
       const allowedPrimaryGoals = new Set<string>(primaryGoalsForWorkspace(input.workspaceType || context.workspace.workspaceType));
       const allowedSecondaryGoals = new Set<string>(standardSecondaryGoals);
-      const coreConversationFields = new Set(["businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "clientProjectType"]);
+      const coreConversationFields = new Set([...websiteContextFields, "businessName", "industryNiche", "businessDescription", "targetAudience", "productsServices", "businessLocation", "streetAddress", "targetMarkets", "primaryGoal", "secondaryGoals", "primaryKeywords", "secondaryKeywords", "competitors", "brandVoice", "preferredOutputs", "targetLaunchTimeline", "websiteUrl", "websiteStatus", "hasDomain", "clientProjectType"]);
       const applicableAdvancedByKey = new Map(applicableAdvancedFields.map((field) => [field.key, field]));
       for (let index = input.messages.length - 2; index >= 0; index -= 1) {
         const question = input.messages[index];
@@ -842,24 +861,20 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
         const value = Array.isArray(update.value) ? update.value.map(String).map((item) => item.trim()).filter(Boolean) : String(update.value ?? "").trim();
         return (Array.isArray(value) ? value.length : value) ? [{ ...update, value }] : [];
       }) };
-      if (submittedWebsiteUrl) {
-        output = {
-          ...output,
-          fieldUpdates: [
-            ...output.fieldUpdates.filter((update) => update.field !== "websiteUrl" && update.field !== "websiteStatus"),
-            { field: "websiteUrl", value: submittedWebsiteUrl, confidence: "high", reason: "Entered directly by the user and inspected as public website evidence." },
-            { field: "websiteStatus", value: "existing_website", confidence: "high", reason: "A public website URL was supplied directly by the user." },
-          ],
-        };
-      } else if (websiteWasAsked && websiteAnswerThisTurn === NO_CURRENT_WEBSITE) {
-        output = {
-          ...output,
-          fieldUpdates: [
-            ...output.fieldUpdates.filter((update) => update.field !== "websiteUrl" && update.field !== "websiteStatus"),
-            { field: "websiteStatus", value: "new_website_required", confidence: "high", reason: "The user confirmed that no current website exists." },
-          ],
-        };
+      // URLs never prove website existence. The explicit answers govern analysis and planning.
+      const websiteUpdates = Object.fromEntries(output.fieldUpdates.filter((update) => websiteContextFields.includes(update.field as keyof WebsiteContext)).map((update) => [update.field, update.value]));
+      if (submittedWebsiteUrl && !websiteUpdates.domainUrl && !websiteUpdates.existingWebsiteUrl) {
+        if (input.draft.hasWebsite === "yes" && websiteWasAsked) websiteUpdates.existingWebsiteUrl = submittedWebsiteUrl;
+        else websiteUpdates.domainUrl = submittedWebsiteUrl;
       }
+      if (websiteWasAsked && websiteAnswerThisTurn === NO_CURRENT_WEBSITE) websiteUpdates.hasWebsite = "no";
+      if (/\b(?:own|have|bought|registered|purchased)\b.{0,35}\bdomain\b/i.test(latestUserText) && !/\b(?:live|existing|current|running) website\b/i.test(latestUserText) && input.draft.hasWebsite !== "yes" && coreFieldAskedBy(latestAssistantText) !== "hasWebsite") { if (String(websiteUpdates.hasWebsite).toLowerCase() === "yes") delete websiteUpdates.hasWebsite; }
+      const nextWebsiteContext = normalizeWebsiteContext({ ...websiteContext(project || {}), ...input.draft, ...websiteUpdates }, String(output.fieldUpdates.find((update) => update.field === "primaryGoal")?.value || input.draft.primaryGoal || ""));
+      const derivedWebsite = websiteProjectFields(nextWebsiteContext, String(output.fieldUpdates.find((update) => update.field === "primaryGoal")?.value || input.draft.primaryGoal || ""), String(output.fieldUpdates.find((update) => update.field === "websiteStatus" && ["no_website_required", "website_planned"].includes(String(update.value)))?.value || input.draft.websiteStatus || ""));
+      output.fieldUpdates = [
+        ...output.fieldUpdates.filter((update) => ![...websiteContextFields, "websiteStatus", "websiteUrl"].includes(update.field)),
+        ...Object.entries({ ...nextWebsiteContext, websiteStatus: derivedWebsite.websiteStatus, websiteUrl: derivedWebsite.websiteUrl || "" }).map(([field, value]) => ({ field, value, confidence: "high" as const, reason: "Website existence, domain ownership, and build intent are recorded separately." })),
+      ];
       const draftAdvanced = input.draft.advancedIntake && typeof input.draft.advancedIntake === "object" && !Array.isArray(input.draft.advancedIntake) ? input.draft.advancedIntake as Record<string, unknown> : {};
       const advancedUpdates = new Map(output.fieldUpdates.filter((update) => applicableAdvancedByKey.has(update.field)).map((update) => [update.field, update.value]));
       const nextAdvancedIntake: Record<string, unknown> = { ...savedAdvancedAnswers, ...draftAdvanced, ...Object.fromEntries(advancedUpdates) };
@@ -875,7 +890,7 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const completeLocation = Boolean(coreLocation && typeof coreLocation === "object" && !Array.isArray(coreLocation) && String((coreLocation as Record<string, unknown>).country ?? "").trim() && String((coreLocation as Record<string, unknown>).stateProvince ?? "").trim() && String((coreLocation as Record<string, unknown>).city ?? "").trim());
       const requiredCoreFields = [
         ["businessDescription", hasValue(coreValue("businessDescription"))], ["targetAudience", hasValue(coreValue("targetAudience"))], ["productsServices", hasValue(coreValue("productsServices"))],
-        ["businessLocation", completeLocation], ["targetMarkets", hasValue(coreValue("targetMarkets"))], ["primaryGoal", hasValue(coreValue("primaryGoal"))], ["preferredOutputs", hasValue(coreValue("preferredOutputs"))], ["websiteStatus", hasValue(coreValue("websiteStatus")) && coreValue("websiteStatus") !== "undecided"], ["websiteUrl", coreValue("websiteStatus") !== "existing_website" || hasValue(coreValue("websiteUrl"))],
+        ["businessLocation", completeLocation], ["targetMarkets", hasValue(coreValue("targetMarkets"))], ["primaryGoal", hasValue(coreValue("primaryGoal"))], ["preferredOutputs", hasValue(coreValue("preferredOutputs"))],
       ] as const;
       const missingRequiredCore = requiredCoreFields.filter(([, complete]) => !complete).map(([field]) => field);
       const missingRequiredAdvanced = applicableAdvancedFields.filter((field) => field.required && !hasValue(advancedUpdates.get(field.key) ?? draftAdvanced[field.key] ?? savedAdvancedAnswers[field.key])).map((field) => field.key);
@@ -890,13 +905,13 @@ Recent conversation window: ${JSON.stringify(input.messages.slice(-30)).slice(0,
       const competitorsConsidered = hasValue(coreValue("competitors")) || /(?:no|none|skip|unknown|not applicable).{0,30}(?:known )?competitors?|(?:known )?competitors?.{0,30}(?:no|none|skip|unknown|not applicable)/i.test(conversationText);
       const primaryKeywordsConsidered = hasValue(coreValue("primaryKeywords")) || /(?:no|none|skip|later|not applicable).{0,30}(?:primary )?keywords?|(?:primary )?keywords?.{0,30}(?:no|none|skip|later|not applicable)/i.test(conversationText);
       const secondaryKeywordsConsidered = hasValue(coreValue("secondaryKeywords")) || /(?:no|none|skip|later|not applicable).{0,30}secondary keywords?|secondary keywords?.{0,30}(?:no|none|skip|later|not applicable)/i.test(conversationText);
-      const earlyWebsiteQuestion = businessDiscovery
+      const earlyWebsiteQuestion = false && businessDiscovery
         && requestCount <= 1
         && !initialBusinessNarrativeHasDetail(input.messages)
         && !hasValue(coreValue("websiteUrl"))
         && !hasValue(coreValue("websiteStatus"));
       const missingMandatory = [...new Set([
-        ...(earlyWebsiteQuestion ? ["websiteUrl"] : []),
+        ...missingWebsiteContext(nextWebsiteContext, String(coreValue("primaryGoal") || "")),
         ...missingRequiredCore,
         ...(!secondaryGoalsConsidered ? ["secondaryGoals"] : []),
         ...(!competitorsConsidered ? ["competitors"] : []),
@@ -996,13 +1011,14 @@ AI keyword directions: ${JSON.stringify(semanticKeywordSuggestions).slice(0, 10_
           message: "Project intake complete. Every required and applicable Advanced Setup question has been answered. Review the captured project data, make any final edits, then confirm and complete the project.",
         };
       }
+      const pendingWebsiteField = missingWebsiteContext(nextWebsiteContext, String(coreValue("primaryGoal") || ""))[0];
+      if (pendingWebsiteField) output = { ...output, readyForReview: false, questionField: pendingWebsiteField, question: websiteContextQuestions[pendingWebsiteField], questionOptions: pendingWebsiteField === "hasWebsite" || pendingWebsiteField === "hasDomain" ? ["Yes", "No"] : pendingWebsiteField === "websiteIntent" ? ["Replace", "Separate", ...(String(coreValue("primaryGoal")) === "Build a New Website" ? [] : ["Improve"])] : pendingWebsiteField === "replacementDomain" ? ["Same", "Different"] : [], message: websiteContextQuestions[pendingWebsiteField] };
       await commitUsage({ usageEventId: usage.usageEventId, provider: "openai", model: generated.model, inputTokens: totalInputTokens, outputTokens: totalOutputTokens });
       const requestNumber = requestCount + 1;
       const latestUserMessage = { ...input.messages.at(-1)!, requestNumber, usageEventId: usage.usageEventId };
       const transcript = dedupeConversationMessages([...storedMessages, latestUserMessage, { role: "assistant" as const, text: output.message, requestNumber, usageEventId: usage.usageEventId }]).slice(-250);
       const storedCoreUpdates = Object.fromEntries(output.fieldUpdates.filter((update) => coreConversationFields.has(update.field)).map((update) => [update.field, update.value]));
-      const nextStoredWebsiteStatus = typeof storedCoreUpdates.websiteStatus === "string" ? storedCoreUpdates.websiteStatus : undefined;
-      const nextStoredDraft = { ...input.draft, targetMarkets: safeDraftMarkets, ...storedCoreUpdates, ...(nextStoredWebsiteStatus && nextStoredWebsiteStatus !== "existing_website" ? { websiteUrl: "" } : {}), ...(storedCoreUpdates.industryNiche ? { serviceType: storedCoreUpdates.industryNiche } : {}), advancedIntake: nextAdvancedIntake };
+      const nextStoredDraft = { ...input.draft, targetMarkets: safeDraftMarkets, ...storedCoreUpdates, websiteContextJson: nextWebsiteContext, ...(storedCoreUpdates.industryNiche ? { serviceType: storedCoreUpdates.industryNiche } : {}), advancedIntake: nextAdvancedIntake };
       await prisma.$transaction(async (tx) => {
         await tx.workspaceAiIntakeSession.update({ where: { id: conversationSession.id }, data: {
           status: "active",
@@ -1024,6 +1040,7 @@ AI keyword directions: ${JSON.stringify(semanticKeywordSuggestions).slice(0, 10_
           model: generated.model,
         } });
         if (project) {
+          await tx.project.update({ where: { id: project.id }, data: { ...derivedWebsite, websiteContextJson: nextWebsiteContext } });
           const updates = new Map(output.fieldUpdates.map((item) => [item.field, item.value]));
           const stringValue = (field: string) => typeof updates.get(field) === "string" ? String(updates.get(field)).trim() : undefined;
           const arrayValue = (field: string) => Array.isArray(updates.get(field)) ? (updates.get(field) as unknown[]).map(String).map((item) => item.trim()).filter(Boolean) : undefined;
@@ -1035,7 +1052,8 @@ AI keyword directions: ${JSON.stringify(semanticKeywordSuggestions).slice(0, 10_
           await tx.project.update({ where: { id: project.id }, data: {
             ...(stringValue("businessName") ? { businessName: stringValue("businessName") } : {}),
             ...(stringValue("industryNiche") ? { niche: stringValue("industryNiche") } : {}), ...(stringValue("websiteUrl") ? { websiteUrl: stringValue("websiteUrl") } : {}),
-            ...(stringValue("websiteStatus") ? { websiteStatus: stringValue("websiteStatus"), ...(stringValue("websiteStatus") !== "existing_website" ? { websiteUrl: null } : {}) } : {}), ...(formattedLocation ? { businessLocation: formattedLocation, businessLocationJson: locationJson as Prisma.InputJsonValue } : {}),
+
+            ...(stringValue("websiteStatus") ? { websiteStatus: stringValue("websiteStatus") } : {}), ...(formattedLocation ? { businessLocation: formattedLocation, businessLocationJson: locationJson as Prisma.InputJsonValue } : {}),
             ...(arrayValue("targetMarkets") ? { targetLocations: arrayValue("targetMarkets"), targetLocation: arrayValue("targetMarkets")!.join(", ").slice(0, 180) } : {}),
             ...(stringValue("primaryGoal") ? { primaryGoal: stringValue("primaryGoal") } : {}), ...(arrayValue("secondaryGoals") ? { secondaryGoals: arrayValue("secondaryGoals") } : {}),
             ...(arrayValue("competitors") ? { competitors: arrayValue("competitors") } : {}), ...(stringValue("brandVoice") ? { brandVoice: stringValue("brandVoice") } : {}),
@@ -1164,11 +1182,12 @@ aiIntakeRouter.post("/ai-intake/project-launch/:projectId/research", async (req,
     if (!project) return res.status(404).json({ error: "Project draft not found." });
     const draft = input.draft;
     const websiteUrl = String(draft.websiteUrl ?? project.websiteUrl ?? "").trim();
-    const websiteStatus = String(draft.websiteStatus ?? project.websiteStatus ?? (websiteUrl ? "existing_website" : "new_website_required"));
-    let websiteEvidence: Record<string, unknown> = { status: websiteStatus, url: websiteUrl || null, pages: [] };
-    if (websiteStatus === "existing_website" && websiteUrl) {
+    const websiteStatus = String(draft.websiteStatus ?? project.websiteStatus ?? "undecided");
+    const analysisUrl = websiteAnalysisUrl({ ...project, websiteContextJson: draft.websiteContextJson || (draft.hasWebsite ? draft : project.websiteContextJson) });
+    let websiteEvidence: Record<string, unknown> = { status: websiteStatus, url: analysisUrl, websiteContext: websitePlanningContext({ ...project, websiteContextJson: draft.websiteContextJson || (draft.hasWebsite ? draft : project.websiteContextJson) }), pages: [] };
+    if (analysisUrl) {
       try {
-        const crawl = await limitedCrawl(websiteUrl);
+        const crawl = await limitedCrawl(analysisUrl);
         websiteEvidence = { status: websiteStatus, url: crawl.root.toString(), pages: crawl.pages };
       } catch (error) {
         websiteEvidence = { status: websiteStatus, url: websiteUrl, pages: [], unavailable: true, reason: error instanceof Error ? error.message : "Website research was unavailable." };

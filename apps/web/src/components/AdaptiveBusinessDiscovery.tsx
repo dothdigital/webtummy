@@ -1,3 +1,5 @@
+import WebsiteSituationFields from "./WebsiteSituationFields.js";
+import { emptyWebsiteContext, type WebsiteContext } from "@webtummy/core/website-context";
 import { formatDisplayDate } from "@webtummy/core/display-date";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -48,7 +50,7 @@ export type DiscoveryDraft = {
 
 type Client = { id: string; name: string };
 
-type AnswerValues = {
+type AnswerValues = WebsiteContext & {
   main: string;
   businessType: string;
   help: string;
@@ -59,6 +61,7 @@ type AnswerValues = {
 };
 
 const emptyAnswers: AnswerValues = {
+  ...emptyWebsiteContext,
   main: "",
   businessType: "",
   help: "",
@@ -709,24 +712,7 @@ export default function AdaptiveBusinessDiscovery({ draft, isAgency, clients, on
                   <span className="mt-1 block text-[10px] leading-4 text-slate-400">This guides the business model. It does not require a location unless the direction is local.</span>
                 </label>
               </div>
-              {current.startPath === "EXISTING_BUSINESS" && (
-                <label className="block">
-                  <span className="mb-1 block text-sm font-bold">
-                    Website, store or profile link <i className="font-normal text-slate-400">Optional</i>
-                  </span>
-                  <input
-                    value={answers.websiteOrProfile}
-                    onChange={(event) =>
-                      setAnswers((value) => ({
-                        ...value,
-                        websiteOrProfile: event.target.value,
-                      }))
-                    }
-                    className="h-11 w-full rounded-xl border px-3 text-sm"
-                    placeholder="https://… or Skip for now"
-                  />
-                </label>
-              )}
+              <WebsiteSituationFields value={{ ...answers, primaryGoal: String((current.aiSummaryJson as Record<string, unknown> | null)?.primaryGoal || "Build a New Website") }} onChange={(change) => setAnswers((value) => ({ ...value, ...change }))} />
               <div className="flex flex-wrap items-center justify-between gap-3 border-t pt-5">
                 <p className="text-xs text-slate-500">Your input autosaves and appears under Projects → Drafts. You can leave and resume it there.</p>
                 <Button onClick={() => void generate()} disabled={!canGenerate || Boolean(busy) || listening}>

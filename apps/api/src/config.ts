@@ -85,6 +85,7 @@ export const config = {
   googleBusinessProfileClientId: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_ID ?? "",
   googleBusinessProfileClientSecret: process.env.GOOGLE_BUSINESS_PROFILE_CLIENT_SECRET ?? "",
   googleBusinessProfileWritesEnabled: process.env.GOOGLE_BUSINESS_PROFILE_WRITES_ENABLED?.toLowerCase() === "true",
+  jvzooActivationRemindersEnabled: process.env.JVZOO_ACTIVATION_REMINDERS_ENABLED !== "false",
   jvzooSecretKey: process.env.JVZOO_SECRET_KEY ?? "",
   jvzooValidatePaymentTotal: process.env.JVZOO_VALIDATE_PAYMENT_TOTAL !== "false",
   jvzooPreviousSecretKey: process.env.JVZOO_PREVIOUS_SECRET_KEY ?? "",
@@ -99,9 +100,6 @@ export const config = {
   defaultMaxDepth: process.env.CRAWL_DEFAULT_MAX_DEPTH
     ? parseInt(process.env.CRAWL_DEFAULT_MAX_DEPTH, 10)
     : 10,
-  keywordResearchBatchMaxChecks: process.env.KEYWORD_RESEARCH_BATCH_MAX_CHECKS
-    ? parseInt(process.env.KEYWORD_RESEARCH_BATCH_MAX_CHECKS, 10)
-    : 100,
   keywordResearchProjectActiveLimit: process.env.KEYWORD_RESEARCH_PROJECT_ACTIVE_LIMIT
     ? parseInt(process.env.KEYWORD_RESEARCH_PROJECT_ACTIVE_LIMIT, 10)
     : 120,

@@ -11,7 +11,14 @@ export type SenukeFieldGuideContent = {
   options?: SenukeFieldGuideOption[];
 };
 
+export const targetTimelineGuidance = {
+  meaning: "When you would like the project’s first deliverables ready or the website or campaign launched.",
+  whatToEnter: "Enter a timeframe or target date, such as 2 weeks, 30 days, or by 1 December 2026. If you have no deadline, enter Flexible or Not sure — help me plan.",
+  usedFor: "Helps SEnuke AI prioritize recommendations and sequence work around your preferred delivery window. You can update it later; it is a planning target, not a guarantee of rankings, leads, or sales by that date.",
+};
+
 const fieldKnowledge: Record<string, Pick<SenukeFieldGuideContent, "meaning" | "whatToEnter" | "usedFor">> = {
+  target_launch_timeline: targetTimelineGuidance,
   project_name: { meaning: "The internal campaign name used throughout the workspace.", whatToEnter: "Use a short, recognizable name that the team and client will understand.", usedFor: "Project navigation, reports, tasks, notifications, approvals, and activity history." },
   business_name: { meaning: "The public name of the business represented by this project or client.", whatToEnter: "Use the official customer-facing business name.", usedFor: "Generated content, reports, proposals, business identity, and local signals." },
   website_url: { meaning: "The primary website connected to this work.", whatToEnter: "Enter the full live URL, including https://. It is required for an Existing Website.", usedFor: "Site Analysis, page mapping, keyword gaps, technical findings, publishing, and reporting." },
@@ -52,6 +59,7 @@ const optionMeaning: Record<string, string> = {
 export function normalizeFieldGuideKey(label: string) {
   const normalized = label.toLowerCase().replace(/\([^)]*\)/g, "").replace(/\*/g, "").replace(/[^a-z0-9]+/g, "_").replace(/^_|_$/g, "");
   const aliases: Record<string, string> = {
+    target_timeline: "target_launch_timeline", targetlaunchtimeline: "target_launch_timeline", timeline: "target_launch_timeline",
     project_name: "project_name", business_name: "business_name", contact_name: "client_name", email_address: "client_email",
     website_url: "website_url", industry_niche: "industry_niche", business_location: "business_location", target_markets: "target_location",
     primary_business_goal: "primary_goal", business_description: "business_description", target_audience: "target_audience",

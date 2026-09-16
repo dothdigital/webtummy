@@ -1,3 +1,4 @@
+import { FixedTermAccessNotice } from "./FixedTermAccessNotice.js";
 // App shell: light mockup-aligned sidebar + topbar, responsive.
 import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -752,11 +753,13 @@ export default function Layout({ children }: { children: ReactNode }) {
       return;
     }
     let cancelled = false;
-    api.get<BillingStatus>("/api/billing/status")
+    const refresh = () => api.get<BillingStatus>("/api/billing/status")
       .then((status) => { if (!cancelled) setBillingStatus(status); })
-      .catch(() => { if (!cancelled) setBillingStatus(null); });
-    return () => { cancelled = true; };
-  }, [user]);
+      .catch(() => { /* Keep the last known access restriction if refresh fails. */ });
+    void refresh();
+    const interval = window.setInterval(() => void refresh(), 30_000);
+    return () => { cancelled = true; window.clearInterval(interval); };
+  }, [user, location.pathname]);
 
   useEffect(() => {
     if (!user || user.role === "super_admin" || workspacePermissions.view_notifications !== true) { setUnreadNotifications(0); return; }
@@ -980,7 +983,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             <span className="font-medium">Manual access is active until {billingStatus.manualAccessEndsAt ? new Date(billingStatus.manualAccessEndsAt).toLocaleDateString() : "the date set by your administrator"}. No billing action is required.</span>
           </div>
         )}
-        {billingStatus && !billingStatus.hasAccess && user?.role !== "super_admin" && !["/pricing", "/billing"].includes(location.pathname) && (
+        {billingStatus && !billingStatus.fixedTermAccess && !billingStatus.hasAccess && user?.role !== "super_admin" && !["/pricing", "/billing"].includes(location.pathname) && (
           <section className="border-b border-red-200 bg-red-50 px-4 py-4 lg:px-8">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
               <div>
@@ -994,7 +997,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         )}
         {workflowGuidance?.workflow && workflowGuidance?.project && <ProjectWorkflowGuidance workflow={workflowGuidance.workflow} project={workflowGuidance.project} />}
         <main className="min-w-0 flex-1 overflow-x-hidden px-4 pb-4 pt-16 lg:p-8">
-          <ProjectScopeGate
+          {billingStatus?.fixedTermAccess?.expired && !["/pricing", "/billing"].includes(location.pathname) ? <FixedTermAccessNotice access={billingStatus.fixedTermAccess} /> : <ProjectScopeGate
             required={isProjectScopedPath(location.pathname)}
             projectId={new URLSearchParams(location.search).get("projectId") || activeProjectId}
             moduleLabel={nav.find((item) => item.to === location.pathname)?.label ?? "this module"}
@@ -1005,7 +1008,7 @@ export default function Layout({ children }: { children: ReactNode }) {
             }}
           >
             {children}
-          </ProjectScopeGate>
+          </ProjectScopeGate>}
         </main>
         <Footer />
       </div>

@@ -270,6 +270,7 @@ export interface GuidedProject {
   name: string;
   projectType: "new_business" | "existing_website" | "local_seo" | "agency_client" | "ecommerce" | string;
   websiteStatus?: string;
+  websiteContextJson?: (import("@webtummy/core/website-context").WebsiteContext & { launchedWebsiteUrl?: string; launchedAt?: string }) | null;
   status: string;
   currentStep: string;
   businessName: string | null;
@@ -1370,6 +1371,7 @@ export interface BillingInvoice {
 }
 
 export interface BillingStatus {
+  fixedTermAccess?: { expired: boolean; endsAt: string | null; upgrade: { priceId: string; name: string; amountCents: number; currency: string; monthlyAiCapacity: number } | null } | null;
   plan: BillingPlan | null;
   status: string;
   hasAccess: boolean;

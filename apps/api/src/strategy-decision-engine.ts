@@ -1,7 +1,9 @@
+import { growthCategory, goalAlignment } from "@webtummy/core/growth-categories";
+import { scoreGrowthOpportunity } from "./growth-intelligence-engine.js";
 import type { UnifiedStrategyPlan } from "./strategy-ai.js";
 import { isCompletedWebsiteLaunchFoundationAction } from "./completed-work.js";
 
-export const STRATEGY_DECISION_ENGINE_VERSION = "dev-047-part2-v1";
+export const STRATEGY_DECISION_ENGINE_VERSION = "growth-business-outcomes-v2";
 
 export type DecisionEvidenceType = "measured" | "verified_project_data" | "inferred";
 export type DecisionEffort = "low" | "medium" | "high";
@@ -30,6 +32,8 @@ export type StrategyDecisionCandidate = {
   expectedImpact: string;
   impact: number;
   goalAlignment: number;
+  cost?: number | null;
+  timeToResultsDays?: number | null;
   urgency: number;
   effort: DecisionEffort;
   actions: string[];
@@ -109,6 +113,8 @@ export type StrategyDecisionSet = {
     scoreComponents: StrategyDecisionRecord["confidenceComponents"] & {
       impact: number;
       goalAlignment: number;
+      cost?: number | null;
+      timeToResultsDays?: number | null;
       urgency: number;
       effort: DecisionEffort;
       priorityScore: number;
@@ -124,6 +130,8 @@ export type StrategyDecisionSet = {
 };
 
 export type ExternalRecommendation = {
+  cost?: number | null;
+  timeToResultsDays?: number | null;
   analysisKey?: string;
   key?: string;
   title?: string;
@@ -228,7 +236,8 @@ function confidenceLabel(score: number): "High" | "Medium" | "Low" {
 }
 
 export function calculateStrategyDecisionConfidence(candidate: StrategyDecisionCandidate, workflow: WorkflowConfidenceInput) {
-  const independentEvidence = unique(candidate.evidence).length;
+  // Narrative strings do not prove independent sources or sample size.
+  const independentEvidence = candidate.evidence.length ? 1 : 0;
   const independentSignals = clamp(Math.min(100, independentEvidence * 18 + workflow.independentSignals * 8));
   const providerValidationQuality = candidate.evidenceType === "measured" ? 95 : candidate.evidenceType === "verified_project_data" ? 82 : 52;
   const sampleQuality = candidate.evidenceType === "measured" ? clamp(70 + Math.min(25, independentEvidence * 5)) : candidate.evidenceType === "verified_project_data" ? clamp(55 + Math.min(25, independentEvidence * 5)) : 40;
@@ -272,8 +281,11 @@ export function calculateStrategyDecisionConfidence(candidate: StrategyDecisionC
 }
 
 export function scoreStrategyDecisionCandidate(candidate: StrategyDecisionCandidate, confidence: number) {
-  const effortFactor = candidate.effort === "low" ? 0.78 : candidate.effort === "high" ? 1.28 : 1;
-  return clamp((candidate.impact * (confidence / 100) * (candidate.goalAlignment / 100) * (candidate.urgency / 100)) / effortFactor);
+  return scoreGrowthOpportunity({ impact: candidate.impact, confidence, goalAlignment: candidate.goalAlignment,
+    urgency: candidate.urgency, reach: 50, learningValue: 50,
+    ease: candidate.effort === "low" ? 90 : candidate.effort === "high" ? 40 : 65,
+    readiness: candidate.dependencies.length ? 30 : 100, risk: 10,
+    cost: candidate.cost, timeToResultsDays: candidate.timeToResultsDays });
 }
 
 function candidateFromFunnel(step: NonNullable<UnifiedStrategyPlan["growthFunnel"]>["steps"][number], objective: string, projectId: string): StrategyDecisionCandidate {
@@ -288,8 +300,10 @@ function candidateFromFunnel(step: NonNullable<UnifiedStrategyPlan["growthFunnel
     evidence: unique(step.sourceSignals),
     evidenceType: evidenceType(step.evidenceType),
     expectedImpact: step.expectedImpact,
+    cost: step.cost ?? null,
+    timeToResultsDays: step.timeToResultsDays ?? null,
     impact: clamp(step.impactScore ?? 70),
-    goalAlignment: 94,
+    goalAlignment: goalAlignment(objective, growthCategory(`${step.key} ${step.title}`)),
     urgency: urgencyFrom(step.executionHorizon, "high"),
     effort: step.effort,
     actions: unique([step.recommendedAction, ...step.details]),
@@ -316,10 +330,12 @@ function candidateFromFocus(area: UnifiedStrategyPlan["focusAreas"][number], obj
     problemOrOpportunity: area.objective,
     whyNow: area.whyNow,
     evidence: unique(area.evidence),
-    evidenceType: "verified_project_data",
+    evidenceType: "inferred",
     expectedImpact: area.successMeasures.join("; "),
+    cost: area.cost ?? null,
+    timeToResultsDays: area.timeToResultsDays ?? null,
     impact: area.priority === "critical" ? 94 : area.priority === "high" ? 84 : area.priority === "low" ? 58 : 72,
-    goalAlignment: 92,
+    goalAlignment: goalAlignment(objective, growthCategory(`${area.key} ${area.title}`)),
     urgency: urgencyFrom(undefined, area.priority),
     effort: area.dependencies.length > 4 ? "high" : area.dependencies.length > 1 ? "medium" : "low",
     actions: unique(area.actions),
@@ -350,8 +366,10 @@ function candidateFromExternal(item: ExternalRecommendation, objective: string, 
     evidence: unique(strings(item.evidence)),
     evidenceType: evidenceType(item.evidenceType),
     expectedImpact: item.expectedImpact ?? "Potential improvement against the approved business objective; confirm against a recorded baseline.",
+    cost: item.cost ?? null,
+    timeToResultsDays: item.timeToResultsDays ?? null,
     impact: clamp(item.impact ?? 70),
-    goalAlignment: 86,
+    goalAlignment: goalAlignment(objective, growthCategory(`${key} ${item.title}`)),
     urgency: urgencyFrom(item.timeHorizon, item.priority),
     effort: effort(item.effort),
     actions: unique(item.actions ?? [item.title]),
@@ -383,14 +401,14 @@ function candidateValidation(candidate: StrategyDecisionCandidate) {
   return failures;
 }
 
-export function generateStrategyDecisionCandidates(input: { projectId: string; plan: UnifiedStrategyPlan; externalRecommendations?: ExternalRecommendation[]; completionState?: { websiteLaunched: boolean; websitePlanApproved: boolean } }) {
-  const primaryObjective = input.plan.objectives[0] ?? input.plan.positioning.offer;
+export function generateStrategyDecisionCandidates(input: { projectId: string; primaryGoal?: string | null; plan: UnifiedStrategyPlan; externalRecommendations?: ExternalRecommendation[]; completionState?: { websiteLaunched: boolean; websitePlanApproved: boolean } }) {
+  const primaryObjective = input.primaryGoal || input.plan.objectives[0] || input.plan.positioning.offer;
   const candidates = [
     ...(input.plan.growthFunnel?.steps ?? []).map((step) => candidateFromFunnel(step, primaryObjective, input.projectId)),
     ...input.plan.focusAreas.map((area) => candidateFromFocus(area, primaryObjective, input.projectId)),
     ...(input.externalRecommendations ?? []).map((item) => candidateFromExternal(item, primaryObjective, input.projectId)).filter((item): item is StrategyDecisionCandidate => Boolean(item)),
   ];
-  const deduped = [...new Map(candidates.map((candidate) => [`${candidate.analysisKey}:${candidate.title.toLowerCase()}`, candidate])).values()];
+  const deduped = [...new Map(candidates.map((candidate) => [candidate.title.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(), candidate])).values()];
   const invalidCandidates = deduped.flatMap((candidate) => {
     if (input.completionState && isCompletedWebsiteLaunchFoundationAction(candidate, input.completionState)) {
       return [{ key: candidate.analysisKey, reason: "The approved Website Plan and canonical website foundation are already published." }];
@@ -427,6 +445,7 @@ export function selectStrategyNextBestAction(decisions: StrategyDecisionRecord[]
 
 export function buildStrategyDecisionSet(input: {
   projectId: string;
+  primaryGoal?: string | null;
   workspaceId?: string | null;
   modelPipelineReference?: string;
   approval?: { status: "pending" | "approved" | "rejected"; decidedAt?: string | null; decidedBy?: string | null };
@@ -438,24 +457,33 @@ export function buildStrategyDecisionSet(input: {
   completionState?: { websiteLaunched: boolean; websitePlanApproved: boolean };
 }): StrategyDecisionSet {
   const { validCandidates, invalidCandidates } = generateStrategyDecisionCandidates(input);
+  if (validCandidates.length && validCandidates.every((candidate) => candidate.dependencies.length)) {
+    const blocked = [...validCandidates].sort((a, b) => b.impact * b.goalAlignment - a.impact * a.goalAlignment)[0];
+    validCandidates.push({ ...blocked, analysisKey: "resolve_growth_dependencies", title: "Resolve prerequisites for the business priority",
+      problemOrOpportunity: blocked.dependencies.join("; "), whyNow: "All supported opportunities have unresolved prerequisites.",
+      expectedImpact: "Makes the highest-value supported business opportunity ready for implementation.",
+      actions: blocked.dependencies.map((dependency) => `Verify and resolve: ${dependency}`), dependencies: [],
+      evidenceType: "inferred", destination: "execution_plan", destinationUrl: destinationUrl("execution_plan", input.projectId),
+      successMeasure: "Each prerequisite has documented completion evidence before dependent work starts." });
+  }
   const ranked = validCandidates.map((candidate) => {
     const calculatedConfidence = calculateStrategyDecisionConfidence(candidate, input.workflowConfidence);
     const score = scoreStrategyDecisionCandidate(candidate, calculatedConfidence.score);
     return { candidate, confidence: calculatedConfidence, score };
-  }).sort((left, right) => right.score - left.score || right.candidate.impact - left.candidate.impact);
+  }).sort((left, right) => Number(Boolean(left.candidate.dependencies.length)) - Number(Boolean(right.candidate.dependencies.length)) || right.score - left.score || right.candidate.impact - left.candidate.impact);
 
   if (!ranked.length) throw new Error("Strategy Decision Engine received no valid candidate actions.");
 
   const decisions: StrategyDecisionRecord[] = ranked.map(({ candidate, confidence, score }, index) => {
     const selected = index === 0;
-    const disposition = selected ? "selected" : index < Math.min(12, ranked.length) ? "queued" : "deferred";
+    const disposition = selected ? "selected" : candidate.dependencies.length ? "deferred" : index < Math.min(12, ranked.length) ? "queued" : "deferred";
     const reasonNotSelected = selected ? null : disposition === "queued"
       ? `Ranked behind the current Next Best Action because its business-value score is ${score}/100 versus ${ranked[0].score}/100. It remains eligible in the approved Execution Plan.`
       : "Deferred until higher-value or prerequisite work is completed and new evidence is measured.";
     return {
       ...candidate,
       key: candidate.analysisKey,
-      why: candidate.problemOrOpportunity,
+      why: selected ? `${candidate.problemOrOpportunity} Selected from ${ranked.length} applicable business actions for ${candidate.businessObjective}, with a business-value score of ${score}/100 after comparing impact, evidence, goal fit, effort, cost, timing and dependencies.${growthCategory(`${candidate.analysisKey} ${candidate.title}`) === "search" ? " Search and AI visibility are the supported methods for this priority; no additional category was added without evidence." : ""}` : candidate.problemOrOpportunity,
       applicable: true,
       selected,
       disposition,
@@ -479,7 +507,7 @@ export function buildStrategyDecisionSet(input: {
     businessBrainVersion: input.businessBrainVersion,
     evidenceVersion: input.evidenceVersion,
     generatedAt,
-    formula: "Priority = Impact × Confidence × Goal Alignment × Urgency ÷ Effort",
+    formula: "Eligible business value compares impact, goal fit, evidence, effort, cost, timing and dependency readiness; unknown cost and timing receive explicit uncertainty penalties.",
     nextBestActionKey: nextBestAction.key,
     nextBestAction,
     decisions,
@@ -498,6 +526,8 @@ export function buildStrategyDecisionSet(input: {
         ...nextBestAction.confidenceComponents,
         impact: nextBestAction.impact,
         goalAlignment: nextBestAction.goalAlignment,
+        cost: nextBestAction.cost ?? null,
+        timeToResultsDays: nextBestAction.timeToResultsDays ?? null,
         urgency: nextBestAction.urgency,
         effort: nextBestAction.effort,
         priorityScore: nextBestAction.priorityScore,

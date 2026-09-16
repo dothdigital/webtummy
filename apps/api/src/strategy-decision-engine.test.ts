@@ -89,3 +89,26 @@ describe("DEV-047 Strategy Decision Engine", () => {
     ]));
   });
 });
+
+it.each([
+  ["Generate More Qualified Leads", "lead_capture", "Increase qualified enquiries"],
+  ["Increase Sales and Revenue", "checkout", "Recover lost checkout sales"],
+  ["Improve Local Visibility", "local_reputation", "Improve local trust and enquiries"],
+])("uses the intake goal across Strategy and NBA: %s", (primaryGoal, key, title) => {
+  const focus = { ...plan.focusAreas[0], priority: "high" as const, dependencies: [], evidence: ["A supplied business observation supports this action"], actions: ["Prepare the supported correction", "Measure the business outcome"] };
+  const result = buildStrategyDecisionSet({ projectId: "scenario", primaryGoal,
+    plan: { ...plan, growthFunnel: undefined, focusAreas: [{ ...focus, key: "organic_demand", title: "Build organic search demand" }, { ...focus, key, title }] },
+    businessBrainVersion: 1, evidenceVersion: 1,
+    workflowConfidence: { overall: 80, completeness: 80, freshness: 90, signalCoverage: 80, dataQuality: 80, conflictPenalty: 0, independentSignals: 1, reasons: [], cautions: [] } });
+  expect(result.nextBestAction.title).toBe(title);
+  expect(result.nextBestAction.businessObjective).toBe(primaryGoal);
+  expect(result.nextBestAction.evidenceType).toBe("inferred");
+});
+
+it("makes prerequisite resolution the NBA when all supported actions are blocked", () => {
+  const result = buildStrategyDecisionSet({ projectId: "blocked", plan: { ...plan, growthFunnel: undefined, focusAreas: [{ ...plan.focusAreas[0], dependencies: ["Connect the payment gateway"] }] },
+    businessBrainVersion: 1, evidenceVersion: 1, workflowConfidence: { overall: 80, completeness: 80, freshness: 90, signalCoverage: 80, dataQuality: 80, conflictPenalty: 0, independentSignals: 1, reasons: [], cautions: [] } });
+  expect(result.nextBestAction.analysisKey).toBe("resolve_growth_dependencies");
+  expect(result.nextBestAction.dependencies).toEqual([]);
+  expect(result.decisions.find(x => x.analysisKey !== "resolve_growth_dependencies")?.dependencies).toEqual(["Connect the payment gateway"]);
+});

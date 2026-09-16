@@ -1,3 +1,5 @@
+import { recordPublishedWebsite } from "../website-context.js";
+import { websiteContext, websiteAnalysisUrl, websitePlanningContext } from "@webtummy/core/website-context";
 import { extractWebsiteSourceDocument, websiteSourceDocumentComponents } from "@webtummy/core/website-generation";
 import { encryptRecaptchaSecret, publicRecaptchaSettings } from "../website-recaptcha.js";
 import { websiteAnalytics } from "../website-analytics.js";
@@ -114,7 +116,7 @@ const WORDPRESS_CONNECTOR_SOURCE = resolve(WORDPRESS_CONNECTOR_DIRECTORY, "senuk
 const WORDPRESS_THEME_DIRECTORY = resolve(dirname(fileURLToPath(import.meta.url)), "../../../../wordpress-theme/senuke-theme");
 
 export function productionWebsiteUrl(project: { name?: string | null; websiteUrl?: string | null }, destinationUrl?: string | null) {
-  const candidates = [destinationUrl, project.websiteUrl, project.name && /^(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/.*)?$/i.test(project.name.trim()) ? project.name.trim() : null];
+  const candidates = [project.websiteUrl, destinationUrl];
   for (const candidate of candidates) {
     if (!candidate) continue;
     try {
@@ -155,11 +157,11 @@ async function trackingForProject(
 ) {
   let website = project.website;
   const productionUrl = productionWebsiteUrl(project, destinationUrl);
-  if (!website && productionUrl) {
+  if (productionUrl && (!website || website.domain !== productionUrl.domain)) {
     website = await prisma.$transaction(async (tx) => {
       const existing = await tx.website.findFirst({ where: { clientId: project.clientId, domain: productionUrl.domain, status: "active" } });
       const row = existing ?? await tx.website.create({ data: { clientId: project.clientId, domain: productionUrl.domain, rootUrl: productionUrl.rootUrl, status: "active" } });
-      await tx.project.update({ where: { id: project.id }, data: { websiteId: row.id, websiteUrl: productionUrl.rootUrl } });
+      if (!project.website) await tx.project.update({ where: { id: project.id }, data: { websiteId: row.id, websiteUrl: productionUrl.rootUrl } });
       return row;
     });
   }
@@ -1706,6 +1708,9 @@ async function scopedProject(projectId: string, req: Parameters<typeof workspace
       } as Prisma.JsonValue;
     }
   }
+  if (websiteContext(project).websiteIntent === "replace") {
+    for (const build of project.websiteBuilds) build.settingsJson = { ...jsonRecord(build.settingsJson), existingWebsiteDirection: "replace", websiteContext: websitePlanningContext(project) } as Prisma.JsonObject;
+  }
   return { context, project };
 }
 
@@ -2928,7 +2933,7 @@ async function currentApprovedWebsitePlan(project: Awaited<ReturnType<typeof sco
   const snapshot = jsonRecord(approvedPlan.task.approvalSnapshotJson);
   const evidence = jsonRecord(snapshot.contentPlanEvidence);
   const strategy = project.strategyPlans[0] ?? null;
-  const existingWebsite = project.projectType === "existing_website" || project.websiteStatus === "existing_website";
+  const existingWebsite = Boolean(websiteAnalysisUrl(project));
   const latestGap = existingWebsite ? await prisma.gapAnalysisRun.findFirst({ where: { projectId: project.id, status: "completed" }, orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }], select: { id: true } }) : null;
   if (!strategy || !evidence.strategyId || String(evidence.strategyId) !== strategy.id || (latestGap && String(evidence.gapAnalysisRunId ?? "") !== latestGap.id)) return {
     approvedPlan: null,
@@ -5081,7 +5086,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/initialize", asy
   const assignments = Array.isArray(plan.pageAssignments) ? plan.pageAssignments.map(jsonRecord) : [];
   const plannedPages = assignments;
   if (!plannedPages.length) return res.status(409).json({ error: "The approved Website Plan has no page assignments. Regenerate and review the plan before Website Development." });
-  const existingWebsite = project.projectType === "existing_website" || project.websiteStatus === "existing_website";
+  const existingWebsite = Boolean(websiteAnalysisUrl(project));
   const latestCrawl = existingWebsite && project.websiteId ? await prisma.crawlJob.findFirst({
     where: { websiteId: project.websiteId, status: "completed" },
     orderBy: [{ completedAt: "desc" }, { createdAt: "desc" }],
@@ -5165,7 +5170,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/initialize", asy
     const seoPlan = contentTask ? seoPlanSummary(contentTask.id, plan, withRequiredHome(project, assignments)) : null;
     const businessContext = interpretedBusinessContext(seoPlan, project);
     const footerBusinessName = businessContext.businessName || project.name;
-    const build = await tx.websiteBuild.create({ data: { projectId: project.id, clientId: project.clientId, name: `${footerBusinessName} website`, templateKey: "local_growth", createdByUserId: context.membership.userId, brandJson: { tone: project.brandVoice || "Professional, practical, and confident", businessName: footerBusinessName, personality: ["credible", "clear", "modern"], primaryColor: "#2563eb", secondaryColor: "#0f766e", accentColor: "#f59e0b", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter", bodyFont: "Inter", radius: "14px", logoMode: "none" }, settingsJson: { sourceTaskId: contentTask?.id ?? null, seoPlan, existingSiteImport: existingWebsite ? { mode: "crawl_and_sitemap", crawlId: latestCrawl?.id ?? null, importedPageCount: crawlAssignments.length, suggestedPageCount: Math.max(0, pages.length - crawlAssignments.length), importedAt: new Date().toISOString(), liveWebsiteRemainsUnchanged: true } : null, selectedLayout: "local_growth", analysis: { business: footerBusinessName || "Business name requires confirmation", businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", industry: businessContext.industry || project.niche || "Professional services", audience: businessContext.audience || "Approved project audience", offer: businessContext.coreBusinessValue || "Approved SEO page direction", services: businessContext.primaryServices, goal: project.primaryGoal || "Generate qualified leads", markets: targetLocationStrings(project.targetLocations) }, contactDetails: { businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", email: verifiedEmail, phone: verifiedPhone, address: verifiedAddress, copyrightText: `© ${new Date().getFullYear()} ${footerBusinessName}. All rights reserved.`, source: "verified_project_and_client_intake" }, previewMode: "responsive", defaultDeployMode: "draft" } } });
+    const build = await tx.websiteBuild.create({ data: { projectId: project.id, clientId: project.clientId, name: `${footerBusinessName} website`, templateKey: "local_growth", createdByUserId: context.membership.userId, brandJson: { tone: project.brandVoice || "Professional, practical, and confident", businessName: footerBusinessName, personality: ["credible", "clear", "modern"], primaryColor: "#2563eb", secondaryColor: "#0f766e", accentColor: "#f59e0b", backgroundColor: "#f8fafc", textColor: "#0f172a", headingFont: "Inter", bodyFont: "Inter", radius: "14px", logoMode: "none" }, settingsJson: { websiteContext: websitePlanningContext(project), existingWebsiteDirection: websiteContext(project).websiteIntent === "replace" ? "replace" : existingWebsite ? "improve" : "new", sourceTaskId: contentTask?.id ?? null, seoPlan, existingSiteImport: existingWebsite ? { mode: "crawl_and_sitemap", crawlId: latestCrawl?.id ?? null, importedPageCount: crawlAssignments.length, suggestedPageCount: Math.max(0, pages.length - crawlAssignments.length), importedAt: new Date().toISOString(), liveWebsiteRemainsUnchanged: true } : null, selectedLayout: "local_growth", analysis: { business: footerBusinessName || "Business name requires confirmation", businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", industry: businessContext.industry || project.niche || "Professional services", audience: businessContext.audience || "Approved project audience", offer: businessContext.coreBusinessValue || "Approved SEO page direction", services: businessContext.primaryServices, goal: project.primaryGoal || "Generate qualified leads", markets: targetLocationStrings(project.targetLocations) }, contactDetails: { businessSummary: businessContext.brandDescription || businessContext.coreBusinessValue || "", email: verifiedEmail, phone: verifiedPhone, address: verifiedAddress, copyrightText: `© ${new Date().getFullYear()} ${footerBusinessName}. All rights reserved.`, source: "verified_project_and_client_intake" }, previewMode: "responsive", defaultDeployMode: "draft" } } });
     const approvalTask = await tx.executionTask.create({ data: { clientId: project.clientId, websiteId: project.websiteId, projectId: project.id, dedupeKey: `website-builder:${build.id}:development`, moduleName: "site_architect", sourceType: "website_builder_request", sourceId: build.id, title: existingWebsite ? `Prepare ${project.name} website improvements` : `Create ${project.name} website preview`, description: existingWebsite ? "Review the imported website pages, SEO Campaign evidence, Local SEO requirements, content updates, navigation, design, and images as one governed improvement workflow." : "Approve every page and save the final navigation. The Create Website action then runs in the background to assemble registered sections, approved content, brand styling, forms, and AI-generated images into a responsive preview.", expectedOutcome: existingWebsite ? "A complete, reviewable update package is ready without changing the live website until approval and deployment." : "A complete responsive website is ready for company review before any WordPress or Static HTML publishing.", priority: "high", automationLevel: "automatic", status: "in_progress", requiresApproval: false, manualRequired: false, safetyCategory: "safe_draft", approvalRisk: "low", actionButtonLabel: existingWebsite ? "Review Website Improvement Plan" : "Prepare Website", relatedUrl: `/site-architect?projectId=${project.id}`, manualInstructions: existingWebsite ? "Review SEO, Local SEO, imported and suggested pages, Content, Navigation, Design & Images, then run Quality Review. Foundation is inherited from the existing website and is not a required step." : "Complete Foundation, Pages, Content, and Navigation, then choose Create Website. You may continue working while SEnuke AI - AI Growth Operating System prepares the preview.", impact: existingWebsite ? "Turns crawl, SEO, and Local SEO evidence into controlled existing-site updates without publishing externally." : "Creates a complete reviewable website draft without publishing externally." } });
     await tx.websiteBuild.update({ where: { id: build.id }, data: { settingsJson: { ...jsonRecord(build.settingsJson), developmentApprovalTaskId: approvalTask.id } as Prisma.InputJsonValue } });
     await tx.websiteBuildPage.createMany({ data: pages.slice(0, 500).map((item, index) => assignmentPageData(build.id, item, index)) });
@@ -9677,6 +9682,12 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
   }
   const integration = project.wordpressIntegrations.find((item) => item.id === input.integrationId && item.connectionStatus === "connected");
   if (!integration) return res.status(409).json({ error: "Select a connected WordPress site." });
+  const destination = project.websiteUrl;
+  if (input.mode === "publish" && project.websiteContextJson && destination) {
+    const host = (url: string) => new URL(/^https?:\/\//i.test(url) ? url : `https://${url}`).hostname.replace(/^www\./, "").toLowerCase();
+    if (host(integration.siteUrl) !== host(destination)) return res.status(409).json({ error: "The connected WordPress site does not match this project's confirmed destination domain. Use the intended website's connection before publishing." });
+  }
+
   // Put the production tag into the reviewed draft. The tag ignores WordPress
   // preview URLs, so promoting the reviewed record can remain content-immutable.
   const websiteTracking = await trackingForProject(project, context.membership.userId, integration.siteUrl);
@@ -10398,6 +10409,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/deploy", async (
       },
     });
     if (input.mode === "publish" && verificationPassed && !requestedPageIds.size) {
+      await recordPublishedWebsite(project.id, integration.siteUrl);
       const measurementTask = project.executionTasks.find((task) => task.sourceType === "website_builder_request" && task.sourceId === build.id);
       if (measurementTask) {
         const addDays = (days: number) => new Date(publicationCompletedAt.getTime() + days * 86_400_000);
@@ -10513,7 +10525,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-export", 
   const releaseModel = approvedReleaseWebsiteModel(release);
   requireLaunchReadiness(build, release);
   const websiteTracking = await trackingForProject(project, context.membership.userId);
-  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
+  const rawWebsiteUrl = String(project.websiteUrl || websiteTracking?.rootUrl || "").trim();
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
     ? rawWebsiteUrl
     : rawWebsiteUrl
@@ -10603,7 +10615,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/developer-handof
 
   const releaseModel = approvedReleaseWebsiteModel(release);
   const websiteTracking = await trackingForProject(project, context.membership.userId);
-  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
+  const rawWebsiteUrl = String(project.websiteUrl || websiteTracking?.rootUrl || "").trim();
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl) ? rawWebsiteUrl : rawWebsiteUrl ? `https://${rawWebsiteUrl.replace(/^https?:\/\//i, "")}` : "";
   const optimizedMedia = await optimizeEmbeddedWebsiteMedia(resolveWebsiteModelMediaSources(releaseModel, build), { downloadRemote: true });
   const files = createStaticWebsiteFiles(optimizedMedia.model, {
@@ -10690,7 +10702,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
 
   const releaseModel = approvedReleaseWebsiteModel(release);
   const websiteTracking = await trackingForProject(project, context.membership.userId);
-  const rawWebsiteUrl = String(websiteTracking?.rootUrl || project.websiteUrl || "").trim();
+  const rawWebsiteUrl = String(project.websiteUrl || websiteTracking?.rootUrl || "").trim();
   const baseUrl = /^https:\/\//i.test(rawWebsiteUrl)
     ? rawWebsiteUrl
     : rawWebsiteUrl
@@ -10828,6 +10840,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/static-deploy", 
       where: { id: transfer.id },
       data: { connectionStatus: "connected", lastConnectionCheckAt: completedAt, lastError: null },
     });
+    await recordPublishedWebsite(project.id, baseUrl);
     await activatePostLaunchGrowthLifecycle({ projectId: project.id, releaseId: release.id, publishedAt: completedAt, launchVerified: true, actorUserId: context.membership.userId }).catch((error) => {
       console.error("[website-builder] static post-launch Growth activation failed", error);
     });

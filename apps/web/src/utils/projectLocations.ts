@@ -27,8 +27,11 @@ function values(value: unknown) {
   return raw.flatMap((item) => {
     const cleaned = item.replace(vagueMarketSuffix, "").replace(/,\s*$/, "").trim();
     const pair = cleaned.split(",").map((part) => part.trim()).filter(Boolean);
-    const pairedCountry = pair.length === 2 ? countryMarketNames.get(pair[1].toLowerCase()) : null;
-    if (pairedCountry) return [`${pair[0]}, ${pairedCountry}`];
+    const pairedCountry = pair.length >= 2 ? countryMarketNames.get(pair[pair.length - 1].toLowerCase()) : null;
+    if (pairedCountry) {
+      const parts = [...pair.slice(0, -1), pairedCountry];
+      return [parts.filter((part, index) => index === 0 || part.toLowerCase() !== parts[index - 1].toLowerCase()).join(", ")];
+    }
     return cleaned.split(",").flatMap((part) => {
       const normalizedMarket = part.trim().replace(/\s+/g, " ");
       if (protectedCompositeGeographicMarkets.has(normalizedMarket.toLocaleLowerCase())) return [normalizedMarket];

@@ -1,3 +1,4 @@
+import { websitePlanningContext } from "@webtummy/core/website-context";
 import { reconcileGrowthExecution, requireGrowthLaunch, ensureGrowthSocialContent } from "@webtummy/db/growth-execution";
 import { growthGuide } from "@webtummy/core/growth-execution";
 import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
@@ -341,6 +342,7 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
   const funnelOptIns = funnelMetrics.reduce((sum, metric) => sum + metric.optIns, 0);
   const emailsDelivered = funnelMetrics.reduce((sum, metric) => sum + metric.emailsDelivered, 0);
   const emailClicks = funnelMetrics.reduce((sum, metric) => sum + metric.emailClicks, 0);
+  const constraintScores: Record<string, number> = {};
   const evaluatedDimensions = new Map<string, "observed" | "limited">();
   const dimensionEvaluations = new Map<string, Array<{ checkpointId: string; classification: string; availability: string }>>();
   for (const checkpoint of project.measurementCheckpoints) {
@@ -348,7 +350,11 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     const evaluation = jsonRecord(metrics.evaluation);
     if (!evaluation.classification) continue;
     const taskText = `${checkpoint.task.moduleName} ${checkpoint.task.title}`.toLowerCase();
-    const dimension = /retention|renewal|referral/.test(taskText) ? "retention"
+    const dimension = /revenue|sales/.test(taskText) ? "revenue"
+      : /checkout|merchandis|cart|product|collection/.test(taskText) ? "ecommerce"
+      : /local|reputation|review/.test(taskText) ? "reputation"
+      : /measurement|tracking|analytics/.test(taskText) ? "measurement"
+      : /retention|renewal|referral/.test(taskText) ? "retention"
       : /follow.?up|nurture|email/.test(taskText) ? "followUp"
         : /lead|form|capture/.test(taskText) ? "leadCapture"
           : /authority|backlink|citation|mention/.test(taskText) ? "authority"
@@ -357,6 +363,11 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
                 : /traffic|seo|content|ranking/.test(taskText) ? "traffic"
                   : null;
     if (!dimension) continue;
+    if (evaluation.availability === "AVAILABLE") {
+      const change = typeof evaluation.percentChange === "number" ? Math.min(40, Math.abs(evaluation.percentChange)) : 0;
+      const outcomeScore = evaluation.classification === "DECLINED" ? 40 - change : 100;
+      constraintScores[dimension] ??= outcomeScore; // Checkpoints are ordered newest first.
+    }
     const observations = dimensionEvaluations.get(dimension) ?? [];
     observations.push({ checkpointId: checkpoint.id, classification: String(evaluation.classification), availability: String(evaluation.availability ?? "UNAVAILABLE") });
     dimensionEvaluations.set(dimension, observations);
@@ -402,7 +413,11 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     + Math.min(10, openTasks.filter((task) => /backlink|citation|authority/i.test(`${task.moduleName} ${task.title}`)).length * 2));
   const offer = Math.min(100, 35 + (project.businessProfile?.offerSummary ? 22 : 0) + (project.businessProfile?.targetAudience ? 14 : 0) + (project.strategyPlans[0]?.offerRecommendation ? 12 : 0));
   const retention = Math.min(100, 10 + (evaluatedDimensions.has("retention") ? 75 : 0));
-  const scoreJson = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
+  const scoreJson: Record<string, number> = { traffic, conversion, leadCapture, followUp, authority, offer, retention };
+  if (project.projectType === "ecommerce") scoreJson.ecommerce = evaluatedDimensions.has("ecommerce") ? 85 : 10;
+  if (/sale|revenue/i.test(project.primaryGoal ?? "") || evaluatedDimensions.has("revenue")) scoreJson.revenue = evaluatedDimensions.has("revenue") ? 85 : 10;
+  if (project.projectType === "local_seo" || evaluatedDimensions.has("reputation")) scoreJson.reputation = evaluatedDimensions.has("reputation") ? 85 : 10;
+  if (evaluatedDimensions.has("measurement")) scoreJson.measurement = 85;
   const evidenceStates: Record<string, "observed" | "limited" | "unavailable" | "hypothesis"> = {
     traffic: evaluatedDimensions.get("traffic") ?? (trackingVerified ? "limited" : "unavailable"),
     conversion: evaluatedDimensions.get("conversion") ?? (measurementPlan && trackingVerified ? "limited" : "unavailable"),
@@ -412,11 +427,12 @@ function scoreProject(project: NonNullable<Awaited<ReturnType<typeof scopedProje
     offer: evaluatedDimensions.get("offer") ?? (project.businessProfile?.offerSummary ? "hypothesis" : "unavailable"),
     retention: evaluatedDimensions.get("retention") ?? "unavailable",
   };
-  const observedScores = Object.entries(scoreJson).filter(([dimension]) => evidenceStates[dimension] === "observed");
+  for (const dimension of Object.keys(scoreJson)) evidenceStates[dimension] ??= evaluatedDimensions.get(dimension) ?? "unavailable";
+  const observedScores = Object.entries(constraintScores).filter(([dimension]) => evidenceStates[dimension] === "observed");
   const bottleneckType = (observedScores.length ? observedScores : Object.entries(scoreJson))
     .sort((a, b) => a[1] - b[1])[0]?.[0] ?? "conversion";
   const growthScore = Math.round(Object.values(scoreJson).reduce((sum, value) => sum + value, 0) / Object.values(scoreJson).length);
-  return { scoreJson, evidenceStates, contradictions, bottleneckType, growthScore, trackingMetrics, deviceTrackingMetrics, mobileConversionIssue, trackingVerified, measurementPlan, primaryConversionEvents, funnelViews, funnelOptIns, emailsDelivered, emailClicks, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
+  return { scoreJson, constraintScores, evidenceStates, contradictions, bottleneckType, growthScore, trackingMetrics, deviceTrackingMetrics, mobileConversionIssue, trackingVerified, measurementPlan, primaryConversionEvents, funnelViews, funnelOptIns, emailsDelivered, emailClicks, latestCrawl, openTasks, keywordRuns, socialPosts, socialPerformance, socialEngagementRate, hasLeadMagnetTask, strategyApproved, latestAuthoritySnapshot, approvedAuthorityOpportunities, completedAuthorityAssets, earnedReferralLeads, citationReadiness, observedCitationMentions, approvedCitationRecommendations };
 }
 
 function buildSupportingContentRoadmap(project: NonNullable<Awaited<ReturnType<typeof scopedProject>>>, scheduleStartAt: Date | null = null) {
@@ -618,6 +634,7 @@ function normalizedGrowthSignals(project: NonNullable<Awaited<ReturnType<typeof 
       value: {
         approved: score.strategyApproved,
         primaryGoal: project.primaryGoal,
+        websiteContext: websitePlanningContext(project),
         contractVersion: projectContext(project).strategyContract?.contractVersion ?? null,
         strategyVersion: projectContext(project).strategyContract?.version ?? null,
         focusAreas: projectContext(project).strategyContract?.focusAreas.map((focus) => ({ key: focus.key, priority: focus.priority, channels: focus.channels })) ?? [],
@@ -751,6 +768,7 @@ async function runGrowthEngine(input: {
     offer: ctx.offer,
     market: ctx.market,
     scoreJson: score.scoreJson,
+    constraintScores: score.constraintScores,
     openHighIssues: score.latestCrawl?.issues.filter((issue) => issue.severity === "high").length ?? 0,
     hasLeadMagnet: score.hasLeadMagnetTask,
     hasApprovedStrategy: score.strategyApproved,

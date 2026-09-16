@@ -1428,6 +1428,7 @@ model Project {
   name                      String        @db.VarChar(180)
   projectType               String        @default("existing_website") @db.VarChar(60)
   websiteStatus             String        @default("existing_website") @db.VarChar(60)
+  websiteContextJson        Json?
   status                    String        @default("active") @db.VarChar(40)
   archivedAt                DateTime?
   archivedById              String?

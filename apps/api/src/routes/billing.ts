@@ -1,3 +1,4 @@
+import { GROWTH_ACCESS_PLAN, GROWTH_ADVANTAGE_PLAN, fixedTermExpired, isFixedTermPlan } from "../fixed-term-offers.js";
 import { Router } from "express";
 import type { Request } from "express";
 import { z } from "zod";
@@ -36,6 +37,7 @@ import {
   syncSubscriptionFromStripe,
   verifyStripeSignature,
 } from "../billing.js";
+import { ACTIVATION_REMINDER_ACTION, ACTIVATION_REMINDER_POLICY_ID } from "../jvzoo-activation-reminder-policy.js";
 import { issueJvZooActivationEmail } from "../jvzoo-activation.js";
 import { acceptJvZooWebhook } from "../jvzoo-intake.js";
 
@@ -217,7 +219,18 @@ async function billingStatusForClient(client: Awaited<ReturnType<typeof clientFo
   const hasAdminAccessOverride = ["manual", "offline"].includes(client.subscriptionSource);
   const status = hasAdminAccessOverride ? client.aiSubscriptionStatus : commercial?.workspace.commercialState ?? client.aiSubscriptionStatus;
   const hasAccess = hasAdminAccessOverride ? hasBillingAccess(client) : commercial ? ["full", "grace"].includes(commercial.workspace.accessMode) : hasBillingAccess(client);
+  const termPlan = commercial?.subscription?.plan.code;
+  const fixedTermAccess = !hasAdminAccessOverride && commercial?.subscription?.provider === "jvzoo" && isFixedTermPlan(termPlan) ? {
+    expired: fixedTermExpired(termPlan, commercial.subscription.currentPeriodEnd),
+    endsAt: commercial.subscription.currentPeriodEnd,
+    upgrade: null as null | { priceId: string; name: string; amountCents: number; currency: string; monthlyAiCapacity: number },
+  } : null;
+  if (fixedTermAccess && termPlan === GROWTH_ACCESS_PLAN) {
+    const upgrade = await prisma.commercialPrice.findFirst({ where: { provider: "jvzoo", status: "active", effectiveFrom: { lte: now }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: now } }], planVersion: { status: "active", billingPlan: { code: GROWTH_ADVANTAGE_PLAN, isActive: true } } }, include: { planVersion: { include: { billingPlan: true } } }, orderBy: { effectiveFrom: "desc" } });
+    if (upgrade?.checkoutUrl) fixedTermAccess.upgrade = { priceId: upgrade.id, name: upgrade.planVersion.billingPlan.name, amountCents: upgrade.amountCents, currency: upgrade.currency, monthlyAiCapacity: Number((upgrade.planVersion.numericLimits as Record<string, unknown>).monthlyAiCapacity ?? 0) };
+  }
   return {
+    fixedTermAccess,
     plan: commercial?.subscription ? {
       ...(view ?? {}),
       code: commercial.subscription.plan.code,
@@ -469,7 +482,13 @@ billingRouter.get("/admin/commercial", requireAuth, requireRole("super_admin"), 
     prisma.commercialAddonSku.findMany({ orderBy: [{ kind: "asc" }, { amountCents: "asc" }] }),
     prisma.featureCostCatalog.findMany({ orderBy: [{ moduleName: "asc" }, { label: "asc" }] }),
   ]);
-  res.json({ catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions, addonSkus, workflowPricing });
+  const [activationReminderPolicy, activationReminders] = await Promise.all([
+    prisma.commercialAuditEvent.findUnique({ where: { id: ACTIVATION_REMINDER_POLICY_ID }, select: { createdAt: true } }),
+    prisma.commercialAuditEvent.findMany({ where: { action: ACTIVATION_REMINDER_ACTION, correlationId: { in: externalSubscriptions.map((subscription) => subscription.id) } }, select: { correlationId: true, reasonCode: true, afterJson: true }, orderBy: { createdAt: "asc" } }),
+  ]);
+  res.json({ catalog, policies, events, audits, workspaces, registrationPolicy, externalSubscriptions, addonSkus, workflowPricing,
+    activationReminderPolicy: { enabled: config.jvzooActivationRemindersEnabled, startedAt: activationReminderPolicy?.createdAt ?? null }, activationReminders,
+  });
 });
 
 billingRouter.post("/admin/commercial/workspaces/reconcile-types", requireAuth, requireRole("super_admin"), async (req, res) => {

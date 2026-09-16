@@ -1,4 +1,4 @@
-export const GROWTH_INTELLIGENCE_CONTRACT_VERSION = "dev-047-part4-v1" as const;
+export const GROWTH_INTELLIGENCE_CONTRACT_VERSION = "growth-business-outcomes-v2" as const;
 
 export type EvidenceAvailability = "AVAILABLE" | "LIMITED" | "STALE" | "UNAVAILABLE" | "INSUFFICIENT";
 export type EvaluationClassification = "IMPROVED" | "DECLINED" | "NO_MATERIAL_CHANGE" | "INCONCLUSIVE" | "COLLECTING";
@@ -44,6 +44,8 @@ export type OpportunityFactors = {
   ease: number;
   readiness: number;
   risk: number;
+  cost?: number | null; // Relative implementation cost, 0–100; null means unknown.
+  timeToResultsDays?: number | null;
 };
 
 export type OpportunityGate = {
@@ -166,7 +168,9 @@ export function scoreGrowthOpportunity(input: OpportunityFactors) {
     0.10 * asRatio(input.urgency) +
     0.10 * asRatio(input.learningValue);
   const score = 100 * value * (0.5 + 0.5 * asRatio(input.ease)) * (0.5 + 0.5 * asRatio(input.readiness)) * (1 - 0.5 * asRatio(input.risk));
-  return Math.max(0, Math.min(100, Math.round(score)));
+  const costFactor = input.cost == null ? 0.85 : 1 - 0.4 * asRatio(input.cost);
+  const timeFactor = input.timeToResultsDays == null ? 0.85 : 1 / (1 + Math.max(0, input.timeToResultsDays) / 180);
+  return Math.max(0, Math.min(100, Math.round(score * costFactor * timeFactor)));
 }
 
 export function selectGovernedNextBestAction<T extends {

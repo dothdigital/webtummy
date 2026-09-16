@@ -1,3 +1,4 @@
+import { websitePlanningContext, websiteAnalysisUrl } from "@webtummy/core/website-context";
 import { keywordEvidenceList } from "../keyword-evidence.js";
 import { requireGrowthLaunch } from "@webtummy/db/growth-execution";
 import { reconcileProjectPlanning } from "@webtummy/db/planning-reconciliation";
@@ -585,6 +586,7 @@ export function repairContentPlanPageIdentities(plan: ContentPlan): ContentPlan 
 }
 
 type ContentPlanHomeContext = {
+  websiteContext?: ReturnType<typeof websitePlanningContext>;
   projectName: string;
   businessName?: string | null;
   offer?: string | null;
@@ -928,6 +930,7 @@ export function reconcileAiWebsitePlanBatch(
 }
 
 async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
+  websiteContext?: ReturnType<typeof websitePlanningContext>;
   projectType: string;
   business: AiBusinessContext;
   goal: string;
@@ -944,7 +947,7 @@ async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   const suppliedAssignments = plan.pageAssignments.slice(0, 100);
   if (!suppliedAssignments.length) throw new Error("The unified Website Plan has no page candidates for AI evaluation.");
   const sharedEvidence = `Approved business and goal:
-${JSON.stringify({ projectType: evidence.projectType, business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
+${JSON.stringify({ websiteContext: evidence.websiteContext, projectType: evidence.projectType, business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
 
 \nApproved Opportunity direction:\
 ${JSON.stringify(evidence.opportunity).slice(0, 12_000)}\
@@ -1665,6 +1668,7 @@ function seoPlanFor(input: {
 }
 
 export function contentPlanFor(input: {
+  websiteContext?: ReturnType<typeof websitePlanningContext>;
   projectName: string;
   businessName: string | null;
   goal: string | null;
@@ -3228,6 +3232,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       businessName: businessContext.businessName,
       offer: businessContext.homepagePrimaryTopic,
       websiteUrl: task.project.websiteUrl,
+      websiteContext: websitePlanningContext(task.project),
       websitePages: pageCandidates,
     });
     const needsAiFaqRefresh = normalizedSavedPlan.pageAssignments.some((assignment) => (
@@ -3328,6 +3333,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     audience: businessContext.audienceSummary,
     contentStrategy: strategy?.contentStrategy ?? null,
     websiteUrl: task.project.websiteUrl,
+      websiteContext: websitePlanningContext(task.project),
     localSeoEnabled,
     websitePages: websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({
       url: page.url,
@@ -3362,6 +3368,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   const strategyFunnel = recordJson(unifiedStrategyPlan.growthFunnel);
   const sitePages = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({ url: page.url, title: page.seo?.title ?? null }));
   const fullAiPlan = await applyFullAiWebsitePlan({ ...generatedPlanBase, aiBusinessContext: businessContext }, {
+    websiteContext: websitePlanningContext(task.project),
     projectType: task.project.projectType,
     business: businessContext,
     goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
@@ -3760,7 +3767,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
     return res.status(400).json({ error: `${field}: ${issue?.message ?? "invalid value"}`, fieldErrors: parsed.error.flatten().fieldErrors });
   }
   const clientId = await executionClientScope(req);
-  const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { project: { select: { id: true, name: true, businessName: true, niche: true, projectType: true, websiteStatus: true, websiteId: true, websiteUrl: true, targetLocations: true, businessLocationJson: true, agencyClientId: true, agencyClient: { select: { name: true } }, businessProfile: { select: { offerSummary: true } }, keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } }, keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } } } } } });
+  const task = await prisma.executionTask.findFirst({ where: { id: req.params.id, ...(clientId ? { clientId } : {}) }, include: { project: { select: { id: true, name: true, businessName: true, niche: true, projectType: true, websiteStatus: true, websiteContextJson: true, websiteId: true, websiteUrl: true, targetLocations: true, businessLocationJson: true, agencyClientId: true, agencyClient: { select: { name: true } }, businessProfile: { select: { offerSummary: true } }, keywordGroups: { where: { status: "approved" }, select: { status: true, keywords: true } }, keywordResearchRuns: { select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true } } } } } });
   if (!task?.project || !task.projectId || !isWebsitePlanTask(task)) return res.status(404).json({ error: "Website planning task not found" });
   const context = await workspaceContext(req);
   if (!await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
@@ -3808,6 +3815,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/save", (req, res, n
       || null,
     offer: parsed.data.plan.aiBusinessContext?.homepagePrimaryTopic || approvedKeywords[0],
     websiteUrl: task.project.websiteUrl,
+      websiteContext: websitePlanningContext(task.project),
   })));
   const normalizedTarget = (value: string) => value.trim().toLocaleLowerCase().replace(/^https?:\/\/[^/]+/i, "").replace(/\/+$/, "") || "/";
   const targetOwners = new Map<string, string>();
@@ -3902,7 +3910,7 @@ executionTasksRouter.post("/execution-tasks/:id/seo-plan/prepare", async (req, r
     contentStrategy: strategy?.contentStrategy ?? null,
     authorityStrategy: strategy?.authorityStrategy ?? null,
     crawlIssues,
-    hasWebsite: Boolean(task.project.websiteId || task.project.websiteUrl),
+    hasWebsite: Boolean(websiteAnalysisUrl(task.project)),
   }));
   const updated = await prisma.executionTask.update({ where: { id: task.id }, data: { title: "Create SEO Page Map", description: "Convert approved keywords into intent clusters, target pages, metadata, schema, FAQs, and content briefs for review.", status: "in_progress", actionButtonLabel: "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, seoPlan: plan, seoPlanStatus: "draft", preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
   await prisma.$transaction((tx) => recordWorkspaceActivity(tx, { context, action: "seo_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { objectives: plan.objectives.length, keywords: plan.keywordPriorities.length } }));
