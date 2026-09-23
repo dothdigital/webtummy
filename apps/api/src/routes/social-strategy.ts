@@ -457,6 +457,7 @@ async function getScopedWebsite(req: Request, websiteId: string) {
 }
 
 async function getProjectIntelligence(req: Request, websiteId: string, projectId?: string | null) {
+  if (projectId && !await canAccessProject(await workspaceContext(req), projectId)) return { project: null, sources: [] as ContentSource[] };
   const clientId = await projectClientIdForRequest(req);
   const project = await prisma.project.findFirst({
     where: {
@@ -896,16 +897,18 @@ async function loadSocialData(websiteId: string, projectId?: string | null) {
 }
 
 async function socialResponse(req: Request, websiteId: string, projectId?: string | null) {
-  const website = await getScopedWebsite(req, websiteId);
-  if (!website) throw Object.assign(new Error("Website not found."), { statusCode: 404 });
-  const intelligence = await getProjectIntelligence(req, website.id, projectId);
+  const intelligence = await getProjectIntelligence(req, websiteId, projectId);
+  if (projectId && !intelligence.project) throw Object.assign(new Error("Project not found."), { statusCode: 404 });
+  const resolvedWebsiteId = intelligence.project?.websiteId || websiteId;
+  const website = resolvedWebsiteId ? await getScopedWebsite(req, resolvedWebsiteId) : null;
+  if (resolvedWebsiteId && !website) throw Object.assign(new Error("Website not found."), { statusCode: 404 });
   const resolvedProjectId = intelligence.project?.id || null;
   return {
     website,
     project: intelligence.project ? { id: intelligence.project.id, name: intelligence.project.name, businessName: intelligence.project.businessName } : null,
     intelligence: intelligence.project ? intelligenceSnapshot(intelligence.project, intelligence.sources) : null,
     contentSources: intelligence.sources,
-    ...(await loadSocialData(website.id, resolvedProjectId)),
+    ...(await loadSocialData(website?.id ?? "", resolvedProjectId)),
     platformOptions: PLATFORMS,
     providers: socialProviderCapabilities(),
     repurposingChannels: [...REPURPOSING_CHANNELS],
@@ -915,7 +918,7 @@ async function socialResponse(req: Request, websiteId: string, projectId?: strin
 socialStrategyRouter.get("/social-strategy", async (req, res) => {
   const websiteId = typeof req.query.websiteId === "string" ? req.query.websiteId : "";
   const projectId = typeof req.query.projectId === "string" ? req.query.projectId : null;
-  if (!websiteId) return res.status(400).json({ error: "websiteId required" });
+  if (!websiteId && !projectId) return res.status(400).json({ error: "Select a project." });
   try {
     res.json(await socialResponse(req, websiteId, projectId));
   } catch (error) {
@@ -970,7 +973,9 @@ socialStrategyRouter.post("/social-strategy/campaigns", async (req, res) => {
   const input = parsed.data;
   const context = await workspaceContext(req);
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Campaign editing permission is required." });
-  const website = await getScopedWebsite(req, input.websiteId);
+  if (!await canAccessProject(context, input.projectId)) return res.status(404).json({ error: "project not found" });
+  const selectedProject = await prisma.project.findUnique({ where: { id: input.projectId }, select: { websiteId: true } });
+  const website = await getScopedWebsite(req, selectedProject?.websiteId || input.websiteId);
   if (!website) return res.status(404).json({ error: "website not found" });
   const intelligence = await getProjectIntelligence(req, website.id, input.projectId);
   if (!intelligence.project) return res.status(404).json({ error: "project not found" });

@@ -1661,7 +1661,7 @@ export interface SocialProviderCapability {
 }
 
 export interface SocialStrategyResponse {
-  website: { id: string; domain: string; rootUrl: string; targetCities?: unknown };
+  website: { id: string; domain: string; rootUrl: string; targetCities?: unknown } | null;
   project: { id: string; name: string; businessName: string | null } | null;
   intelligence: {
     projectId: string;

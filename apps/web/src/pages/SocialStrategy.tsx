@@ -4,7 +4,9 @@ import { Link, useSearchParams } from "react-router-dom";
 import { api } from "../api.js";
 import type { GuidedProject, SocialCalendarPost, SocialCompetitorProfile, SocialContentSource, SocialPerformanceSummary, SocialProfile, SocialProviderCapability, SocialRepurposedAsset, SocialRepurposingBatch, SocialStrategy as SocialStrategyType, SocialStrategyResponse, Website } from "../types.js";
 import { Button, Card, Input, StatusPill } from "../components/ui.js";
-import { getActiveProjectId, resolveActiveProjectId, setActiveProjectId } from "../active-project.js";
+import { getActiveProjectId, setActiveProjectId } from "../active-project.js";
+
+import { loadSocialProjectContext, socialProjectId } from "../social-project-context.js";
 
 const PLATFORM_LABELS: Record<string, string> = {
   instagram: "Instagram",
@@ -804,6 +806,8 @@ export default function SocialStrategy() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [websites, setWebsites] = useState<Website[]>([]);
   const [projects, setProjects] = useState<GuidedProject[]>([]);
+  const [selectedProjectId, setSelectedProjectId] = useState("");
+  const contextRequest = useRef(0);
   const [websiteId, setWebsiteId] = useState("");
   const [platformOptions, setPlatformOptions] = useState<string[]>(DEFAULT_PLATFORMS);
   const [profiles, setProfiles] = useState<SocialProfile[]>([]);
@@ -888,7 +892,8 @@ export default function SocialStrategy() {
   const selectedStrategy = strategies.find((strategy) => strategy.id === selectedCampaignId) ?? activeStrategy;
   const pendingImageCount = selectedStrategy?.posts.filter((post) => ["queued", "generating"].includes(post.imageStatus)).length ?? 0;
   const selectedWebsite = websites.find((website) => website.id === websiteId) ?? websites[0] ?? null;
-  const selectedProject = projects.find((project) => project.websiteId === websiteId) ?? null;
+  const effectiveProjectId = socialProjectId(selectedProjectId, searchParams.get("projectId"), getActiveProjectId());
+  const selectedProject = projects.find((project) => project.id === effectiveProjectId) ?? null;
   const selectedCampaignKeywords = targetKeywords.split(",").map((value) => value.trim()).filter(Boolean);
   const effectivePostingFrequency = postingFrequency === "Custom monthly count"
     ? `${Math.max(1, Math.min(120, Number(customMonthlyPostCount) || 10))} posts per month`
@@ -1333,31 +1338,46 @@ export default function SocialStrategy() {
   };
 
   const load = async () => {
+    const request = ++contextRequest.current;
     setLoading(true);
     setPageError("");
+    setSelectedProjectId("");
+    setWebsiteId("");
+    setIntelligence(null);
     try {
-      const [websiteResult, projectResult] = await Promise.all([api.get<{ websites: Website[] }>("/api/websites"), api.get<{ projects: GuidedProject[] }>("/api/projects-v2")]);
+      const requestedId = socialProjectId(null, searchParams.get("projectId"), getActiveProjectId());
+      const [resolved, websiteResult] = await Promise.all([
+        loadSocialProjectContext(requestedId,
+          async (id) => (await api.get<{ project: GuidedProject }>(`/api/projects-v2/${encodeURIComponent(id)}`)).project,
+          async () => (await api.get<{ projects: GuidedProject[] }>("/api/projects-v2")).projects),
+        api.get<{ websites: Website[] }>("/api/websites").catch(() => ({ websites: [] as Website[] })),
+      ]);
+      if (request !== contextRequest.current) return;
+      const project = resolved.project;
+      setProjects(resolved.projects);
       setWebsites(websiteResult.websites);
-      setProjects(projectResult.projects);
-      const requestedProject = searchParams.get("project");
-      const activeGuidedId = resolveActiveProjectId(projectResult.projects, searchParams.get("projectId"), getActiveProjectId());
-      const activeGuided = projectResult.projects.find((project) => project.id === activeGuidedId);
-      if (activeGuidedId) setActiveProjectId(activeGuidedId);
-      const selected = websiteResult.websites.find((website) => website.id === activeGuided?.websiteId) ?? websiteResult.websites.find((website) => website.id === requestedProject) ?? websiteResult.websites[0];
-      if (selected) {
-        setWebsiteId(selected.id);
-        await loadStrategy(selected.id, activeGuided?.id ?? projectResult.projects.find((project) => project.websiteId === selected.id)?.id);
-        if (requestedProject && selected.id === requestedProject) setStep("strategy");
+      setSelectedProjectId(project?.id ?? "");
+      setWebsiteId(project?.websiteId ?? "");
+      if (project) {
+        setActiveProjectId(project.id);
+        const result = await api.get<SocialStrategyResponse>(`/api/social-strategy?projectId=${encodeURIComponent(project.id)}`);
+        if (request !== contextRequest.current) return;
+        applySocialResponse(result);
+        setWebsiteId(result.website?.id ?? project.websiteId ?? "");
       }
     } catch (err) {
-      setPageError(String(err).replace(/^Error:\s*/, ""));
+      if (request === contextRequest.current) setPageError(String(err).replace(/^Error:\s*/, ""));
     } finally {
-      setLoading(false);
+      if (request === contextRequest.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     void load();
+    return () => { contextRequest.current += 1; };
+  }, [searchParams.get("projectId")]);
+
+  useEffect(() => {
     const oauthStatus = searchParams.get("social_connect_status") ?? searchParams.get("status");
     const oauthProvider = searchParams.get("provider");
     const oauthAccountCount = searchParams.get("accounts_count") ?? searchParams.get("account_count");
@@ -1491,6 +1511,7 @@ export default function SocialStrategy() {
   const changeWebsite = async (id: string) => {
     setWebsiteId(id);
     const mappedProject = projects.find((project) => project.websiteId === id);
+    setSelectedProjectId(mappedProject?.id ?? "");
     if (mappedProject) setActiveProjectId(mappedProject.id);
     setSearchParams({ project: id, ...(mappedProject?.id || getActiveProjectId() ? { projectId: mappedProject?.id || getActiveProjectId() } : {}) });
     setLoading(true);
@@ -1640,7 +1661,9 @@ export default function SocialStrategy() {
       setPageError("Enter a custom monthly post count between 1 and 120.");
       return;
     }
-    if (!selectedProject?.id) {
+    if (loading) { setPageError("Loading project… Your campaign entries are preserved."); return; }
+    if (effectiveProjectId && !selectedProject) { setPageError("The project could not be loaded. Retry loading the page; your campaign entries have been preserved."); return; }
+    if (!effectiveProjectId) {
       setPageError("Select a guided project before saving the campaign.");
       return;
     }
@@ -1650,7 +1673,7 @@ export default function SocialStrategy() {
       const result = await api.post<SocialStrategyResponse & { campaign: SocialStrategyType }>("/api/social-strategy/campaigns", {
         growthOpportunityIds,
         websiteId,
-        projectId: selectedProject.id,
+        projectId: effectiveProjectId,
         campaignId: editingCampaignId,
         campaignName: campaignName.trim() || `${intelligence?.businessName || "Project"} social campaign`,
         campaignStartAt,
@@ -1846,7 +1869,7 @@ export default function SocialStrategy() {
     }
   };
 
-  if (loading && websites.length === 0) return <div className="text-charcoal-400">Loading social strategy...</div>;
+
 
   return (
     <div className="flex flex-col gap-6">
@@ -1859,8 +1882,11 @@ export default function SocialStrategy() {
         </div>
         <label className="block min-w-[260px]">
           <span className="mb-1 block text-sm font-medium text-slate-600">Selected project</span>
-          <select value={websiteId} onChange={(event) => void changeWebsite(event.target.value)} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
-            {websites.map((website) => <option key={website.id} value={website.id}>{website.domain}</option>)}
+          <select value={effectiveProjectId ?? ""} disabled={loading || campaignEditorOpen} onChange={(event) => { setSelectedProjectId(event.target.value); setSearchParams((current) => { const next = new URLSearchParams(current); next.set("projectId", event.target.value); next.delete("project"); return next; }); }} className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100">
+            {loading ? <option value={effectiveProjectId ?? ""}>Loading project…</option> : <>
+              {!projects.length && <option value="">No accessible projects</option>}
+              {projects.map((project) => <option key={project.id} value={project.id}>{project.businessName || project.name}</option>)}
+            </>}
           </select>
         </label>
       </div>
@@ -2451,7 +2477,7 @@ export default function SocialStrategy() {
                         {campaignSetupStep === 3 && <>
                         <div className="md:col-span-2">
                           <div className="flex items-center justify-between gap-3"><div><div className="text-sm font-bold text-charcoal-900">Targeted keywords</div><p className="mt-1 text-xs text-slate-500">Choose one or more keywords from the approved Project Intelligence list.</p></div><span className="rounded-full bg-brand-50 px-3 py-1 text-xs font-bold text-brand-700">{selectedCampaignKeywords.length} selected</span></div>
-                          {intelligence?.keywords.length ? <div className="mt-3 flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3">{intelligence.keywords.map((keyword) => { const active = selectedCampaignKeywords.includes(keyword); return <button key={keyword} type="button" onClick={() => toggleCampaignKeyword(keyword)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${active ? "border-brand-300 bg-brand-100 text-brand-800" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}>{active ? "✓ " : "+ "}{keyword}</button>; })}</div> : <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">No keywords are available in Project Intelligence yet.</div>}
+                          {intelligence?.keywords.length ? <div className="mt-3 flex max-h-44 flex-wrap gap-2 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-3">{intelligence.keywords.map((keyword) => { const active = selectedCampaignKeywords.includes(keyword); return <button key={keyword} type="button" onClick={() => toggleCampaignKeyword(keyword)} className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${active ? "border-brand-300 bg-brand-100 text-brand-800" : "border-slate-200 bg-white text-slate-600 hover:border-brand-200"}`}>{active ? "✓ " : "+ "}{keyword}</button>; })}</div> : <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{loading ? "Loading project keywords…" : "No keywords are available in Project Intelligence yet."}</div>}
                         </div>
                         <div className="md:col-span-2">
                           <div className="flex flex-wrap items-start justify-between gap-2">

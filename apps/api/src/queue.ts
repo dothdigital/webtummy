@@ -1,5 +1,6 @@
 // API-side BullMQ producer. Enqueues crawl jobs for the worker to consume.
 import { Queue } from "bullmq";
+import { LEAD_MAGNET_QUEUE } from "./lead-magnet-jobs.js";
 import { config, CONTENT_PLAN_GENERATION_QUEUE, CRAWL_QUEUE, DISCOVERY_GENERATION_QUEUE, GROWTH_INTELLIGENCE_QUEUE, JVZOO_PROCESSING_QUEUE, KEYWORD_RESEARCH_QUEUE, LOCAL_GRID_SCAN_QUEUE, LOCAL_SEO_AUDIT_QUEUE, SOCIAL_IMAGE_QUEUE, STRATEGY_GENERATION_QUEUE, WEBSITE_BUILDER_QUEUE } from "./config.js";
 
 function redisConnectionOptions() {
@@ -16,6 +17,7 @@ function redisConnectionOptions() {
 }
 
 export const queueConnection = redisConnectionOptions();
+export const leadMagnetGenerationQueue = new Queue<{ jobId: string }>(LEAD_MAGNET_QUEUE, { connection: queueConnection });
 
 export const crawlQueue = new Queue<{ crawlJobId: string }, unknown, "crawl:start">(CRAWL_QUEUE, { connection: queueConnection, defaultJobOptions: { attempts: 3, backoff: { type: "exponential", delay: 15_000 }, removeOnComplete: { age: 86_400, count: 5_000 }, removeOnFail: { age: 7 * 86_400, count: 10_000 } } });
 

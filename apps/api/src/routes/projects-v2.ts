@@ -1,3 +1,4 @@
+import { LEAD_MAGNET_QUEUE, LEAD_MAGNET_JOB_MODULE, LeadMagnetCheckpoints, leadMagnetJobId, leadMagnetJobView, leadMagnetFailure, jobObject } from "../lead-magnet-jobs.js";
 import { websiteAnalysisUrl, websiteContext, websitePlanningContext } from "@webtummy/core/website-context";
 import { websiteContextSchema, validateWebsiteContext, websiteProjectFields } from "../website-context.js";
 import { requiresSearchResearch } from "@webtummy/core/growth-categories";
@@ -34,7 +35,7 @@ import { marketingExecutionSummary } from "../marketing-execution-engine.js";
 import { generateAiOpportunityRecommendations, type AiOpportunityRecommendation } from "../opportunity-ai.js";
 import { centralAiJson, prepareCentralAiPrompt } from "../central-ai-service.js";
 import { isWebsitePlanTask } from "../website-plan-task.js";
-import { queueConnection, strategyGenerationQueue, type StrategyGenerationQueueJobData } from "../queue.js";
+import { queueConnection, leadMagnetGenerationQueue, strategyGenerationQueue, type StrategyGenerationQueueJobData } from "../queue.js";
 import { runCommercialRequestContext } from "../commercial-request-context.js";
 import { createApiErrorCode } from "../api-errors.js";
 import { queueApiErrorReport } from "../api-error-reporter.js";
@@ -5534,38 +5535,150 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/research", async 
   }
 });
 
+async function enqueueLeadMagnetJob(jobId: string) {
+  const existing = await leadMagnetGenerationQueue.getJob(jobId);
+  if (existing) {
+    const state = await existing.getState();
+    if (state === "failed" || state === "completed") await existing.retry(state);
+    return;
+  }
+  await leadMagnetGenerationQueue.add("lead-magnet:generate", { jobId }, { jobId, removeOnComplete: 250, removeOnFail: 250 });
+}
+
 guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async (req, res) => {
   const context = await requireRequestPermission(req, "edit_assigned_work");
   const project = await scopedProject(req, req.params.projectId);
-  if (!project) return res.status(404).json({ error: "project not found" });
-  if (!project.businessProfile) return res.status(409).json({ error: "complete intake before generating a lead magnet" });
-  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
+  if (!project) return res.status(404).json({ error: "Project not found." });
   const parsed = leadMagnetGenerateSchema.safeParse(req.body ?? {});
   if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-  if (!approvedStrategy) return res.status(409).json({ error: "approve strategy before generating a lead magnet" });
+  const fingerprint = createHash("sha256").update(JSON.stringify(parsed.data)).digest("hex");
+  const key = String(req.header("Idempotency-Key") || req.body?.idempotencyKey || fingerprint).slice(0, 200);
+  const id = leadMagnetJobId(project.id, key);
+  const job = await prisma.aiRun.upsert({ where: { id }, update: {}, create: {
+    id, projectId: project.id, clientId: project.clientId, moduleName: LEAD_MAGNET_JOB_MODULE, promptVersion: "lead-magnet-job-v1", status: "queued",
+    inputSnapshotJson: { projectId: project.id, body: parsed.data, fingerprint, requestedBy: { userId: context.membership.userId, role: req.user!.role, clientId: project.clientId, workspaceId: context.workspace.id } } as Prisma.InputJsonValue,
+    outputJson: { stage: "queued", checkpoints: {} },
+  } });
+  if (jobObject(job.inputSnapshotJson).fingerprint !== fingerprint) return res.status(409).json({ error: "This retry key belongs to different saved setup. Start a new generation for the changed setup." });
+  if (["queued", "running"].includes(job.status)) void enqueueLeadMagnetJob(job.id).catch((error) => console.error("[lead-magnet] Queue delivery pending", { projectId: project.id, jobId: job.id, error: String(error) }));
+  res.status(202).json({ job: leadMagnetJobView(job) });
+});
+
+guidedProjectsRouter.get("/projects-v2/:projectId/lead-magnet/jobs/latest", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const job = await prisma.aiRun.findFirst({ where: { projectId: project.id, moduleName: LEAD_MAGNET_JOB_MODULE }, orderBy: { createdAt: "desc" } });
+  res.json({ job: job ? leadMagnetJobView(job) : null });
+});
+
+guidedProjectsRouter.get("/projects-v2/:projectId/lead-magnet/jobs/:jobId", async (req, res) => {
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const job = await prisma.aiRun.findFirst({ where: { id: req.params.jobId, projectId: project.id, moduleName: LEAD_MAGNET_JOB_MODULE } });
+  if (!job) return res.status(404).json({ error: "Generation job not found." });
+  res.json({ job: leadMagnetJobView(job) });
+});
+
+guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/jobs/:jobId/retry", async (req, res) => {
+  await requireRequestPermission(req, "edit_assigned_work");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) return res.status(404).json({ error: "Project not found." });
+  const job = await prisma.aiRun.findFirst({ where: { id: req.params.jobId, projectId: project.id, moduleName: LEAD_MAGNET_JOB_MODULE } });
+  if (!job) return res.status(404).json({ error: "Generation job not found." });
+  await prisma.aiRun.updateMany({ where: { id: job.id, status: "failed" }, data: { status: "queued", errorMessage: null } });
+  const updated = await prisma.aiRun.findUniqueOrThrow({ where: { id: job.id } });
+  if (["queued", "running"].includes(updated.status)) void enqueueLeadMagnetJob(job.id).catch((error) => console.error("[lead-magnet] Retry queue delivery pending", { jobId: job.id, error: String(error) }));
+  res.status(202).json({ job: leadMagnetJobView(updated) });
+});
+
+async function executeLeadMagnetJob(jobId: string) {
+  const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
+  if (!job || job.moduleName !== LEAD_MAGNET_JOB_MODULE || !["queued", "running"].includes(job.status)) return;
+  const input = jobObject(job.inputSnapshotJson);
+  const checkpoints = new LeadMagnetCheckpoints(jobId, job.outputJson);
+  try {
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "running", errorMessage: null } });
+    const req = strategyWorkerRequest({ ...input, revisionComment: "", idempotencyKey: jobId, usageEventId: "" } as StrategyGenerationJobInput, jobId);
+    req.body = input.body;
+    await generateLeadMagnetJob(req, checkpoints);
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "completed", errorMessage: null, outputJson: { ...checkpoints.output, stage: "completed" } } });
+    console.info("[lead-magnet] completed", { projectId: job.projectId, jobId, usageEventId: checkpoints.output.checkpoints.usage?.usageEventId, creditsReserved: checkpoints.output.checkpoints.usage?.creditsReserved, funnelId: checkpoints.output.checkpoints.persist_funnel?.funnel?.id });
+  } catch (error) {
+    const failure = leadMagnetFailure(error, checkpoints.output.stage || "setup");
+    // Re-read: a final transaction may have committed before a connection failed.
+    const saved = await prisma.aiRun.findUniqueOrThrow({ where: { id: jobId } });
+    const output = jobObject(saved.outputJson);
+    console.error("[lead-magnet] failed", { projectId: job.projectId, jobId, stage: output.stage, usageEventId: output.checkpoints?.usage?.usageEventId, creditsReserved: output.checkpoints?.usage?.creditsReserved, ...failure });
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", errorMessage: failure.message, outputJson: { ...output, failure } } });
+  }
+}
+
+let leadMagnetGenerationWorker: Worker<{ jobId: string }> | null = null;
+export function startLeadMagnetGenerationQueueWorker() {
+  if (leadMagnetGenerationWorker) return leadMagnetGenerationWorker;
+  leadMagnetGenerationWorker = new Worker(LEAD_MAGNET_QUEUE, async (job) => executeLeadMagnetJob(job.data.jobId), { connection: queueConnection, concurrency: 2 });
+  leadMagnetGenerationWorker.on("error", (error) => console.error("[lead-magnet] Worker error", error.message));
+  leadMagnetGenerationWorker.on("failed", (job, error) => {
+    if (!job) return;
+    void prisma.aiRun.updateMany({ where: { id: job.data.jobId, moduleName: LEAD_MAGNET_JOB_MODULE, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: leadMagnetFailure(error, "worker").message } })
+      .catch((failure) => console.error("[lead-magnet] Could not record worker failure", { jobId: job.data.jobId, error: String(failure) }));
+  });
+  const recover = async () => {
+    const jobs = await prisma.aiRun.findMany({ where: { moduleName: LEAD_MAGNET_JOB_MODULE, status: { in: ["queued", "running"] } }, select: { id: true } });
+    for (const job of jobs) await enqueueLeadMagnetJob(job.id);
+  };
+  const timer = setInterval(() => void recover().catch((error) => console.error("[lead-magnet] Queue recovery failed", String(error))), 30_000);
+  timer.unref();
+  leadMagnetGenerationWorker.on("closed", () => clearInterval(timer));
+  void recover().catch((error) => console.error("[lead-magnet] Queue recovery failed", String(error)));
+  return leadMagnetGenerationWorker;
+}
+
+async function generateLeadMagnetJob(req: Request, checkpoints: LeadMagnetCheckpoints) {
+  const persisted = checkpoints.output.checkpoints.persist_funnel;
+  if (persisted) {
+    const stages = checkpoints.output.checkpoints;
+    await prisma.usageEvent.updateMany({ where: { id: stages.usage.usageEventId, status: "reserved" }, data: { approvalTokenExpiresAt: null } });
+    await checkpoints.stage("usage_commit", async () => {
+      await commitUsage({ usageEventId: stages.usage.usageEventId, provider: "openai", model: stages.lead_magnet.model, inputTokens: [stages.lead_magnet, stages.landing_page, stages.email].reduce((sum, item) => sum + (item.inputTokens || 0), 0), outputTokens: [stages.lead_magnet, stages.landing_page, stages.email].reduce((sum, item) => sum + (item.outputTokens || 0), 0), metadata: { jobId: checkpoints.jobId, leadMagnetFunnelId: persisted.funnel.id } });
+      return { committed: true };
+    });
+    return persisted;
+  }
+  const context = await requireRequestPermission(req, "edit_assigned_work");
+  const project = await scopedProject(req, req.params.projectId);
+  if (!project) throw new Error(String("project not found"));
+  if (!project.businessProfile) throw new Error(String("complete intake before generating a lead magnet"));
+  const approvedStrategy = project.strategyPlans.find((strategy) => strategy.status === "approved");
+  const parsed = leadMagnetGenerateSchema.safeParse(req.body ?? {});
+  if (!parsed.success) throw new Error(String(parsed.error.flatten()));
+  if (!approvedStrategy) throw new Error(String("approve strategy before generating a lead magnet"));
   const requestedGrowthTask = parsed.data.executionTaskId ? await prisma.executionTask.findFirst({ where: { id: parsed.data.executionTaskId, projectId: project.id, sourceType: "growth_content_opportunity", moduleName: "lead_magnet", status: { notIn: ["completed", "published", "cancelled", "skipped"] } } }) : null;
-  if (parsed.data.executionTaskId && !requestedGrowthTask) return res.status(409).json({ error: "The monthly lead-magnet task is not available. Open its current status in Growth Execution." });
+  if (parsed.data.executionTaskId && !requestedGrowthTask) throw new Error(String("The monthly lead-magnet task is not available. Open its current status in Growth Execution."));
   const researchRun = await prisma.aiRun.findFirst({ where: { id: parsed.data.researchRunId, projectId: project.id, moduleName: "lead_magnet_research", status: "completed" } });
-  if (!researchRun) return res.status(409).json({ error: "Run the AI lead-magnet research step before choosing a format and generating the funnel." });
+  if (!researchRun) throw new Error(String("Run the AI lead-magnet research step before choosing a format and generating the funnel."));
   const sourceSeries = parsed.data.seriesId ? await prisma.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: parsed.data.seriesId }, orderBy: { version: "desc" }, select: { seriesId: true } }) : null;
-  if (parsed.data.seriesId && !sourceSeries) return res.status(404).json({ error: "The lead magnet selected for refinement was not found." });
+  if (parsed.data.seriesId && !sourceSeries) throw new Error(String("The lead magnet selected for refinement was not found."));
   const researchOutput = researchRun.outputJson && typeof researchRun.outputJson === "object" && !Array.isArray(researchRun.outputJson) ? researchRun.outputJson as Record<string, unknown> : {};
 
   let usageEventId: string | null = null;
   try {
     const client = await prisma.client.findUnique({ where: { id: project.clientId }, select: { plan: true } });
     const routedModel = await modelForFeature("lead_magnet_generate", client?.plan, config.openaiModel);
-    const preflight = await preflightUsage({
+    const preflight = await checkpoints.stage("usage", () => preflightUsage({
       clientId: project.clientId,
       userId: req.user?.userId,
       projectId: project.id,
       websiteId: project.websiteId,
       featureKey: "lead_magnet_generate",
       actionKey: "Generate lead magnet",
-      idempotencyKey: `lead-magnet:${project.id}:${Date.now()}`,
-      metadata: { source: "guided_project_lead_magnet" },
-    });
+      idempotencyKey: `lead-magnet:${checkpoints.jobId}`,
+      metadata: { source: "guided_project_lead_magnet", jobId: checkpoints.jobId },
+    }));
     usageEventId = preflight.usageEventId;
+    // The saved job is the authorization. The interactive token's 15-minute
+    // expiry must not invalidate a long-running job or its later stage retry.
+    await prisma.usageEvent.updateMany({ where: { id: usageEventId, status: "reserved" }, data: { approvalTokenExpiresAt: null } });
 
     const [keywordRuns, websiteBrand] = await Promise.all([
       prisma.keywordResearchRun.findMany({
@@ -5609,7 +5722,28 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       targetWordCount: parsed.data.targetWordCount,
       funnelSetup: parsed.data.funnelSetup,
     });
-    const generated = await openaiJson(prompt, routedModel);
+    const content = await checkpoints.stage("lead_magnet", async () => {
+      const value = await openaiJson(`${prompt}\nSTAGE OVERRIDE: Return only businessAnalysis, branding, imagePlan and leadMagnet. Other assets are generated in later stages.`, routedModel);
+      const asset = jobObject(jobObject(value.result).leadMagnet);
+      if (!asset.title || !asset.promise || !Array.isArray(asset.sections) || !asset.sections.length) throw new Error("Invalid generated lead magnet: title, promise and sections are required.");
+      return value;
+    });
+    const landing = await checkpoints.stage("landing_page", async () => {
+      const value = await openaiJson(`${prompt}\nSTAGE OVERRIDE: Return only landingPage, thankYouPage and trackingPlan. Base these on this completed lead magnet: ${JSON.stringify(content.result)}`, routedModel);
+      const page = jobObject(jobObject(value.result).landingPage);
+      if (!page.headline || !page.subheadline || !page.ctaText) throw new Error("Invalid generated landing page: headline, subheadline and CTA are required.");
+      return value;
+    });
+    const emails = await checkpoints.stage("email", async () => {
+      const value = await openaiJson(`${prompt}\nSTAGE OVERRIDE: Return only deliveryEmail and followUpSequence. Base these on this completed lead magnet: ${JSON.stringify(content.result)}`, routedModel);
+      const email = jobObject(jobObject(value.result).deliveryEmail);
+      if (!email.subject || !email.body || !Array.isArray(jobObject(value.result).followUpSequence)) throw new Error("Invalid generated email sequence: subject, body and follow-up sequence are required.");
+      return value;
+    });
+    const generated = { ...content, result: { ...jobObject(content.result), ...jobObject(landing.result), ...jobObject(emails.result) },
+      inputTokens: content.inputTokens + landing.inputTokens + emails.inputTokens,
+      outputTokens: content.outputTokens + landing.outputTokens + emails.outputTokens };
+
     const result = generated.result as { leadMagnet?: { title?: unknown; assetType?: unknown } };
     const title = parsed.data.funnelSetup?.leadMagnetTitle || (typeof result.leadMagnet?.title === "string" && result.leadMagnet.title.trim()
       ? result.leadMagnet.title.trim()
@@ -5656,24 +5790,29 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       };
     });
     const generatedCoverImage = leadMagnetCoverImage({ title, businessName: String(generatedBrand.businessName ?? project.businessName ?? project.name), branding: generatedBrand, imagePlan });
-    const rawGeneratedImages = await generateLeadMagnetVisuals({
-      branding: generatedBrand,
-      imagePlan,
-      researchContext: {
-        project: { name: project.name, businessName: project.businessName, website: project.website?.rootUrl ?? project.websiteUrl, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal },
-        businessAnalysis,
-        research: researchOutput.research ?? null,
-        recommendation: parsed.data.recommendation ?? null,
-        keywords: keywordContext,
-      },
-    });
-    const coverImage = await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: generatedCoverImage, filename: "lead-magnet-cover.svg", source: "ai_lead_magnet", visibility: "private", altText: `${title} cover`, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `lead-magnet:${project.id}:${researchRun.id}:cover`, createdByUserId: context.membership.userId });
-    const generatedImages = await Promise.all(rawGeneratedImages.map(async (image, index) => ({
-      ...image,
-      dataUrl: await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: image.dataUrl, filename: `lead-magnet-${image.role || index + 1}.png`, source: "openai_generated", visibility: "private", altText: image.altText, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `lead-magnet:${project.id}:${researchRun.id}:${image.role || index}`, createdByUserId: context.membership.userId, metadata: { generationModel: image.generationModel, evidenceSource: image.sourceUrl } }),
-    })));
+    const coverImage = await checkpoints.stage("visual_cover", () => storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: generatedCoverImage, filename: "lead-magnet-cover.svg", source: "ai_lead_magnet", visibility: "private", altText: `${title} cover`, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `${checkpoints.jobId}:cover`, createdByUserId: context.membership.userId }));
+    const generatedImages = [];
+    for (const [index, image] of imagePlan.entries()) {
+      const stored = await checkpoints.stage(`visual_${image.role}`, async () => {
+        const [visual] = await generateLeadMagnetVisuals({ branding: generatedBrand, imagePlan: [image], researchContext: {
+          project: { name: project.name, businessName: project.businessName, website: project.website?.rootUrl ?? project.websiteUrl, targetLocations: project.targetLocations, primaryGoal: project.primaryGoal },
+          businessAnalysis, research: researchOutput.research ?? null, recommendation: parsed.data.recommendation ?? null, keywords: keywordContext,
+        } });
+        return { ...visual, dataUrl: await storeGeneratedImage({ workspaceId: context.workspace.id, projectId: project.id, dataUrl: visual.dataUrl, filename: `lead-magnet-${visual.role || index + 1}.png`, source: "openai_generated", visibility: "private", altText: visual.altText, sourceEntityType: "lead_magnet_research", sourceEntityId: researchRun.id, dedupeKey: `${checkpoints.jobId}:${visual.role}`, createdByUserId: context.membership.userId, metadata: { generationModel: visual.generationModel, evidenceSource: visual.sourceUrl } }) };
+      });
+      generatedImages.push(stored);
+    }
+    const formFields = Array.isArray(landingPage.formFields) ? landingPage.formFields.map(String) : ["First name", "Email"];
+    if (!formFields.some((field) => /email/i.test(field))) formFields.push("Email");
+    const optInForm = await checkpoints.stage("form", async () => ({ fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." }));
+    if (!optInForm.fields.some((field) => field.type === "email")) throw new Error("Invalid generated form: an email field is required.");
     const generatedWordCount = leadMagnetBodyWordCount(leadMagnet);
-    const generationResult = await prisma.$transaction(async (tx) => {
+    const generationResult = await checkpoints.stage("persist_funnel", () => prisma.$transaction(async (tx) => {
+      // Updating the job acquires its row lock before creating any final records.
+      // A redelivered worker observes the existing funnel under the same lock.
+      const locked = await tx.aiRun.update({ where: { id: checkpoints.jobId }, data: { status: "running" } });
+      const alreadySaved = jobObject(locked.outputJson).checkpoints?.persist_funnel;
+      if (alreadySaved) return alreadySaved as { generation: { id: string; estimatedCostUsd: number }; funnel: { id: string } };
       const planId = await activePlanId(tx, project.id);
       const record = await tx.aiContentGeneration.create({
         data: {
@@ -5695,7 +5834,6 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       });
       const latestSeriesVersion = sourceSeries ? await tx.leadMagnetFunnel.findFirst({ where: { projectId: project.id, seriesId: sourceSeries.seriesId }, orderBy: { version: "desc" }, select: { version: true } }) : null;
       const version = (latestSeriesVersion?.version ?? 0) + 1;
-      const formFields = Array.isArray(landingPage.formFields) ? landingPage.formFields.map(String) : ["First name", "Email"];
       const funnel = await tx.leadMagnetFunnel.create({
         data: {
           projectId: project.id, clientId: project.clientId, ...(sourceSeries ? { seriesId: sourceSeries.seriesId } : {}), version, status: "draft", title,
@@ -5704,7 +5842,7 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
           audience: project.businessProfile?.targetAudience, primaryGoal: project.primaryGoal,
           brandVoice: project.brandVoice || project.businessProfile?.tonePreference,
           assetJson: { ...leadMagnet, title, targetWordCount: parsed.data.targetWordCount ?? null, generatedWordCount, businessAnalysis, branding: generatedBrand, imagePlan, coverImage, generatedImages, leadMagnetResearch: researchOutput.research ?? null, researchRunId: researchRun.id, opportunityEvidence: parsed.data.recommendation?.evidence ?? [], estimatedImpact: parsed.data.recommendation?.estimatedImpact ?? null, setupInstructions: parsed.data.instructions ?? null, funnelSetup: parsed.data.funnelSetup ?? null }, landingPageJson: { ...landingPage, coverImage } as Prisma.InputJsonValue,
-          optInFormJson: { fields: formFields.map((field) => ({ name: field.toLowerCase().replace(/[^a-z0-9]+/g, "_"), label: field, type: /email/i.test(field) ? "email" : "text", required: /email/i.test(field) })), submitLabel: String(landingPage.ctaText ?? "Get the resource"), consentText: "I agree to receive this resource and relevant follow-up email. I can unsubscribe at any time." },
+          optInFormJson: optInForm,
           thankYouPageJson: packageObject(generatedPackage.thankYouPage) as Prisma.InputJsonValue,
           deliveryEmailJson: deliveryEmail as Prisma.InputJsonValue,
           followUpSequenceJson: (Array.isArray(generatedPackage.followUpSequence) ? generatedPackage.followUpSequence : []) as Prisma.InputJsonValue,
@@ -5778,27 +5916,25 @@ guidedProjectsRouter.post("/projects-v2/:projectId/lead-magnet/generate", async 
       const approvers = await tx.workspaceMembership.findMany({ where: { workspaceId: context.workspace.id, status: "active", roles: { some: { role: { in: ["owner", "admin", "manager", "approver"] } } } }, select: { userId: true } });
       for (const userId of [...new Set([context.workspace.ownerUserId, ...approvers.map((item) => item.userId)])]) await createWorkspaceNotification(tx, { context, userId, type: "lead_magnet_ready_for_approval", title: "Lead magnet ready for approval", body: `${project.name}: ${title} and its complete lead-capture funnel are ready to review.`, actionUrl: `/lead-magnets?projectId=${project.id}`, agencyClientId: project.agencyClientId, projectId: project.id });
       await syncProjectWorkflow(tx, project.id);
-      return { generation: record, funnel };
-    });
+      const result = { generation: { id: record.id, estimatedCostUsd: Number(record.estimatedCostUsd ?? 0) }, funnel: { id: funnel.id } };
+      await tx.aiRun.update({ where: { id: checkpoints.jobId }, data: { outputJson: checkpoints.checkpoint("persist_funnel", result) as Prisma.InputJsonValue } });
+      return result;
+    }));
 
-    await commitUsage({
+    await checkpoints.stage("usage_commit", async () => { await commitUsage({
       usageEventId,
       provider: "openai",
       model: generated.model,
       inputTokens: generated.inputTokens,
       outputTokens: generated.outputTokens,
       providerCostUsd: Number(generationResult.generation.estimatedCostUsd ?? 0),
-      metadata: { aiContentGenerationId: generationResult.generation.id, leadMagnetFunnelId: generationResult.funnel.id },
-    });
+      metadata: { jobId: checkpoints.jobId, aiContentGenerationId: generationResult.generation.id, leadMagnetFunnelId: generationResult.funnel.id },
+    }); return { committed: true, usageEventId }; });
     usageEventId = null;
 
-    const updated = await scopedProject(req, project.id);
-    res.status(201).json({ project: updated, generation: generationResult.generation, funnel: generationResult.funnel });
+    return generationResult;
   } catch (error) {
-    if (usageEventId) {
-      await refundUsage({ usageEventId, reason: error instanceof Error ? error.message : "Lead magnet generation failed" }).catch(() => undefined);
-    }
-    if (error instanceof Error && error.message === "openai_not_configured") return res.status(503).json({ error: "OpenAI is not configured" });
-    res.status(500).json({ error: error instanceof Error ? error.message : "Lead magnet generation failed" });
+    // Keep the same reservation for a resumable job. Retrying never reserves again.
+    throw error;
   }
-});
+}

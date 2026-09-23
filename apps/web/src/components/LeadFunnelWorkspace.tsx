@@ -5,6 +5,7 @@ import { api } from "../api.js";
 import { AiPlanningScreen } from "./ui.js";
 
 type JsonMap = Record<string, unknown>;
+type GenerationJob = { id: string; projectId: string; status: string; stage: string; error: string | null; completedStages: string[]; funnelId: string | null };
 type Recommendation = {
   type: string; title: string; score: number; buyerStage: "awareness" | "consideration" | "decision"; signal: string; why: string; expectedOutcome: string;
   newKeywordAngle?: string | null; differenceFromPrevious?: string | null;
@@ -70,6 +71,9 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
   const [desiredAction, setDesiredAction] = useState("generate_qualified_leads");
   const [successDefinition, setSuccessDefinition] = useState("");
   const [busy, setBusy] = useState("");
+  const [generationJob, setGenerationJob] = useState<GenerationJob | null>(null);
+  const [jobLoading, setJobLoading] = useState(true);
+  const generationRunning = generationJob?.status === "queued" || generationJob?.status === "running";
   const [autoResearchAttempted, setAutoResearchAttempted] = useState(false);
   const [setupStep, setSetupStep] = useState<0 | 1 | 2 | 3 | 4>(0);
   const [generationAudience, setGenerationAudience] = useState("");
@@ -103,6 +107,46 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
     const retainedSelection = preferNewestRecommendation ? ideas.recommendations[0] : ideas.recommendations.find((item) => item.title === selectedIdea && item.researchRunId === selectedResearchRunId) ?? ideas.recommendations[0];
     setSelectedIdea(searchParams.get("topic") || retainedSelection?.title || "");
     setSelectedResearchRunId(retainedSelection?.researchRunId ?? null);
+  };
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | undefined;
+    let previousStatus = "";
+    setGenerationJob(null);
+    setJobLoading(true);
+    const poll = async () => {
+      try {
+        const result = await api.get<{ job: GenerationJob | null }>(`/api/projects-v2/${projectId}/lead-magnet/jobs/latest`);
+        if (cancelled) return;
+        setGenerationJob(result.job);
+        setJobLoading(false);
+        if (result.job?.status === "completed" && previousStatus !== "completed") {
+          const workspace = await api.get<Response>(`/api/projects/${projectId}/lead-magnets`);
+          if (cancelled) return;
+          setData(workspace);
+          if (result.job.funnelId) setActiveId(result.job.funnelId);
+          setSetupStep(0);
+        }
+        previousStatus = result.job?.status ?? "";
+      } catch (error) {
+        if (!cancelled) setNotice({ tone: "error", text: `Could not check generation status. Your saved job can continue in the background. ${error instanceof Error ? error.message : ""}` });
+      } finally {
+        if (!cancelled) timer = window.setTimeout(poll, 4000);
+      }
+    };
+    void poll();
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [projectId]);
+
+  const retryGeneration = async () => {
+    if (!generationJob) return;
+    setBusy("retry-generation");
+    try {
+      const result = await api.post<{ job: GenerationJob }>(`/api/projects-v2/${projectId}/lead-magnet/jobs/${generationJob.id}/retry`, {});
+      setGenerationJob(result.job);
+      setNotice(null);
+    } catch (error) { setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not retry the saved job." }); }
+    finally { setBusy(""); }
   };
   useEffect(() => { setData(null); setNotice(null); setObjective(""); setSuccessDefinition(""); setInstructions(""); setSetupStep(0); setGenerationAudience(""); setGenerationCta(""); setGenerationDetails(""); setTargetWordCount(""); setGenerationVisuals({ charts: true, images: true, diagrams: true }); setGenerationFunnelSetup({ contentMode: "sales_pitch", leadMagnetTitle: "", landingHeadline: "", landingDescription: "", ctaText: "", deliveryEmailSubject: "", deliveryEmailContent: "", conversionTarget: "5" }); setGenerationSeriesId(null); setSelectedResearchRunId(null); setAutoResearchAttempted(false); setResearchData({ recommendations: [], research: null, followUpQuestions: [], evidence: null, researchRun: null }); void load().catch((error) => setNotice({ tone: "error", text: error instanceof Error ? error.message : "Could not load lead funnels." })); }, [projectId]);
   const funnel = useMemo(() => data?.funnels.find((item) => item.id === activeId) ?? data?.current ?? null, [data, activeId]);
@@ -160,18 +204,15 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
     const idea = recommendation?.title || selectedIdea || searchParams.get("topic") || null;
     const selectedRecommendation = recommendation ?? recommendations.find((item) => item.title === idea && (!selectedResearchRunId || item.researchRunId === selectedResearchRunId));
     if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); setSelectedResearchRunId(recommendation.researchRunId ?? null); }
-    let generatedFunnelId = "";
+    if (generationRunning || jobLoading) return Promise.resolve(false);
     return run("generate", async () => {
       const requestedWords = Number(targetWordCount);
       const conversionTarget = Number(generationFunnelSetup.conversionTarget);
       const optional = (value: string) => value.trim() || null;
       const funnelSetup = { contentMode: generationFunnelSetup.contentMode, leadMagnetTitle: optional(generationFunnelSetup.leadMagnetTitle), landingHeadline: optional(generationFunnelSetup.landingHeadline), landingDescription: optional(generationFunnelSetup.landingDescription), ctaText: optional(generationFunnelSetup.ctaText), deliveryEmailSubject: optional(generationFunnelSetup.deliveryEmailSubject), deliveryEmailContent: optional(generationFunnelSetup.deliveryEmailContent), conversionTarget: Number.isFinite(conversionTarget) && conversionTarget >= .1 && conversionTarget <= 100 ? conversionTarget : 5 };
-      const result = await api.post<{ funnel: { id: string } }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { executionTaskId: searchParams.get("taskId"), researchRunId: selectedRecommendation?.researchRunId ?? researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: selectedRecommendation ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, funnelSetup, visuals });
-      generatedFunnelId = result.funnel.id;
-    }, "The lead magnet, landing-page copy, registration form, thank-you copy, delivery email, and calls to action were generated for review.").then((completed) => {
-      if (completed && generatedFunnelId) setActiveId(generatedFunnelId);
-      return completed;
-    });
+      const result = await api.post<{ job: GenerationJob }>(`/api/projects-v2/${projectId}/lead-magnet/generate`, { executionTaskId: searchParams.get("taskId"), researchRunId: selectedRecommendation?.researchRunId ?? researchData.researchRun?.id, seriesId: generationSeriesId, selectedIdea: idea, instructions: setupInstructions || instructions || null, recommendation: selectedRecommendation ?? null, targetWordCount: Number.isFinite(requestedWords) && requestedWords >= 250 ? requestedWords : null, funnelSetup, visuals });
+      setGenerationJob(result.job);
+    }, "Setup saved. Generation continues in the background; you can refresh or leave this page.");
   };
   const startSetup = (recommendation?: Recommendation, step: 1 | 2 = 1) => {
     if (recommendation) { setCustomType(""); setSelectedIdea(recommendation.title); setSelectedResearchRunId(recommendation.researchRunId ?? null); }
@@ -318,7 +359,12 @@ export default function LeadFunnelWorkspace({ projectId, suggestedIdeas, startRe
   const performanceAvailable = funnel ? Object.values(funnel.performance).some((value) => Number(value) > 0) : false;
   return <div className="space-y-5">
     {busy === "research" && <LeadMagnetCookingScreen refreshing={Boolean(researchData.researchRun)} />}
-    {busy === "generate" && <LeadFunnelGenerationCookingScreen />}
+    {generationJob && <div className="order-1 rounded-xl border border-brand-200 bg-brand-50 p-5" role="status">
+      <div className="font-bold">{generationJob.status === "completed" ? "Lead magnet ready for review" : generationJob.status === "failed" ? "Generation paused — completed work is saved" : `Generating: ${label(generationJob.stage)}`}</div>
+      <p className="mt-1 text-sm">{generationJob.error || (generationRunning ? "You can refresh or leave this page. Generation continues in the background." : `${generationJob.completedStages.length} stages saved.`)}</p>
+      <p className="mt-1 text-xs">Job: {generationJob.id}</p>
+      {generationJob.status === "failed" && data.capabilities.canGenerate && <button type="button" disabled={Boolean(busy)} onClick={() => void retryGeneration()} className="mt-3 rounded-lg bg-slate-950 px-4 py-2 font-bold text-white disabled:opacity-50">Retry from {label(generationJob.stage)}</button>}
+    </div>}
     {notice && <div className={`rounded-xl border px-4 py-3 text-sm font-semibold ${notice.tone === "success" ? "border-emerald-200 bg-emerald-50 text-emerald-900" : notice.tone === "info" ? "border-cyan-200 bg-cyan-50 text-cyan-950" : "border-rose-200 bg-rose-50 text-rose-900"}`}>{notice.text}</div>}
     <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" aria-label="Current creation context"><div className="border-b border-slate-100 bg-slate-50 px-4 py-2 text-[10px] font-black uppercase tracking-[.14em] text-slate-500">Current creation context</div><div className="grid gap-px bg-slate-100 sm:grid-cols-2 xl:grid-cols-5">{[["Workspace", data.context.workspaceName], ["Client", data.context.clientName || "This business"], ["Project", data.context.projectName], ["Business", data.context.businessName], ["Website", data.context.websiteName || "Website not selected"]].map(([itemLabel, value]) => <div key={itemLabel} className="min-w-0 bg-white px-4 py-3"><div className="text-[9px] font-black uppercase tracking-wide text-slate-400">{itemLabel}</div><div className="mt-1 truncate text-xs font-bold text-slate-800" title={value}>{value}</div></div>)}</div>{requestedFromSiteArchitect && <div className="flex flex-col gap-3 border-t border-cyan-200 bg-cyan-50 px-5 py-4 sm:flex-row sm:items-center sm:justify-between"><div><div className="text-xs font-black uppercase tracking-wide text-cyan-700">Source · Site Architect landing-page action</div><p className="mt-1 text-sm leading-6 text-cyan-950">Create and approve the lead magnet, then connect that exact version to a landing-page draft. Form and delivery setup can be completed before publishing.</p></div><button type="button" onClick={() => navigate(searchParams.get("returnTo") || `/site-architect?projectId=${encodeURIComponent(projectId)}`)} className="shrink-0 rounded-lg border border-cyan-300 bg-white px-4 py-2.5 text-sm font-bold text-cyan-800">Return to website</button></div>}</section>
 

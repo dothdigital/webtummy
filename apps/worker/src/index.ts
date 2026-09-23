@@ -15,7 +15,7 @@ import { startChangeIntelligenceScheduler } from "./change-intelligence.js";
 // Discovery generation shares the API's authenticated generation service, but
 // its BullMQ consumer belongs to this dedicated worker lifecycle.
 import { startDiscoveryGenerationQueueWorker } from "../../api/src/routes/discovery-drafts.js";
-import { startStrategyGenerationQueueWorker } from "../../api/src/routes/projects-v2.js";
+import { startStrategyGenerationQueueWorker, startLeadMagnetGenerationQueueWorker } from "../../api/src/routes/projects-v2.js";
 import { startContentPlanGenerationQueueWorker } from "../../api/src/routes/execution-tasks.js";
 
 async function markCrawlFailed(crawlJobId: string, error: unknown) {
@@ -106,6 +106,7 @@ const growthIntelligenceWorker = startGrowthIntelligenceWorker();
 const socialImageWorker = startSocialImageWorker();
 const discoveryGenerationWorker = startDiscoveryGenerationQueueWorker();
 const strategyGenerationWorker = startStrategyGenerationQueueWorker();
+const leadMagnetGenerationWorker = startLeadMagnetGenerationQueueWorker();
 const contentPlanGenerationWorker = startContentPlanGenerationQueueWorker();
 const searchConsoleWorker = startSearchConsoleWorker();
 const growthIntelligenceTimer = startGrowthIntelligenceScheduler();
@@ -129,6 +130,7 @@ const shutdown = async () => {
   await socialImageWorker.close();
   await discoveryGenerationWorker.close();
   await strategyGenerationWorker.close();
+  await leadMagnetGenerationWorker.close();
   await contentPlanGenerationWorker.close();
   await searchConsoleWorker.close();
   await prisma.$disconnect();
