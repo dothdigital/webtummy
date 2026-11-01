@@ -743,14 +743,6 @@ export default function ContentPlanDialog({ task, onClose, onSaved, presentation
   }, [generationJob?.id, generationJob?.status, onSaved, task.id]);
 
   useEffect(() => {
-    if (!generationJob || plan || !["queued", "running"].includes(generationJob.status)) return;
-    const createdAt = new Date(generationJob.createdAt).getTime();
-    const remaining = Math.max(0, (Number.isFinite(createdAt) ? createdAt : Date.now()) + 30_000 - Date.now());
-    const timer = window.setTimeout(() => onClose(), remaining);
-    return () => window.clearTimeout(timer);
-  }, [generationJob?.id, generationJob?.status, plan, onClose]);
-
-  useEffect(() => {
     if (!plan || !setupReady || pageCandidatesLoaded) return;
     let active = true;
     api.post<{ plan?: ContentPlan; pageCandidates?: Array<{ url: string; title: string | null }> }>(`/api/execution-tasks/${task.id}/content-plan/prepare`, { inspectOnly: true }).then((result) => {
