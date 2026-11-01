@@ -3498,6 +3498,7 @@ async function executeContentPlanGenerationJob(jobId: string, stage: PlanStage =
   const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
   if (!job || job.moduleName !== "content_plan_generation_job" || ["completed", "failed", "cancelled"].includes(job.status)) return;
   const persistedOutput = contentPlanJobRecord(job.outputJson);
+  console.log("[content-plan] executing saved part", { jobId, stage, savedPart: persistedOutput.part, status: job.status });
   if (typeof persistedOutput.part === "number" && persistedOutput.part !== stage) {
     // If Redis was unavailable after persisting a handoff, a retry of the
     // preceding queue item must deliver that handoff instead of dropping it.
@@ -3519,7 +3520,7 @@ async function executeContentPlanGenerationJob(jobId: string, stage: PlanStage =
     where: { id: jobId, status: { in: ["queued", "running"] } },
     data: { status: "running", outputJson: output as Prisma.InputJsonValue, errorMessage: null },
   });
-  if (!claimed.count) return;
+  if (!claimed.count) throw new Error("Website Plan part could not claim its saved job state.");
 
   const request = contentPlanWorkerRequest(input, jobId);
   let responseStatus = 200;
