@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { NextPlanStage, planCheckpoint, withPlanCheckpoints, type PlanCheckpoints, type PlanStage } from "./content-plan-checkpoints.js";
+import { NextPlanStage, mapPlanPages, planCheckpoint, withPlanCheckpoints, type PlanCheckpoints, type PlanStage } from "./content-plan-checkpoints.js";
 
 describe("durable Website Plan stages", () => {
   function storage() {
@@ -64,5 +64,41 @@ describe("durable Website Plan stages", () => {
     const work = vi.fn(async () => "new");
     await expect(withPlanCheckpoints({ stage: 1, values: { content: "old" }, save: async () => {} }, () => planCheckpoint("content", 2, work))).rejects.toBeInstanceOf(NextPlanStage);
     expect(work).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("bounded page generation", () => {
+  it("serializes concurrent checkpoint writes without losing accepted pages", async () => {
+    let saved: PlanCheckpoints = {};
+    await withPlanCheckpoints({ stage: 2, values: {}, save: async (next) => {
+      await new Promise(resolve => setTimeout(resolve, 1));
+      saved = JSON.parse(JSON.stringify(next));
+    } }, () => mapPlanPages([0, 1, 2, 3, 4, 5], index => planCheckpoint(`page:${index}`, 2, async () => index)));
+    expect(Object.keys(saved)).toHaveLength(6);
+    for (let i = 0; i < 6; i++) expect(saved[`page:${i}`]).toBe(i);
+  });
+  it("bounds in-flight requests and retains input order", async () => {
+    let active = 0; let peak = 0;
+    const result = await mapPlanPages([1, 2, 3, 4, 5, 6], async value => {
+      active++; peak = Math.max(peak, active);
+      await new Promise(resolve => setTimeout(resolve, value % 2));
+      active--; return value;
+    }, 3);
+    expect(peak).toBe(3); expect(active).toBe(0);
+    expect(result).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+  it("drains in-flight work and stops scheduling after an error", async () => {
+    let inFlight = false; const started: number[] = [];
+    const task = mapPlanPages([0, 1, 2, 3], async value => {
+      started.push(value);
+      if (value === 0) throw new Error("incomplete page");
+      inFlight = true;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      inFlight = false;
+      return value;
+    }, 2);
+    await expect(task).rejects.toThrow("incomplete page");
+    expect(inFlight).toBe(false); expect(started).toEqual([0, 1]);
   });
 });

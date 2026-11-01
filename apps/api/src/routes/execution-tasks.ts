@@ -1,4 +1,4 @@
-import { NextPlanStage, planCheckpoint, planStageNames, withPlanCheckpoints, type PlanStage } from "../content-plan-checkpoints.js";
+import { NextPlanStage, mapPlanPages, planCheckpoint, planStageNames, withPlanCheckpoints, type PlanStage } from "../content-plan-checkpoints.js";
 import { websitePlanEvidenceJson } from "../website-plan-evidence.js";
 import { websitePlanningContext, websiteAnalysisUrl } from "@webtummy/core/website-context";
 import { keywordEvidenceList } from "../keyword-evidence.js";
@@ -978,8 +978,8 @@ Approved customer-growth funnel:
 ${websitePlanEvidenceJson(evidence.funnel, 12_000)}`;
   const generatedDecisions: z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"] = [];
   const generatedSummaries: string[] = [];
-  for (let start = 0; start < suppliedAssignments.length; start += 1) {
-    const assignmentBatch = suppliedAssignments.slice(start, start + 1);
+  const completedDecisions = await mapPlanPages(suppliedAssignments, async (assignment, start) => {
+    const assignmentBatch = [assignment];
     const batchNumber = start + 1;
     const batchCount = suppliedAssignments.length;
     const promptFor = (requestedAssignments: typeof assignmentBatch, repair: boolean) => `Create ${repair ? "the missing decisions from" : "this batch of"} the final unified SEO Page Map and Website Improvement Plan. This is an AI decision task, not a generic rewrite and not a keyword-to-page fallback.
@@ -1087,6 +1087,9 @@ ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} mi
       }
       return { decisions: acceptedBatchDecisions, summary: batchSummary };
     });
+    return completedPage;
+  });
+  for (const completedPage of completedDecisions) {
     generatedDecisions.push(...completedPage.decisions);
     generatedSummaries.push(completedPage.summary);
   }
@@ -1229,8 +1232,8 @@ export async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
   if (!assignments.length) return plan;
   try {
     const generatedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
-    for (let start = 0; start < assignments.length; start += 1) {
-      const assignmentBatch = assignments.slice(start, start + 1);
+    const completedBriefs = await mapPlanPages(assignments, async (assignment, start) => {
+      const assignmentBatch = [assignment];
       const completedPages = await planCheckpoint(`brief:${start}:${assignmentBatch[0]!.targetUrl}`, 2, async () => {
         const batchPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
         let parsedBatch: ReturnType<typeof inspectAiPageFaqPlanResponse> | null = null;
@@ -1396,8 +1399,9 @@ export async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
         }
         return batchPages;
       });
-      generatedPages.push(...completedPages);
-    }
+      return completedPages;
+    });
+    generatedPages.push(...completedBriefs.flat());
     return enrichSavedContentPlan(plan, generatedPages);
   } catch (error) {
     if (error && typeof error === "object" && "publicMessage" in error) throw error;
