@@ -40,7 +40,7 @@ export const websiteBuilderQueue = new Queue<WebsiteBuilderQueueJobData, unknown
 export type StrategyGenerationQueueJobData = { jobId: string };
 export const strategyGenerationQueue = new Queue<StrategyGenerationQueueJobData, unknown, "strategy:generate">(STRATEGY_GENERATION_QUEUE, { connection: queueConnection });
 
-export type ContentPlanGenerationQueueJobData = { jobId: string };
+export type ContentPlanGenerationQueueJobData = { jobId: string; stage?: 1 | 2 | 3 };
 export const contentPlanGenerationQueue = new Queue<ContentPlanGenerationQueueJobData, unknown, "content-plan:generate">(CONTENT_PLAN_GENERATION_QUEUE, { connection: queueConnection });
 export type DiscoveryGenerationQueueJobData = { jobId: string };
 export const discoveryGenerationQueue = new Queue<DiscoveryGenerationQueueJobData, unknown, "discovery:generate">(DISCOVERY_GENERATION_QUEUE, { connection: queueConnection });

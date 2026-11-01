@@ -1,3 +1,5 @@
+import { NextPlanStage, planCheckpoint, planStageNames, withPlanCheckpoints, type PlanStage } from "../content-plan-checkpoints.js";
+import { websitePlanEvidenceJson } from "../website-plan-evidence.js";
 import { websitePlanningContext, websiteAnalysisUrl } from "@webtummy/core/website-context";
 import { keywordEvidenceList } from "../keyword-evidence.js";
 import { requireGrowthLaunch } from "@webtummy/db/growth-execution";
@@ -15,6 +17,7 @@ import { submitTaskApproval } from "../approval-workflow.js";
 import { buildCampaignExecutionTasks, isExistingWebsiteCampaign, isPreLaunchWebsiteCampaign } from "../campaign-intelligence.js";
 import { approvedKeywordEntries, bestExistingSeoPageMatch, clusterKeywordDirections, keywordTopicSimilarity, missingApprovedKeywordResearch, normalizeKeywordTopic, planSeoPages, splitKeywordEntries, stripNonGeographicAudienceQualifier, workflowRecoveryPayload, type SeoPagePlan, type SeoPlannerInput } from "@webtummy/core";
 import { centralAiJson } from "../central-ai-service.js";
+import { productRelationshipContext } from "../product-relationship.js";
 import { cleanGeographicTargetMarkets, projectAnalysisLocationLabels } from "../project-location.js";
 import { normalizeKeywordsWithAi } from "../ai-keyword-normalization.js";
 import { getProjectWorkflowController, publishProjectWorkflowEvent, workflowStagePrerequisite } from "../project-workflow-controller.js";
@@ -22,6 +25,7 @@ import { MARKETING_EXECUTION_CONTRACT_VERSION, marketingExecutionSummary, prepar
 import { isWebsitePlanTask } from "../website-plan-task.js";
 import { config, CONTENT_PLAN_GENERATION_QUEUE } from "../config.js";
 import { contentPlanGenerationQueue, queueConnection, type ContentPlanGenerationQueueJobData } from "../queue.js";
+import { calculateWorkflowUnits } from "../commercial-capacity.js";
 import { commitUsage, preflightUsage, refundUsage } from "../usage-engine.js";
 import { runCommercialRequestContext, type CommercialRequestContext } from "../commercial-request-context.js";
 import { createApiErrorCode } from "../api-errors.js";
@@ -149,6 +153,7 @@ const seoPlanSchema = z.object({
 type SeoPlan = z.infer<typeof seoPlanSchema>;
 
 const aiBusinessContextSchema = z.object({
+  productRelationship: z.unknown().optional(),
   version: z.literal("ai_business_context_v1"),
   sourceFingerprint: z.string().trim().min(8).max(128),
   businessName: z.string().trim().min(2).max(180).nullable(),
@@ -321,6 +326,7 @@ function businessEvidenceFingerprint(value: unknown) {
 }
 
 async function interpretApprovedBusinessEvidence(input: {
+  productRelationship: ReturnType<typeof productRelationshipContext>;
   confirmedBusinessName: string | null;
   projectName: string;
   niche: string | null;
@@ -333,6 +339,7 @@ async function interpretApprovedBusinessEvidence(input: {
   verifiedServices: string[];
 }) {
   const evidence = {
+    productRelationship: input.productRelationship,
     confirmedBusinessName: input.confirmedBusinessName,
     internalProjectName: input.projectName,
     industryDirection: input.niche,
@@ -400,6 +407,7 @@ Rules:
       .slice(0, 8);
     if (!interpretationNotes.length) interpretationNotes.push("AI normalized the approved intake evidence for SEO planning.");
     return aiBusinessContextSchema.parse({
+      productRelationship: input.productRelationship,
       version: "ai_business_context_v1",
       sourceFingerprint,
       businessName: input.confirmedBusinessName || null,
@@ -929,7 +937,7 @@ export function reconcileAiWebsitePlanBatch(
   return { decisions, missing: matched.missing, unexpected: matched.unexpected };
 }
 
-async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
+export async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   websiteContext?: ReturnType<typeof websitePlanningContext>;
   projectType: string;
   business: AiBusinessContext;
@@ -944,36 +952,36 @@ async function applyFullAiWebsitePlan(plan: ContentPlan, evidence: {
   strategy: unknown;
   funnel: unknown;
 }) {
-  const suppliedAssignments = plan.pageAssignments.slice(0, 100);
+  const suppliedAssignments = plan.pageAssignments;
   if (!suppliedAssignments.length) throw new Error("The unified Website Plan has no page candidates for AI evaluation.");
   const sharedEvidence = `Approved business and goal:
 ${JSON.stringify({ websiteContext: evidence.websiteContext, projectType: evidence.projectType, business: evidence.business, goal: evidence.goal, keywords: evidence.keywords, targetLocations: evidence.targetLocations }).slice(0, 20_000)}
 
 \nApproved Opportunity direction:\
-${JSON.stringify(evidence.opportunity).slice(0, 12_000)}\
+${websitePlanEvidenceJson(evidence.opportunity, 12_000)}\
 \
 AI Citation evidence and approved recommendations:\
-${JSON.stringify(evidence.aiCitationEvidence).slice(0, 18_000)}\
+${websitePlanEvidenceJson(evidence.aiCitationEvidence, 18_000)}\
 \
 Approved pre-execution Growth Plan diagnosis:\
-${JSON.stringify(evidence.growthPlan).slice(0, 18_000)}
+${websitePlanEvidenceJson(evidence.growthPlan, 18_000)}
 Latest SEO and Gap Analysis findings:
-${JSON.stringify(evidence.gapRecommendations).slice(0, 18_000)}
+${websitePlanEvidenceJson(evidence.gapRecommendations, 18_000)}
 
 Completed Site Analysis page inventory:
-${JSON.stringify(evidence.sitePages).slice(0, 12_000)}
+${websitePlanEvidenceJson(evidence.sitePages, 12_000)}
 
 Approved unified Strategy and ranked decisions:
-${JSON.stringify(evidence.strategy).slice(0, 18_000)}
+${websitePlanEvidenceJson(evidence.strategy, 18_000)}
 
 Approved customer-growth funnel:
-${JSON.stringify(evidence.funnel).slice(0, 12_000)}`;
+${websitePlanEvidenceJson(evidence.funnel, 12_000)}`;
   const generatedDecisions: z.infer<typeof aiUnifiedWebsitePlanSchema>["decisions"] = [];
   const generatedSummaries: string[] = [];
-  for (let start = 0; start < suppliedAssignments.length; start += 6) {
-    const assignmentBatch = suppliedAssignments.slice(start, start + 6);
-    const batchNumber = Math.floor(start / 6) + 1;
-    const batchCount = Math.ceil(suppliedAssignments.length / 6);
+  for (let start = 0; start < suppliedAssignments.length; start += 1) {
+    const assignmentBatch = suppliedAssignments.slice(start, start + 1);
+    const batchNumber = start + 1;
+    const batchCount = suppliedAssignments.length;
     const promptFor = (requestedAssignments: typeof assignmentBatch, repair: boolean) => `Create ${repair ? "the missing decisions from" : "this batch of"} the final unified SEO Page Map and Website Improvement Plan. This is an AI decision task, not a generic rewrite and not a keyword-to-page fallback.
 
 Return {"summary":"20+ character batch decision summary","decisions":[...]} with exactly one complete decision for every supplied targetUrl. Every decision object MUST contain all of these fields: targetUrl, pageName, canonicalKeyword, secondaryKeywords, searchIntent, pagePurpose, gapAnalysis, recommendedAction, intentOwner, decisionReason, funnelStage, strategyRole, requiredInternalLinks, prohibitedCompetingKeywords, contentBrief, ctaSuggestion, evidenceSources. Use [] for an empty array; never omit a field. searchIntent MUST be exactly one of commercial, transactional, informational, local, or navigational—never combine labels such as "local commercial". contentBrief MUST be one plain-text string between 40 and 1500 characters—never an object, array, or nested JSON. Format any internal headings into that single string. recommendedAction must be update_existing, create_new, consolidate, or support_only. funnelStage must be discover, evaluate, trust, convert, delight, or grow_refer.
@@ -999,86 +1007,88 @@ Decision rules:
 ${repair ? `\nREPAIR REQUIRED: Return only the ${requestedAssignments.length} missing supplied targetUrl${requestedAssignments.length === 1 ? "" : "s"} above. Do not repeat or add any other page. Every decision must include every named field, including arrays when empty.` : ""}`;
     let lastError: unknown;
     let completed = false;
-    let pendingAssignments = assignmentBatch;
-    const acceptedBatchDecisions: AiWebsitePlanDecision[] = [];
-    let batchSummary = "";
-    let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
-    // The initial batch is efficient, but a long structured response can hit
-    // the provider output limit. Repair one missing page at a time so every
-    // remaining decision has enough output budget without regenerating pages
-    // that already passed validation.
-    for (let attempt = 0; attempt < 1 + assignmentBatch.length; attempt += 1) {
-      try {
-        const requestedAssignments = attempt > 0 ? pendingAssignments.slice(0, 1) : pendingAssignments;
-        const generated = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(requestedAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
-        const parsed = generated.result;
-        const reconciledRaw = reconcileAiTargetUrlBatch(requestedAssignments, parsed.decisions);
-        const validDecisions: AiWebsitePlanDecision[] = [];
-        const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
-        for (const item of reconciledRaw.items) {
-          // Keyword ownership is governed by the supplied candidate and is
-          // restored again when the final plan is assembled. Validate that
-          // authoritative value here as well, so a model typo cannot fail an
-          // otherwise complete page decision.
-          const governedAssignment = requestedAssignments.find((assignment) => (
-            canonicalContentPlanTarget(assignment.targetUrl) === canonicalContentPlanTarget(item.targetUrl)
-          ));
-          const governedItem = governedAssignment
-            ? { ...item, canonicalKeyword: governedAssignment.canonicalKeyword }
-            : item;
-          const validated = aiUnifiedWebsitePlanDecisionSchema.safeParse(governedItem);
-          if (validated.success) validDecisions.push(validated.data);
-          else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(governedItem));
-        }
-        const reconciledValid = reconcileAiWebsitePlanBatch(requestedAssignments, validDecisions);
-        acceptedBatchDecisions.push(...reconciledValid.decisions);
-        batchSummary ||= parsed.summary;
-        if (reconciledRaw.unexpected.length) {
-          console.warn("[content-plan] ignored unrequested AI Website Plan page decisions", {
-            batch: batchNumber,
-            count: reconciledRaw.unexpected.length,
-            targetUrls: reconciledRaw.unexpected,
+    const completedPage = await planCheckpoint(`decision:${start}:${assignmentBatch[0]!.targetUrl}`, 2, async () => {
+      let pendingAssignments = assignmentBatch;
+      const acceptedBatchDecisions: AiWebsitePlanDecision[] = [];
+      let batchSummary = "";
+      let decisionIssues = new Map<string, Array<{ field: string; message: string }>>();
+      // Each governed page gets an independent response budget and checkpoint.
+      // Repair only this page when its initial response is incomplete.
+      for (let attempt = 0; attempt < 1 + assignmentBatch.length; attempt += 1) {
+        try {
+          const requestedAssignments = attempt > 0 ? pendingAssignments.slice(0, 1) : pendingAssignments;
+          const generated = await centralAiJson({ system: "You are the SEnuke AI - AI Growth Operating System Unified Website Planning Engine. Make complete, evidence-grounded page ownership, content, conversion, and funnel decisions. Never omit a requested JSON field. Return valid structured JSON only.", prompt: promptFor(requestedAssignments, attempt > 0), temperature: 0.2, maxInputBytes: 100_000, maxOutputTokens: 16_000, timeoutMs: 120_000, validate: inspectAiUnifiedWebsitePlanResponse });
+          const parsed = generated.result;
+          const reconciledRaw = reconcileAiTargetUrlBatch(requestedAssignments, parsed.decisions);
+          const validDecisions: AiWebsitePlanDecision[] = [];
+          const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
+          for (const item of reconciledRaw.items) {
+            // Keyword ownership is governed by the supplied candidate and is
+            // restored again when the final plan is assembled. Validate that
+            // authoritative value here as well, so a model typo cannot fail an
+            // otherwise complete page decision.
+            const governedAssignment = requestedAssignments.find((assignment) => (
+              canonicalContentPlanTarget(assignment.targetUrl) === canonicalContentPlanTarget(item.targetUrl)
+            ));
+            const governedItem = governedAssignment
+              ? { ...item, canonicalKeyword: governedAssignment.canonicalKeyword }
+              : item;
+            const validated = aiUnifiedWebsitePlanDecisionSchema.safeParse(governedItem);
+            if (validated.success) validDecisions.push(validated.data);
+            else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiWebsitePlanDecisionIssueSummary(governedItem));
+          }
+          const reconciledValid = reconcileAiWebsitePlanBatch(requestedAssignments, validDecisions);
+          acceptedBatchDecisions.push(...reconciledValid.decisions);
+          batchSummary ||= parsed.summary;
+          if (reconciledRaw.unexpected.length) {
+            console.warn("[content-plan] ignored unrequested AI Website Plan page decisions", {
+              batch: batchNumber,
+              count: reconciledRaw.unexpected.length,
+              targetUrls: reconciledRaw.unexpected,
+            });
+          }
+          const missingTargets = new Set(reconciledRaw.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+          const unattemptedAssignments = pendingAssignments.slice(requestedAssignments.length);
+          const incompleteAttemptedAssignments = requestedAssignments.filter((assignment) => {
+            const key = assignment.targetUrl.trim().toLocaleLowerCase();
+            return missingTargets.has(key) || nextIssues.has(key);
           });
+          pendingAssignments = [...incompleteAttemptedAssignments, ...unattemptedAssignments];
+          const retainedIssues = new Map(decisionIssues);
+          for (const assignment of requestedAssignments) retainedIssues.delete(assignment.targetUrl.trim().toLocaleLowerCase());
+          for (const [key, issues] of nextIssues) retainedIssues.set(key, issues);
+          decisionIssues = retainedIssues;
+          if (pendingAssignments.length) {
+            lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " needs" : "s need"} focused repair.`);
+            console.warn("[content-plan] retrying only missing or incomplete AI Website Plan page decisions", {
+              batch: batchNumber,
+              attempt: attempt + 1,
+              count: pendingAssignments.length,
+              pages: pendingAssignments.map((assignment) => ({
+                targetUrl: assignment.targetUrl,
+                missingOrInvalidFields: decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["decision"],
+              })),
+            });
+            continue;
+          }
+
+          completed = true;
+          break;
+        } catch (error) {
+          lastError = error;
         }
-        const missingTargets = new Set(reconciledRaw.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-        const unattemptedAssignments = pendingAssignments.slice(requestedAssignments.length);
-        const incompleteAttemptedAssignments = requestedAssignments.filter((assignment) => {
-          const key = assignment.targetUrl.trim().toLocaleLowerCase();
-          return missingTargets.has(key) || nextIssues.has(key);
-        });
-        pendingAssignments = [...incompleteAttemptedAssignments, ...unattemptedAssignments];
-        const retainedIssues = new Map(decisionIssues);
-        for (const assignment of requestedAssignments) retainedIssues.delete(assignment.targetUrl.trim().toLocaleLowerCase());
-        for (const [key, issues] of nextIssues) retainedIssues.set(key, issues);
-        decisionIssues = retainedIssues;
-        if (pendingAssignments.length) {
-          lastError = new Error(`AI returned an incomplete Website Plan batch: ${pendingAssignments.length} required page decision${pendingAssignments.length === 1 ? " needs" : "s need"} focused repair.`);
-          console.warn("[content-plan] retrying only missing or incomplete AI Website Plan page decisions", {
-            batch: batchNumber,
-            attempt: attempt + 1,
-            count: pendingAssignments.length,
-            pages: pendingAssignments.map((assignment) => ({
-              targetUrl: assignment.targetUrl,
-              missingOrInvalidFields: decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["decision"],
-            })),
-          });
-          continue;
-        }
-        generatedDecisions.push(...acceptedBatchDecisions);
-        generatedSummaries.push(batchSummary);
-        completed = true;
-        break;
-      } catch (error) {
-        lastError = error;
       }
-    }
-    if (!completed) {
-      const diagnostic = pendingAssignments.map((assignment) => {
-        const issues = decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "decision", message: "Decision was omitted" }];
-        return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
-      }).join("; ");
-      throw new Error(`AI returned incomplete Website Plan decisions after focused repair. ${diagnostic}${lastError instanceof Error ? ` Last repair error: ${lastError.message}` : ""}`);
-    }
+      if (!completed) {
+        const diagnostic = pendingAssignments.map((assignment) => {
+          const issues = decisionIssues.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "decision", message: "Decision was omitted" }];
+          return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
+        }).join("; ");
+        throw new Error(`AI returned incomplete Website Plan decisions after focused repair. ${diagnostic}${lastError instanceof Error ? ` Last repair error: ${lastError.message}` : ""}`);
+      }
+      return { decisions: acceptedBatchDecisions, summary: batchSummary };
+    });
+    generatedDecisions.push(...completedPage.decisions);
+    generatedSummaries.push(completedPage.summary);
   }
   const decisionsByUrl = new Map(generatedDecisions.map((decision) => [canonicalContentPlanTarget(decision.targetUrl), decision]));
   const pageAssignments = plan.pageAssignments.map((assignment) => {
@@ -1169,10 +1179,41 @@ export function aiPageSuggestionIssueSummary(value: unknown) {
   return parsed.error.issues.map((issue) => ({ field: issue.path.join(".") || "page", message: issue.message }));
 }
 
-async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
+export function enrichSavedContentPlan(plan: ContentPlan, suggestions: z.infer<typeof aiPageFaqPlanSchema>["pages"]): ContentPlan {
+  const fields = ["faqTopics", "seoTitle", "metaDescription", "contentOutline", "contentBrief", "supportingContentIdeas", "proofRequirements", "ctaSuggestion"] as const;
+  const alternatives: string[] = [];
+  const pageAssignments = plan.pageAssignments.map((assignment) => {
+    const suggestion = suggestions.find((page) => page.targetUrl.trim().toLocaleLowerCase() === assignment.targetUrl.trim().toLocaleLowerCase());
+    if (!suggestion) return assignment;
+    const additions: Record<string, unknown> = {};
+    // Supplement incomplete FAQ sets without replacing reviewed questions.
+    if ((assignment.faqTopics?.length ?? 0) < 3) {
+      additions.faqTopics = [...new Set([...(assignment.faqTopics ?? []), ...suggestion.faqTopics])].slice(0, 4);
+    }
+    for (const field of fields) {
+      if (field === "faqTopics" && additions.faqTopics) continue;
+      const current = assignment[field];
+      if (current === undefined || current === null || current.length === 0) additions[field] = suggestion[field];
+      else if (JSON.stringify(current) !== JSON.stringify(suggestion[field])) {
+        alternatives.push(`Optional AI alternative for ${assignment.pageName} (${assignment.targetUrl}), ${field}; saved decision retained: ${JSON.stringify(suggestion[field])}`.slice(0, 2400));
+      }
+    }
+    return { ...assignment, ...additions, faqStrategyVersion: "ai_seo_plan_v2" as const };
+  });
+  return {
+    ...plan,
+    pageAssignments,
+    planningChecks: [...new Set([...plan.planningChecks, ...alternatives])].slice(0, 500),
+    contentBriefs: [...new Set([...plan.contentBriefs, ...pageAssignments.filter((page) => page.contentBrief).map((page) => normalizeGeneratedContentBrief(`AI brief for “${page.canonicalKeyword}” · ${page.contentBrief}`))])].slice(0, 500),
+    supportingContent: [...new Set([...plan.supportingContent, ...pageAssignments.flatMap((page) => (page.supportingContentIdeas ?? []).map((idea) => `“${page.canonicalKeyword}” → ${idea}`))])].slice(0, 500),
+  };
+}
+
+export async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
   business: AiBusinessContext;
   goal: string;
   locations: string[];
+  reviewComment?: string;
 }) {
   const assignments = plan.pageAssignments.filter((assignment) => (
     assignment.faqStrategyVersion !== "ai_seo_plan_v2"
@@ -1182,189 +1223,182 @@ async function applyAiPageFaqSuggestions(plan: ContentPlan, context: {
     || !assignment.contentOutline?.length
     || !assignment.contentBrief
     || !assignment.ctaSuggestion
-  )).slice(0, 100);
+    || !assignment.proofRequirements?.length
+    || !assignment.supportingContentIdeas?.length
+  ));
   if (!assignments.length) return plan;
   try {
     const generatedPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
-    for (let start = 0; start < assignments.length; start += 8) {
-      const assignmentBatch = assignments.slice(start, start + 8);
-      let parsedBatch: ReturnType<typeof inspectAiPageFaqPlanResponse> | null = null;
-      let batchValidationError: unknown;
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        try {
-          const generated = await centralAiJson({
-        system: "You are the SEnuke AI - AI Growth Operating System SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-        prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
+    for (let start = 0; start < assignments.length; start += 1) {
+      const assignmentBatch = assignments.slice(start, start + 1);
+      const completedPages = await planCheckpoint(`brief:${start}:${assignmentBatch[0]!.targetUrl}`, 2, async () => {
+        const batchPages: z.infer<typeof aiPageFaqPlanSchema>["pages"] = [];
+        let parsedBatch: ReturnType<typeof inspectAiPageFaqPlanResponse> | null = null;
+        let batchValidationError: unknown;
+        for (let attempt = 0; attempt < 2; attempt += 1) {
+          try {
+            const generated = await centralAiJson({
+          system: "You are the SEnuke AI - AI Growth Operating System SEO content planner. Create useful, natural FAQ topic suggestions from the approved keyword-to-page map. Never invent business facts, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+          prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["4 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 question topics"]}]}.
 
-Approved business evidence:
-Confirmed business name: ${context.business.businessName || "Not confirmed; do not invent or use the internal project name"}
-Industry: ${context.business.industry}
-Core customer value: ${context.business.coreBusinessValue}
-Approved primary services: ${context.business.primaryServices.join(", ")}
-Audience: ${context.business.audienceSummary}
-Home-page umbrella topic: ${context.business.homepagePrimaryTopic}
-Brand context: ${context.business.brandDescription}
-Primary goal: ${context.goal}
-Approved target locations: ${context.locations.join(", ") || "none"}
+  Approved business evidence:
+  Product relationship: ${JSON.stringify(context.business.productRelationship ?? "Unspecified; do not assume ownership")}
+  Confirmed business name: ${context.business.businessName || "Not confirmed; do not invent or use the internal project name"}
+  Industry: ${context.business.industry}
+  Core customer value: ${context.business.coreBusinessValue}
+  Approved primary services: ${context.business.primaryServices.join(", ")}
+  Audience: ${context.business.audienceSummary}
+  Home-page umbrella topic: ${context.business.homepagePrimaryTopic}
+  Brand context: ${context.business.brandDescription}
+  Primary goal: ${context.goal}
+  Approved target locations: ${context.locations.join(", ") || "none"}
 
-Approved page assignments:
-${JSON.stringify(assignmentBatch.map((assignment) => ({
-  targetUrl: assignment.targetUrl,
-  pageName: assignment.pageName,
-  pageType: assignment.clusterRole || "page",
-  primaryKeyword: assignment.canonicalKeyword,
-  secondaryKeywords: assignment.secondaryKeywords,
-  dominantIntent: assignment.primaryIntent || assignment.searchIntent,
-  location: assignment.location || null,
-  pagePurpose: assignment.pagePurpose,
-  prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
-})))}
+  Authoritative reviewer instructions (preserve exact requested CTA wording and coverage decisions):
+  ${context.reviewComment || "None"}
+  The saved page list and existing content fields are authoritative. Fill only missing fields. Do not propose removed pages. Include schema direction and internal links to the supplied saved URLs in each missing content brief.
+  Saved URLs: ${JSON.stringify(plan.pageAssignments.map((page) => page.targetUrl))}
 
-Rules:
-- Return the faqTopics field with 3 or 4 concise FAQ questions for every supplied page. Never omit faqTopics.
-- Return one unique SEO title, one useful meta description, and a 4–8 section content outline for every page.
-- Return a substantive page-specific content brief, useful supporting-content ideas, verified-evidence requirements, and an intent-matched CTA suggestion for every page.
-- ctaSuggestion MUST be one plain-text string between 3 and 120 characters. Keep it concise and never return an object or explanation.
-- Questions must serve the exact page purpose, primary keyword, secondary cluster, dominant intent, audience, and approved location.
-- Home at "/" is the primary brand and website-routing page. "Home" is never its keyword and must not become "Home in [city]". Use the approved business/brand as its primary entity, the umbrella service keyword as supporting direction, and make its title, description, outline, and FAQs introduce the offer, audience, service areas, trust, priority service routes, and main conversion step.
-- Do not append a city when the primary keyword already contains that city.
-- Do not repeat the same FAQ set across pages.
-- Do not use "near me" as customer-facing wording.
-- Do not copy rough intake fragments, internal project names, "and others", or ambiguous transcription into customer-facing copy.
-- Treat the interpreted business context above as the customer-facing source; the page's approved keyword map still controls its search intent.
-- Ask questions the page can answer from verified project evidence; do not assume unverified facts.
-- Return topics only, without answers or explanations.
-${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
-        temperature: 0.25,
-        maxInputBytes: 80_000,
-        maxOutputTokens: 12_000,
-        timeoutMs: 90_000,
-        validate: inspectAiPageFaqPlanResponse,
-      });
-          parsedBatch = generated.result;
-          break;
-        } catch (error) {
-          batchValidationError = error;
-        }
-      }
-      if (!parsedBatch) throw batchValidationError;
-      const reconciledBatch = reconcileAiTargetUrlBatch(assignmentBatch, parsedBatch.pages);
-      if (reconciledBatch.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content suggestions", {
-        batch: Math.floor(start / 8) + 1,
-        count: reconciledBatch.unexpected.length,
-        targetUrls: reconciledBatch.unexpected,
-      });
-      const missingTargets = new Set(reconciledBatch.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-      const issuesByTarget = new Map<string, Array<{ field: string; message: string }>>();
-      for (const item of reconciledBatch.items) {
-        const validated = validateInspectedAiPage(item);
-        if (validated.success) generatedPages.push(validated.data);
-        else issuesByTarget.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
-      }
-      let pendingAssignments = assignmentBatch.filter((assignment) => {
-        const key = assignment.targetUrl.trim().toLocaleLowerCase();
-        return missingTargets.has(key) || issuesByTarget.has(key);
-      });
-      let repairError: unknown;
-      for (let repairAttempt = 0; repairAttempt < 2 && pendingAssignments.length; repairAttempt += 1) {
-        console.warn("[content-plan] retrying only incomplete AI page-content suggestions", {
-          batch: Math.floor(start / 8) + 1,
-          attempt: repairAttempt + 1,
-          pages: pendingAssignments.map((assignment) => ({
-            targetUrl: assignment.targetUrl,
-            missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["page"],
-          })),
+  Approved page assignments:
+  ${JSON.stringify(assignmentBatch.map((assignment) => ({
+    ...assignment,
+    targetUrl: assignment.targetUrl,
+    pageName: assignment.pageName,
+    pageType: assignment.clusterRole || "page",
+    primaryKeyword: assignment.canonicalKeyword,
+    secondaryKeywords: assignment.secondaryKeywords,
+    dominantIntent: assignment.primaryIntent || assignment.searchIntent,
+    location: assignment.location || null,
+    pagePurpose: assignment.pagePurpose,
+    prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
+  })))}
+
+  Rules:
+  - Return the faqTopics field with 3 or 4 concise FAQ questions for every supplied page. Never omit faqTopics.
+  - Return one unique SEO title, one useful meta description, and a 4–8 section content outline for every page.
+  - Return a substantive page-specific content brief, useful supporting-content ideas, verified-evidence requirements, and an intent-matched CTA suggestion for every page.
+  - ctaSuggestion MUST be one plain-text string between 3 and 120 characters. Keep it concise and never return an object or explanation.
+  - Questions must serve the exact page purpose, primary keyword, secondary cluster, dominant intent, audience, and approved location.
+  - Home at "/" is the primary brand and website-routing page. "Home" is never its keyword and must not become "Home in [city]". Use the approved business/brand as its primary entity, the umbrella service keyword as supporting direction, and make its title, description, outline, and FAQs introduce the offer, audience, service areas, trust, priority service routes, and main conversion step.
+  - Do not append a city when the primary keyword already contains that city.
+  - Do not repeat the same FAQ set across pages.
+  - Do not use "near me" as customer-facing wording.
+  - Do not copy rough intake fragments, internal project names, "and others", or ambiguous transcription into customer-facing copy.
+  - Treat the interpreted business context above as the customer-facing source; the page's approved keyword map still controls its search intent.
+  - Ask questions the page can answer from verified project evidence; do not assume unverified facts.
+  - Return topics only, without answers or explanations.
+  ${attempt ? "REPAIR REQUIRED: The previous response was incomplete or invalid. Return every supplied targetUrl exactly once and include every requested field with the required arrays." : ""}`,
+          temperature: 0.25,
+          maxInputBytes: 80_000,
+          maxOutputTokens: 12_000,
+          timeoutMs: 90_000,
+          validate: inspectAiPageFaqPlanResponse,
         });
-        try {
-          const repairTargets = pendingAssignments;
-          const retry = await centralAiJson({
-            system: "You are the SEnuke AI - AI Growth Operating System SEO content planner repairing only incomplete pages from a prior structured response. Return every supplied targetUrl exactly once and every required field. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
-            prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 page-specific question topics"]}]}.
-
-Business: ${context.business.businessName || "Business name not confirmed"}
-Industry: ${context.business.industry}
-Core customer value: ${context.business.coreBusinessValue}
-Approved services: ${context.business.primaryServices.join(", ")}
-Audience: ${context.business.audienceSummary}
-Primary goal: ${context.goal}
-
-Repair only these ${repairTargets.length} incomplete required pages. Return every field for each page. faqTopics is mandatory and must contain 3 or 4 concise, page-specific questions. Do not return already accepted pages:
-${JSON.stringify(repairTargets.map((assignment) => ({
-  targetUrl: assignment.targetUrl,
-  pageName: assignment.pageName,
-  primaryKeyword: assignment.canonicalKeyword,
-  secondaryKeywords: assignment.secondaryKeywords,
-  dominantIntent: assignment.primaryIntent || assignment.searchIntent,
-  location: assignment.location || null,
-  pagePurpose: assignment.pagePurpose,
-  prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
-  missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }],
-})))}
-
-Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, or ctaSuggestion. Use only the approved evidence above. Return valid JSON only.${repairAttempt ? " This is the final focused repair; check every field and array before responding." : ""}`,
-            temperature: 0.2,
-            maxInputBytes: 72_000,
-            maxOutputTokens: 10_000,
-            timeoutMs: 90_000,
-            validate: inspectAiPageFaqPlanResponse,
-          });
-          const reconciledRepair = reconcileAiTargetUrlBatch(repairTargets, retry.result.pages);
-          if (reconciledRepair.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content repair suggestions", { count: reconciledRepair.unexpected.length, targetUrls: reconciledRepair.unexpected });
-          const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
-          const missingRepairTargets = new Set(reconciledRepair.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
-          for (const item of reconciledRepair.items) {
-            const validated = validateInspectedAiPage(item);
-            if (validated.success) generatedPages.push(validated.data);
-            else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
+            parsedBatch = generated.result;
+            break;
+          } catch (error) {
+            batchValidationError = error;
           }
-          pendingAssignments = repairTargets.filter((assignment) => {
-            const key = assignment.targetUrl.trim().toLocaleLowerCase();
-            return missingRepairTargets.has(key) || nextIssues.has(key);
-          });
-          issuesByTarget.clear();
-          for (const assignment of pendingAssignments) {
-            const key = assignment.targetUrl.trim().toLocaleLowerCase();
-            issuesByTarget.set(key, nextIssues.get(key) ?? [{ field: "page", message: "Page was omitted" }]);
-          }
-        } catch (error) {
-          repairError = error;
         }
-      }
-      if (pendingAssignments.length) {
-        const diagnostic = pendingAssignments.map((assignment) => {
-          const issues = issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }];
-          return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
-        }).join("; ");
-        throw new Error(`AI returned incomplete page suggestions after focused repair. ${diagnostic}${repairError instanceof Error ? ` Last repair error: ${repairError.message}` : ""}`);
-      }
+        if (!parsedBatch) throw batchValidationError;
+        const reconciledBatch = reconcileAiTargetUrlBatch(assignmentBatch, parsedBatch.pages);
+        if (reconciledBatch.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content suggestions", {
+          batch: Math.floor(start / 8) + 1,
+          count: reconciledBatch.unexpected.length,
+          targetUrls: reconciledBatch.unexpected,
+        });
+        const missingTargets = new Set(reconciledBatch.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+        const issuesByTarget = new Map<string, Array<{ field: string; message: string }>>();
+        for (const item of reconciledBatch.items) {
+          const validated = validateInspectedAiPage(item);
+          if (validated.success) batchPages.push(validated.data);
+          else issuesByTarget.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
+        }
+        let pendingAssignments = assignmentBatch.filter((assignment) => {
+          const key = assignment.targetUrl.trim().toLocaleLowerCase();
+          return missingTargets.has(key) || issuesByTarget.has(key);
+        });
+        let repairError: unknown;
+        for (let repairAttempt = 0; repairAttempt < 2 && pendingAssignments.length; repairAttempt += 1) {
+          console.warn("[content-plan] retrying only incomplete AI page-content suggestions", {
+            batch: Math.floor(start / 8) + 1,
+            attempt: repairAttempt + 1,
+            pages: pendingAssignments.map((assignment) => ({
+              targetUrl: assignment.targetUrl,
+              missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase())?.map((issue) => issue.field) ?? ["page"],
+            })),
+          });
+          try {
+            const repairTargets = pendingAssignments;
+            const retry = await centralAiJson({
+              system: "You are the SEnuke AI - AI Growth Operating System SEO content planner repairing only incomplete pages from a prior structured response. Return every supplied targetUrl exactly once and every required field. Never invent business facts, claims, prices, credentials, guarantees, reviews, statistics, eligibility rules, or service availability.",
+              prompt: `Return {"pages":[{"targetUrl":"exact supplied target URL","seoTitle":"unique SEO title","metaDescription":"unique search description","contentOutline":["3 to 8 page sections"],"contentBrief":"complete page-specific writing direction","supportingContentIdeas":["2 to 4 useful supporting assets"],"proofRequirements":["1 to 4 evidence requirements"],"ctaSuggestion":"page-specific conversion action of 3 to 120 characters","faqTopics":["3 or 4 page-specific question topics"]}]}.
+
+  Business: ${context.business.businessName || "Business name not confirmed"}
+  Product relationship: ${JSON.stringify(context.business.productRelationship ?? "Unspecified; do not assume ownership")}
+  Industry: ${context.business.industry}
+  Core customer value: ${context.business.coreBusinessValue}
+  Approved services: ${context.business.primaryServices.join(", ")}
+  Audience: ${context.business.audienceSummary}
+  Primary goal: ${context.goal}
+
+  Authoritative reviewer instructions: ${context.reviewComment || "None"}
+  Preserve existing content fields and exact requested CTA wording. Include schema direction and internal links in missing briefs. Only use these saved URLs: ${JSON.stringify(plan.pageAssignments.map((page) => page.targetUrl))}
+
+  Repair only these ${repairTargets.length} incomplete required pages. Return every field for each page. faqTopics is mandatory and must contain 3 or 4 concise, page-specific questions. Do not return already accepted pages:
+  ${JSON.stringify(repairTargets.map((assignment) => ({
+    ...assignment,
+    targetUrl: assignment.targetUrl,
+    pageName: assignment.pageName,
+    primaryKeyword: assignment.canonicalKeyword,
+    secondaryKeywords: assignment.secondaryKeywords,
+    dominantIntent: assignment.primaryIntent || assignment.searchIntent,
+    location: assignment.location || null,
+    pagePurpose: assignment.pagePurpose,
+    prohibitedCompetingKeywords: assignment.prohibitedCompetingKeywords || [],
+    missingOrInvalidFields: issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }],
+  })))}
+
+  Do not omit faqTopics, contentBrief, supportingContentIdeas, proofRequirements, or ctaSuggestion. Use only the approved evidence above. Return valid JSON only.${repairAttempt ? " This is the final focused repair; check every field and array before responding." : ""}`,
+              temperature: 0.2,
+              maxInputBytes: 72_000,
+              maxOutputTokens: 10_000,
+              timeoutMs: 90_000,
+              validate: inspectAiPageFaqPlanResponse,
+            });
+            const reconciledRepair = reconcileAiTargetUrlBatch(repairTargets, retry.result.pages);
+            if (reconciledRepair.unexpected.length) console.warn("[content-plan] ignored unrequested AI page-content repair suggestions", { count: reconciledRepair.unexpected.length, targetUrls: reconciledRepair.unexpected });
+            const nextIssues = new Map<string, Array<{ field: string; message: string }>>();
+            const missingRepairTargets = new Set(reconciledRepair.missing.map((targetUrl) => targetUrl.trim().toLocaleLowerCase()));
+            for (const item of reconciledRepair.items) {
+              const validated = validateInspectedAiPage(item);
+              if (validated.success) batchPages.push(validated.data);
+              else nextIssues.set(item.targetUrl.trim().toLocaleLowerCase(), aiPageSuggestionIssueSummary(item));
+            }
+            pendingAssignments = repairTargets.filter((assignment) => {
+              const key = assignment.targetUrl.trim().toLocaleLowerCase();
+              return missingRepairTargets.has(key) || nextIssues.has(key);
+            });
+            issuesByTarget.clear();
+            for (const assignment of pendingAssignments) {
+              const key = assignment.targetUrl.trim().toLocaleLowerCase();
+              issuesByTarget.set(key, nextIssues.get(key) ?? [{ field: "page", message: "Page was omitted" }]);
+            }
+          } catch (error) {
+            repairError = error;
+          }
+        }
+        if (pendingAssignments.length) {
+          const diagnostic = pendingAssignments.map((assignment) => {
+            const issues = issuesByTarget.get(assignment.targetUrl.trim().toLocaleLowerCase()) ?? [{ field: "page", message: "Page was omitted" }];
+            return `${assignment.targetUrl}: ${issues.map((issue) => `${issue.field} ${issue.message}`).join(", ")}`;
+          }).join("; ");
+          throw new Error(`AI returned incomplete page suggestions after focused repair. ${diagnostic}${repairError instanceof Error ? ` Last repair error: ${repairError.message}` : ""}`);
+        }
+        return batchPages;
+      });
+      generatedPages.push(...completedPages);
     }
-    const parsed = parseAiPageFaqPlanResponse({ pages: generatedPages });
-    return {
-      ...plan,
-      pageAssignments: plan.pageAssignments.map((assignment) => {
-        const suggestion = parsed.pages.find((page) => page.targetUrl.trim().toLocaleLowerCase() === assignment.targetUrl.trim().toLocaleLowerCase());
-        return suggestion ? {
-          ...assignment,
-          faqTopics: suggestion.faqTopics,
-          faqStrategyVersion: "ai_seo_plan_v2" as const,
-          seoTitle: suggestion.seoTitle,
-          metaDescription: suggestion.metaDescription,
-          contentOutline: suggestion.contentOutline,
-          contentBrief: suggestion.contentBrief,
-          supportingContentIdeas: suggestion.supportingContentIdeas,
-          proofRequirements: suggestion.proofRequirements,
-          ctaSuggestion: suggestion.ctaSuggestion,
-        } : assignment;
-      }),
-      contentBriefs: parsed.pages.flatMap((suggestion) => {
-        const assignment = plan.pageAssignments.find((page) => page.targetUrl.trim().toLocaleLowerCase() === suggestion.targetUrl.trim().toLocaleLowerCase());
-        return assignment ? [normalizeGeneratedContentBrief(`AI brief for “${assignment.canonicalKeyword}” · ${suggestion.contentBrief}`)] : [];
-      }).slice(0, 500),
-      supportingContent: parsed.pages.flatMap((suggestion) => {
-        const assignment = plan.pageAssignments.find((page) => page.targetUrl.trim().toLocaleLowerCase() === suggestion.targetUrl.trim().toLocaleLowerCase());
-        return assignment ? suggestion.supportingContentIdeas.map((idea) => `“${assignment.canonicalKeyword}” → ${idea}`) : [];
-      }).slice(0, 500),
-    };
+    return enrichSavedContentPlan(plan, generatedPages);
   } catch (error) {
     if (error && typeof error === "object" && "publicMessage" in error) throw error;
     const diagnostic = error instanceof z.ZodError
@@ -2766,7 +2800,7 @@ executionTasksRouter.patch("/execution-tasks/:id", async (req, res) => {
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   const task = await prisma.$transaction(async (tx) => {
     const personalApproval = status === "completed" && existing.requiresApproval && context.workspace.workspaceType === "personal" && !existing.approvedAt;
-    const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { ...parsed.data, completedAt: status === "completed" ? new Date() : existing.completedAt, skippedAt: status === "skipped" ? new Date() : existing.skippedAt, ...(personalApproval ? { approvedAt: new Date(), approvalDecision: "approved", approvalNotes: "Owner approved this protected action by explicitly completing it." } : {}) } });
+    const updated = await tx.executionTask.update({ where: { id: existing.id }, data: { ...parsed.data, completedAt: status === "completed" ? new Date() : status === "ready" ? null : existing.completedAt, skippedAt: status === "skipped" ? new Date() : status === "ready" ? null : existing.skippedAt, ...(personalApproval ? { approvedAt: new Date(), approvalDecision: "approved", approvalNotes: "Owner approved this protected action by explicitly completing it." } : {}) } });
     if (personalApproval) await tx.executionTaskApproval.create({ data: { taskId: existing.id, actorMembershipId: context.membership.id, decision: "approved", notes: "Owner approved this protected action by explicitly completing it.", snapshotJson: { status: "completed", source: "personal_owner_completion" } } });
     if (status === "completed") await tx.nextBestAction.updateMany({ where: { followupTaskId: existing.id, status: { notIn: ["superseded", "stale"] } }, data: { status: "completed", decision: "execution_completed", decidedAt: new Date() } });
     await recordWorkspaceActivity(tx, { context, action: status !== existing.status ? "task.status_changed" : "task.edited", entityType: "execution_task", entityId: existing.id, agencyClientId: existing.project?.agencyClientId, projectId: existing.projectId, previousJson: { status: existing.status, priority: existing.priority, manualInstructions: existing.manualInstructions }, nextJson: { status: updated.status, priority: updated.priority, manualInstructions: updated.manualInstructions } });
@@ -3024,23 +3058,24 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     },
   });
   if (!task?.project || !isWebsitePlanTask(task)) return res.status(404).json({ error: "Website planning task not found" });
+  const project = task.project;
   const context = await workspaceContext(req);
   if (!task.projectId || !await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "task not found" });
   if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
   if (!await enforceSeoPlanWorkflow(task.projectId, res)) return;
-  const preLaunchWebsite = isPreLaunchWebsiteCampaign(task.project);
-  if (isExistingWebsiteCampaign(task.project)) {
-    const latestStrategy = task.project.strategyPlans[0];
-    const latestGapAnalysis = task.project.gapAnalysisRuns[0];
+  const preLaunchWebsite = isPreLaunchWebsiteCampaign(project);
+  if (isExistingWebsiteCampaign(project)) {
+    const latestStrategy = project.strategyPlans[0];
+    const latestGapAnalysis = project.gapAnalysisRuns[0];
     if (!latestGapAnalysis) return res.status(409).json({ error: "Run SEO and Gap Analysis before preparing the SEO Page Map & Content Plan." });
     if (!latestStrategy || latestStrategy.status !== "approved") return res.status(409).json({ error: "Approve a Strategy before preparing the SEO Page Map & Content Plan." });
   }
-  const currentStrategy = task.project.strategyPlans[0];
+  const currentStrategy = project.strategyPlans[0];
   if (!currentStrategy || currentStrategy.status !== "approved") return res.status(409).json({ error: "Approve the Unified Strategy before preparing the Website Page Map & Content Plan." });
   const snapshot = recordJson(task.approvalSnapshotJson);
-  const projectBusinessName = task.project.businessName?.trim() || null;
-  const projectLabel = task.project.name.trim();
-  const agencyBusinessName = task.project.agencyClient?.name?.trim() || null;
+  const projectBusinessName = project.businessName?.trim() || null;
+  const projectLabel = project.name.trim();
+  const agencyBusinessName = project.agencyClient?.name?.trim() || null;
   const projectLabelLooksGeneric = /^(?:new\s+)?(?:website|seo|marketing|client)?\s*project(?:\s+\d+)?$|^untitled$/i.test(projectLabel);
   // The workspace/agency name is not automatically the public identity of a
   // client project. Prefer the project's approved business name or a useful
@@ -3049,7 +3084,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   const confirmedBusinessName = projectBusinessName
     || (!projectLabelLooksGeneric ? projectLabel : null)
     || agencyBusinessName;
-  const approvedKeywords = approvedKeywordEntries(task.project.keywordGroups);
+  const approvedKeywords = approvedKeywordEntries(project.keywordGroups);
   if (!approvedKeywords.length) return res.status(409).json({ error: "Approve at least one Primary or Secondary keyword and complete Keyword Intelligence before preparing the Website Page Map & Content Plan." });
   // The research evidence supplied to AI is intentionally sampled above, but
   // workflow readiness must consider every completed run for the project.
@@ -3057,36 +3092,38 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     where: { projectId: task.projectId },
     select: { seedKeyword: true, status: true, locationName: true, languageCode: true, device: true, createdAt: true },
   });
-  const unresearchedApprovedKeywords = missingApprovedKeywordResearch(task.project.keywordGroups, completedKeywordRuns, projectAnalysisLocationLabels(task.project.targetLocations, task.project.businessLocationJson));
+  const unresearchedApprovedKeywords = missingApprovedKeywordResearch(project.keywordGroups, completedKeywordRuns, projectAnalysisLocationLabels(project.targetLocations, project.businessLocationJson));
   if (unresearchedApprovedKeywords.length) return res.status(409).json({
     error: `Complete Keyword Analysis for all approved Primary and Secondary keywords before preparing Website Content. ${unresearchedApprovedKeywords.length} still need analysis: ${unresearchedApprovedKeywords.slice(0, 8).join(", ")}${unresearchedApprovedKeywords.length > 8 ? "…" : ""}`,
   });
-  const intakeTargetLocations = cleanGeographicTargetMarkets(jsonStrings(task.project.targetLocations));
-  const businessLocation = recordJson(task.project.businessLocationJson);
-  const targetCountry = typeof businessLocation.country === "string" ? businessLocation.country.trim() : task.project.website?.targetCountry ?? null;
+  const intakeTargetLocations = cleanGeographicTargetMarkets(jsonStrings(project.targetLocations));
+  const businessLocation = recordJson(project.businessLocationJson);
+  const targetCountry = typeof businessLocation.country === "string" ? businessLocation.country.trim() : project.website?.targetCountry ?? null;
   const targetStateProvince = typeof businessLocation.stateProvince === "string" ? businessLocation.stateProvince.trim() : null;
   const physicalCity = typeof businessLocation.city === "string" ? businessLocation.city.trim() : null;
-  const verifiedServices = task.project.gapLocalSeoProfiles[0] ? jsonStrings(task.project.gapLocalSeoProfiles[0].services) : [];
+  const verifiedServices = project.gapLocalSeoProfiles[0] ? jsonStrings(project.gapLocalSeoProfiles[0].services) : [];
   const businessEvidenceInput = {
+    productRelationship: productRelationshipContext(project),
     confirmedBusinessName,
-    projectName: task.project.name,
-    niche: task.project.niche,
-    businessSummary: task.project.businessProfile?.businessSummary ?? null,
-    offerSummary: task.project.businessProfile?.offerSummary ?? null,
-    targetAudience: task.project.businessProfile?.targetAudience ?? null,
-    primaryGoal: task.project.primaryGoal,
+    projectName: project.name,
+    niche: project.niche,
+    businessSummary: project.businessProfile?.businessSummary ?? null,
+    offerSummary: project.businessProfile?.offerSummary ?? null,
+    targetAudience: project.businessProfile?.targetAudience ?? null,
+    primaryGoal: project.primaryGoal,
     targetLocations: intakeTargetLocations,
     approvedKeywords,
     verifiedServices,
   };
   const expectedBusinessFingerprint = businessEvidenceFingerprint({
+    productRelationship: productRelationshipContext(project),
     confirmedBusinessName,
-    internalProjectName: task.project.name,
-    industryDirection: task.project.niche,
-    rawBusinessSummary: task.project.businessProfile?.businessSummary ?? null,
-    rawOfferAnswer: task.project.businessProfile?.offerSummary ?? null,
-    rawAudienceAnswer: task.project.businessProfile?.targetAudience ?? null,
-    primaryGoal: task.project.primaryGoal,
+    internalProjectName: project.name,
+    industryDirection: project.niche,
+    rawBusinessSummary: project.businessProfile?.businessSummary ?? null,
+    rawOfferAnswer: project.businessProfile?.offerSummary ?? null,
+    rawAudienceAnswer: project.businessProfile?.targetAudience ?? null,
+    primaryGoal: project.primaryGoal,
     targetLocations: intakeTargetLocations,
     approvedKeywords,
     verifiedServices,
@@ -3096,7 +3133,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
   // records may even survive a change in project direction. They are not
   // existing-site page candidates for a New Website plan. Existing-site
   // redesigns remain eligible because their live pages are useful evidence.
-  const pageCandidates = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({
+  const pageCandidates = websitePlanEvidencePages(preLaunchWebsite, project.website?.crawlJobs[0]?.pages).map((page) => ({
     url: page.seo?.canonicalUrl || page.finalUrl || page.normalizedUrl || page.url,
     title: page.seo?.title ?? null,
     h1: firstJsonString(page.seo?.h1Text) ?? null,
@@ -3112,153 +3149,43 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     }
     return res.json({ task, plan: saved.data, existing: true, pageCandidates });
   }
+  const currentInputGuard = createHash("sha256").update(JSON.stringify({
+    taskUpdatedAt: task.updatedAt.toISOString(), business: expectedBusinessFingerprint,
+    keywords: approvedKeywords, strategy: project.strategyPlans[0]?.id,
+    gapAnalysis: project.gapAnalysisRuns[0]?.id,
+    crawl: project.website?.crawlJobs[0]?.id,
+    request: { localSeoEnabled: req.body?.localSeoEnabled, targetLocations: req.body?.targetLocations },
+  })).digest("hex");
+  const savedInputGuard = await planCheckpoint("input_guard", 1, async () => currentInputGuard);
+  if (savedInputGuard !== currentInputGuard) return res.status(409).json({ error: "Project inputs or saved page decisions changed during generation. Completed checkpoints were preserved; start a new plan using the updated inputs." });
   const savedBusinessContext = saved.success ? aiBusinessContextSchema.safeParse(saved.data.aiBusinessContext) : null;
   const businessContext = savedBusinessContext?.success
     && savedBusinessContext.data.sourceFingerprint === expectedBusinessFingerprint
     && req.body?.regenerate !== true
     ? savedBusinessContext.data
-    : await interpretApprovedBusinessEvidence(businessEvidenceInput);
-  const savedPlanningText = saved.success
-    ? JSON.stringify({
-      assignments: saved.data.pageAssignments,
-      owners: saved.data.pagePlanningIntelligence.ownerMap,
-      locations: saved.data.pagePlanningIntelligence.locationHierarchy,
-    }).toLocaleLowerCase()
-    : "";
-  const savedUsesInternalProjectName = Boolean(
-    saved.success
-    && confirmedBusinessName
-    && task.project.name.trim().toLocaleLowerCase() !== confirmedBusinessName.toLocaleLowerCase()
-    && savedPlanningText.includes(task.project.name.trim().toLocaleLowerCase()),
-  );
-  const savedUsesBrandLedLocationHub = Boolean(
-    saved.success
-    && confirmedBusinessName
-    && saved.data.pageAssignments.some((assignment) =>
-      assignment.clusterRole === "location_hub"
-      && assignment.canonicalKeyword.toLocaleLowerCase().startsWith(`${confirmedBusinessName.toLocaleLowerCase()} services in `),
-    ),
-  );
-  const savedHasDuplicateStateAlias = Boolean(
-    saved.success
-    && task.project.businessLocationJson
-    && typeof recordJson(task.project.businessLocationJson).stateProvince === "string"
-    && saved.data.pagePlanningIntelligence.locationHierarchy.some((location) => location.name.toLocaleLowerCase() === String(recordJson(task.project.businessLocationJson).stateProvince).trim().toLocaleLowerCase())
-    && saved.data.pagePlanningIntelligence.locationHierarchy.some((location) => intakeTargetLocations.some((target) => target.toLocaleLowerCase() === location.name.toLocaleLowerCase() && target.length > 3)),
-  );
-  const savedHasDuplicatePageKeys = Boolean(saved.success && (() => {
-    const keys = saved.data.pageAssignments.map((assignment) => assignment.pageKey).filter((value): value is string => Boolean(value));
-    return new Set(keys).size !== keys.length;
-  })());
-  const savedMissingCrawledPageAssignments = Boolean(saved.success && pageCandidates.some((page) => (
-    !saved.data.pageAssignments.some((assignment) => canonicalContentPlanTarget(assignment.targetUrl) === canonicalContentPlanTarget(page.url))
-  )));
-  const successfulCrawlTargets = new Set(pageCandidates.map((page) => canonicalContentPlanTarget(page.url)).filter(Boolean));
-  const savedClaimsUnverifiedExistingPage = Boolean(saved.success && saved.data.pageAssignments.some((assignment) => (
-    (assignment.source === "existing_crawl" || assignment.recommendedAction === "update_existing")
-    && !successfulCrawlTargets.has(canonicalContentPlanTarget(assignment.targetUrl))
-  )));
-  const savedHasUnverifiedLocalOwner = Boolean(saved.success && saved.data.pageAssignments.some((assignment) => (
-    ["location_hub", "service"].includes(assignment.clusterRole ?? "")
-    && Boolean(assignment.location)
-    && assignment.serviceAvailabilityVerified !== true
-  )));
-  const savedMissingPhysicalCity = Boolean(
-    saved.success
-    && saved.data.localSeo.enabled
-    && physicalCity
-    && !saved.data.pagePlanningIntelligence.locationHierarchy.some((location) => location.name.toLocaleLowerCase() === physicalCity.toLocaleLowerCase()),
-  );
-  const homepageComparisonLocations = cleanGeographicTargetMarkets([
-    ...(physicalCity ? [physicalCity] : []),
-    ...intakeTargetLocations,
-  ]);
-  const expectedHomepageOwner = approvedKeywords
-    .map((keyword, index) => ({ keyword, index, score: keywordTopicSimilarity(keyword, businessContext.industry, homepageComparisonLocations) }))
-    .sort((left, right) => right.score - left.score || left.index - right.index)[0];
-  const savedHomepage = saved.success ? saved.data.pageAssignments.find(isHomePageAssignment) : null;
-  const savedHasSpecialtyHomepageOwner = Boolean(
-    saved.success
-    && savedHomepage
-    && expectedHomepageOwner
-    && expectedHomepageOwner.score >= 30
-    && normalizeKeywordTopic(savedHomepage.canonicalKeyword, homepageComparisonLocations) !== normalizeKeywordTopic(expectedHomepageOwner.keyword, homepageComparisonLocations),
-  );
-  const savedCreatesDuplicateStandardPage = Boolean(
-    saved.success && contentPlanCreatesExistingStandardPage(saved.data, pageCandidates),
-  );
-  const savedCreatesDuplicateIntentPage = Boolean(
-    saved.success && contentPlanCreatesExistingIntentPage(saved.data, pageCandidates, businessContext.businessName),
-  );
-  const savedEvidenceChanged = !savedBusinessContext?.success
-    || savedBusinessContext.data.sourceFingerprint !== expectedBusinessFingerprint;
-  const savedHasCurrentArchitecture = saved.success
-    && Boolean(saved.data.keywordNormalization)
-    && saved.data.advancedSeoIntelligence.engines.length > 0
-    && saved.data.pagePlanningIntelligence.keywordClusters.length > 0
-    && (
-      !saved.data.localSeo.enabled
-      || !saved.data.localSeo.targetLocations.length
-      || saved.data.locationAuthorityClusters.length > 0
-    );
-  const savedRequiresPlanUpgrade = saved.success && (
-    savedEvidenceChanged
-    || savedMissingPhysicalCity
-    || savedHasSpecialtyHomepageOwner
-    || savedHasDuplicatePageKeys
-    || savedMissingCrawledPageAssignments
-    || savedClaimsUnverifiedExistingPage
-    || savedHasUnverifiedLocalOwner
-    || savedCreatesDuplicateStandardPage
-    || savedCreatesDuplicateIntentPage
-    || contentPlanHasUnnormalizedOwners(saved.data, intakeTargetLocations)
-    || (
-      saved.data.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION
-      && !savedHasCurrentArchitecture
-      && (
-        (saved.data.localSeo.enabled && saved.data.localSeo.targetLocations.length > 0 && saved.data.locationAuthorityClusters.length === 0)
-        || saved.data.advancedSeoIntelligence.engines.length === 0
-        || saved.data.pagePlanningIntelligence.keywordClusters.length === 0
-        || !saved.data.keywordNormalization
-        || savedUsesInternalProjectName
-        || savedUsesBrandLedLocationHub
-        || savedHasDuplicateStateAlias
-      )
-    )
-  );
-  if (saved.success && req.body?.regenerate !== true && !savedRequiresPlanUpgrade) {
-    const normalizedSavedPlan = ensureContentPlanHome({ ...saved.data, workflowVersion: CONTENT_PLAN_WORKFLOW_VERSION, aiBusinessContext: businessContext }, {
-      projectName: task.project.name,
-      businessName: businessContext.businessName,
-      offer: businessContext.homepagePrimaryTopic,
-      websiteUrl: task.project.websiteUrl,
-      websiteContext: websitePlanningContext(task.project),
-      websitePages: pageCandidates,
-    });
-    const needsAiFaqRefresh = normalizedSavedPlan.pageAssignments.some((assignment) => (
-      assignment.faqStrategyVersion !== "ai_seo_plan_v2"
-      || (assignment.faqTopics?.length ?? 0) < 3
-      || !assignment.seoTitle
-      || !assignment.metaDescription
-      || !assignment.contentOutline?.length
-      || !assignment.contentBrief
-      || !assignment.ctaSuggestion
-    ));
-    const plan = needsAiFaqRefresh ? await applyAiPageFaqSuggestions(normalizedSavedPlan, {
-      business: businessContext,
-      goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
-      locations: normalizedSavedPlan.localSeo.targetLocations,
-    }) : normalizedSavedPlan;
-    const workflowVersionUpgraded = saved.data.workflowVersion !== CONTENT_PLAN_WORKFLOW_VERSION;
-    if (workflowVersionUpgraded || (needsAiFaqRefresh && plan.pageAssignments.some((assignment) => assignment.faqStrategyVersion === "ai_seo_plan_v2"))) {
-      await prisma.executionTask.update({
-        where: { id: task.id },
-        data: { approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, businessContextPreparedAt: new Date().toISOString(), ...(needsAiFaqRefresh ? { faqPlanPreparedAt: new Date().toISOString() } : {}), ...(workflowVersionUpgraded ? { contentPlanWorkflowUpgradedAt: new Date().toISOString() } : {}) } as Prisma.InputJsonValue },
-      });
-    }
-    return res.json({ task, plan, existing: true, pageCandidates });
+    : await planCheckpoint("business_context", 1, () => interpretApprovedBusinessEvidence(businessEvidenceInput));
+  // Only an explicit rebuild may replace saved human decisions.
+  if (snapshot.contentPlan && !saved.success && req.body?.regenerate !== true) {
+    return res.status(409).json({ error: "The saved Website Plan needs repair. Completion will not replace it. Review the saved plan or explicitly rebuild it." });
   }
-  const strategy = task.project.strategyPlans[0];
+  if (saved.success && req.body?.regenerate !== true) {
+    const plan = await planCheckpoint("saved_page_briefs", 2, () => applyAiPageFaqSuggestions({ ...saved.data, workflowVersion: CONTENT_PLAN_WORKFLOW_VERSION }, {
+      business: businessContext,
+      goal: project.primaryGoal?.trim() || "help qualified visitors take the next step",
+      locations: saved.data.localSeo.targetLocations,
+      reviewComment: typeof snapshot.contentPlanReviewComment === "string" ? snapshot.contentPlanReviewComment : "",
+    }));
+    await planCheckpoint("assembly_started", 3, async () => true);
+    // Reject stale completions after a concurrent save, approval, or reset.
+    const updated = await prisma.executionTask.updateMany({
+      where: { id: task.id, projectId: task.projectId, updatedAt: task.updatedAt },
+      data: { approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, faqPlanPreparedAt: new Date().toISOString() } as Prisma.InputJsonValue },
+    });
+    if (!updated.count) return res.status(409).json({ error: "The Website Plan changed during AI completion. Your latest saved decisions were preserved. Reload and complete the plan again." });
+    const updatedTask = await prisma.executionTask.findUnique({ where: { id: task.id } });
+    return res.json({ task: updatedTask, plan, existing: true, pageCandidates });
+  }
+  const strategy = project.strategyPlans[0];
   const requestedLocalSeo = z.object({ localSeoEnabled: z.boolean().optional(), targetLocations: z.array(z.string().trim().min(2).max(160)).max(20).optional() }).parse(req.body ?? {});
   const localSeoEnabled = requestedLocalSeo.localSeoEnabled ?? (intakeTargetLocations.length > 0 || Boolean(physicalCity));
   const targetLocations = localSeoEnabled
@@ -3272,7 +3199,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     ? cleanGeographicTargetMarkets([...(physicalCity ? [physicalCity] : []), ...targetLocations]).slice(0, 20)
     : [];
   if (localSeoEnabled && !planningLocations.length) return res.status(400).json({ error: "Local SEO requires at least one geographic target city, region, province/state, or country." });
-  const localProfile = task.project.gapLocalSeoProfiles[0] ?? null;
+  const localProfile = project.gapLocalSeoProfiles[0] ?? null;
   const confirmedLocalServices = localProfile ? jsonStrings(localProfile.services) : [];
   const confirmedServiceCities = localProfile ? jsonStrings(localProfile.citiesServed) : [];
   const locationInputs: SeoPlannerInput["locations"] = planningLocations.map((name) => ({
@@ -3308,11 +3235,11 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     })),
     ...(localProfile ? confirmedServiceCities.map((location) => ({ id: `local-profile-${localProfile.id}-${location.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-")}`, location, type: "approved Local SEO service-area profile", verified: true })) : []),
   ];
-  const keywordSignals = task.project.keywordResearchRuns.flatMap((run) => [
+  const keywordSignals = project.keywordResearchRuns.flatMap((run) => [
     { keyword: run.seedKeyword, classification: "Strategic Supporting Topic", location: run.locationName, searchVolume: null, competitionIndex: null, competitorCount: run.competitorCount },
     ...keywordEvidenceList(run.ideas).map((idea) => ({ keyword: idea.keyword, classification: idea.classification, location: run.locationName, searchVolume: idea.avgMonthlySearches, competitionIndex: idea.competitionIndex, competitorCount: run.competitorCount })),
   ]);
-  const keywordNormalization = await normalizeKeywordsWithAi({
+  const keywordNormalization = await planCheckpoint("keyword_normalization", 1, () => normalizeKeywordsWithAi({
     keywords: approvedKeywords,
     locations: planningLocations,
     services: confirmedLocalServices.length ? confirmedLocalServices : businessContext.primaryServices,
@@ -3320,22 +3247,22 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     industry: businessContext.industry,
     audience: businessContext.audienceSummary,
     offer: businessContext.coreBusinessValue,
-  });
-  const generatedPlanBase = includeEveryCrawledPageInContentPlan({
+  }));
+  const generatedPlanBase = await planCheckpoint("page_map", 1, async () => includeEveryCrawledPageInContentPlan({
     workflowVersion: CONTENT_PLAN_WORKFLOW_VERSION,
     ...contentPlanFor({
-    projectName: task.project.name,
+    projectName: project.name,
     businessName: businessContext.businessName,
-    goal: task.project.primaryGoal,
+    goal: project.primaryGoal,
     markets: planningLocations,
     keywords: approvedKeywords,
     offer: businessContext.homepagePrimaryTopic,
     audience: businessContext.audienceSummary,
     contentStrategy: strategy?.contentStrategy ?? null,
-    websiteUrl: task.project.websiteUrl,
-      websiteContext: websitePlanningContext(task.project),
+    websiteUrl: project.websiteUrl,
+      websiteContext: websitePlanningContext(project),
     localSeoEnabled,
-    websitePages: websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({
+    websitePages: websitePlanEvidencePages(preLaunchWebsite, project.website?.crawlJobs[0]?.pages).map((page) => ({
       url: page.url,
       title: page.seo?.title ?? null,
       h1: firstJsonString(page.seo?.h1Text) ?? null,
@@ -3350,7 +3277,7 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     // and other target markets are service areas—not additional offices.
     physicalLocations: [physicalCity].filter((value): value is string => Boolean(value)),
     serviceAvailability,
-    competitors: jsonStrings(task.project.competitors),
+    competitors: jsonStrings(project.competitors),
     localEvidence,
     semanticKeywords: keywordNormalization.semanticKeywords,
     }),
@@ -3361,23 +3288,23 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       acceptedCount: keywordNormalization.acceptedCount,
       deterministicProtectedCount: keywordNormalization.deterministicProtectedCount,
     },
-  }, pageCandidates, businessContext.businessName);
+  }, pageCandidates, businessContext.businessName));
   const strategyRecommendations = Array.isArray(strategy?.prioritizedRecommendations) ? strategy.prioritizedRecommendations.map(recordJson) : [];
   const unifiedStrategyEntry = strategyRecommendations.find((item) => item.analysisKey === "unified_strategy_plan");
   const unifiedStrategyPlan = recordJson(unifiedStrategyEntry?.plan);
   const strategyFunnel = recordJson(unifiedStrategyPlan.growthFunnel);
-  const sitePages = websitePlanEvidencePages(preLaunchWebsite, task.project.website?.crawlJobs[0]?.pages).map((page) => ({ url: page.url, title: page.seo?.title ?? null }));
-  const fullAiPlan = await applyFullAiWebsitePlan({ ...generatedPlanBase, aiBusinessContext: businessContext }, {
-    websiteContext: websitePlanningContext(task.project),
-    projectType: task.project.projectType,
+  const sitePages = websitePlanEvidencePages(preLaunchWebsite, project.website?.crawlJobs[0]?.pages).map((page) => ({ url: page.url, title: page.seo?.title ?? null }));
+  const generationEvidence = await planCheckpoint("planning_evidence", 1, async () => ({
+    websiteContext: websitePlanningContext(project),
+    projectType: project.projectType,
     business: businessContext,
-    goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
+    goal: project.primaryGoal?.trim() || "help qualified visitors take the next step",
     keywords: approvedKeywords,
-    opportunity: task.project.opportunities[0],
-    aiCitationEvidence: { findings: task.project.citationReadinessFindings, recommendations: task.project.citationRecommendations },
-    growthPlan: task.project.growthDiagnoses[0],
+    opportunity: project.opportunities[0],
+    aiCitationEvidence: { findings: project.citationReadinessFindings, recommendations: project.citationRecommendations },
+    growthPlan: project.growthDiagnoses[0],
     targetLocations: planningLocations,
-    gapRecommendations: [...(task.project.gapAnalysisRuns[0]?.recommendations ?? []), ...task.project.seoFixQueueItems.map((finding) => ({ source: "Approved exact Gap Analysis finding", ...finding }))],
+    gapRecommendations: [...(project.gapAnalysisRuns[0]?.recommendations ?? []), ...project.seoFixQueueItems.map((finding) => ({ source: "Approved exact Gap Analysis finding", ...finding }))],
     sitePages,
     strategy: strategy ? {
       id: strategy.id,
@@ -3392,13 +3319,16 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       prioritizedRecommendations: strategy.prioritizedRecommendations,
     } : null,
     funnel: Object.keys(strategyFunnel).length ? strategyFunnel : null,
-  });
-  const generatedPlan = await applyAiPageFaqSuggestions(fullAiPlan, {
+  }));
+  const fullAiPlan = await planCheckpoint("page_decisions", 2, () => applyFullAiWebsitePlan({ ...generatedPlanBase, aiBusinessContext: businessContext }, generationEvidence));
+  const generatedPlan = await planCheckpoint("page_briefs", 2, () => applyAiPageFaqSuggestions(fullAiPlan, {
     business: businessContext,
-    goal: task.project.primaryGoal?.trim() || "help qualified visitors take the next step",
+    goal: project.primaryGoal?.trim() || "help qualified visitors take the next step",
     locations: planningLocations,
-  });
-  const generatedCandidatePlan = savedRequiresPlanUpgrade && saved.success ? (() => {
+  }));
+  await planCheckpoint("assembly_started", 3, async () => true);
+  // Existing plans reach generation only after an explicit rebuild. Preserve custom pages.
+  const generatedCandidatePlan = saved.success ? (() => {
     const assignmentTargets = new Set(generatedPlan.pageAssignments.map((assignment) => assignment.targetUrl.trim().toLocaleLowerCase()));
     const preservedAssignments = saved.data.pageAssignments.filter((assignment) => (
       !assignmentTargets.has(assignment.targetUrl.trim().toLocaleLowerCase())
@@ -3425,8 +3355,8 @@ async function performContentPlanPrepare(req: Request, res: Response) {
       planningChecks: [...generatedPlan.planningChecks, ...customPlanningChecks].slice(0, 500),
     };
   })() : generatedPlan;
-  const approvedGapFindingsByTarget = new Map<string, typeof task.project.seoFixQueueItems>();
-  for (const finding of task.project.seoFixQueueItems) {
+  const approvedGapFindingsByTarget = new Map<string, typeof project.seoFixQueueItems>();
+  for (const finding of project.seoFixQueueItems) {
     const key = canonicalContentPlanTarget(finding.affectedUrl);
     approvedGapFindingsByTarget.set(key, [...(approvedGapFindingsByTarget.get(key) ?? []), finding]);
   }
@@ -3443,8 +3373,8 @@ async function performContentPlanPrepare(req: Request, res: Response) {
         evidenceSources: [...new Set([...(assignment.evidenceSources ?? []), ...requirements.map((finding) => "Gap Analysis · " + finding.issueType + " · " + finding.affectedUrl)])].slice(0, 20),
       };
     }),
-    pageUpdates: [...generatedCandidatePlan.pageUpdates, ...task.project.seoFixQueueItems.map((finding) => ("Gap Analysis · " + finding.affectedUrl + " · " + finding.recommendedFix).slice(0, 800))].slice(0, 500),
-    planningChecks: [...generatedCandidatePlan.planningChecks, ...task.project.seoFixQueueItems.map((finding) => ("Source-linked Gap Analysis requirement · " + finding.affectedUrl + " · " + (finding.plainEnglishReason ?? finding.issueType) + " · Required fix: " + finding.recommendedFix).slice(0, 2400))].slice(0, 500),
+    pageUpdates: [...generatedCandidatePlan.pageUpdates, ...project.seoFixQueueItems.map((finding) => ("Gap Analysis · " + finding.affectedUrl + " · " + finding.recommendedFix).slice(0, 800))].slice(0, 500),
+    planningChecks: [...generatedCandidatePlan.planningChecks, ...project.seoFixQueueItems.map((finding) => ("Source-linked Gap Analysis requirement · " + finding.affectedUrl + " · " + (finding.plainEnglishReason ?? finding.issueType) + " · Required fix: " + finding.recommendedFix).slice(0, 2400))].slice(0, 500),
   };
   const reconciledCandidatePlan = reconcileContentPlanConflicts(repairContentPlanPageIdentities(planWithExactGapRequirements));
   const plan = parseCompatibleContentPlan(reconciledCandidatePlan);
@@ -3452,11 +3382,11 @@ async function performContentPlanPrepare(req: Request, res: Response) {
     // A project reset can legitimately remove this task while the AI request is
     // still running. Use a conditional write so that stale completions are
     // discarded cleanly instead of surfacing Prisma P2025 as an internal error.
-    const saved = await tx.executionTask.updateMany({ where: { id: task.id, projectId: task.projectId }, data: { status: "in_progress", actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", contentPlanGeneration: "full_ai", contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, contentPlanEvidence: { planningMode: "full_intelligence", seedKeywordsOnly: false, gapAnalysisRunId: task.project.gapAnalysisRuns[0]?.id ?? null, strategyId: strategy?.id ?? null, strategyVersion: strategy?.version ?? null, keywordResearchRunCount: task.project.keywordResearchRuns.length, siteAnalysisPageCount: sitePages.length, funnelIncluded: Object.keys(strategyFunnel).length > 0 }, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
+    const saved = await tx.executionTask.updateMany({ where: { id: task.id, projectId: task.projectId, updatedAt: task.updatedAt }, data: { status: "in_progress", actionButtonLabel: preLaunchWebsite ? "Review Page & Content Plan" : "Review SEO Page Map", relatedUrl: `/seo-page-map?projectId=${task.projectId}&taskId=${task.id}`, approvalSnapshotJson: { ...snapshot, contentPlan: plan, contentPlanStatus: "draft", contentPlanGeneration: "full_ai", contentPlanGenerationJobId: typeof req.body?.generationJobId === "string" ? req.body.generationJobId : null, contentPlanEvidence: { planningMode: "full_intelligence", seedKeywordsOnly: false, gapAnalysisRunId: project.gapAnalysisRuns[0]?.id ?? null, strategyId: strategy?.id ?? null, strategyVersion: strategy?.version ?? null, keywordResearchRunCount: project.keywordResearchRuns.length, siteAnalysisPageCount: sitePages.length, funnelIncluded: Object.keys(strategyFunnel).length > 0 }, preparedAt: new Date().toISOString() } as Prisma.InputJsonValue } });
     if (!saved.count) return null;
     const row = await tx.executionTask.findUnique({ where: { id: task.id } });
     if (!row) return null;
-    await recordWorkspaceActivity(tx, { context, action: "content_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: task.project?.agencyClientId, projectId: task.projectId, nextJson: { pages: plan.pageUpdates.length, supportingContent: plan.supportingContent.length, briefs: plan.contentBriefs.length } });
+    await recordWorkspaceActivity(tx, { context, action: "content_plan.prepared", entityType: "execution_task", entityId: task.id, agencyClientId: project?.agencyClientId, projectId: task.projectId, nextJson: { pages: plan.pageUpdates.length, supportingContent: plan.supportingContent.length, briefs: plan.contentBriefs.length } });
     return row;
   });
   if (!updated) return res.status(409).json({ error: `This ${preLaunchWebsite ? "Website Plan" : "SEO Page Map"} request was cancelled because the project workflow was reset. Refresh the project and create a new Execution Plan when you are ready.` });
@@ -3502,6 +3432,8 @@ function contentPlanGenerationJobView(job: { id: string; projectId: string | nul
     projectId: job.projectId,
     taskId: String(output.taskId || "") || null,
     status: job.status,
+    part: output.part ?? null,
+    totalParts: 3,
     stage: String(output.stage || (job.status === "queued" ? "queued" : job.status === "running" ? "building_plan" : job.status)),
     progress: Math.max(0, Math.min(100, Number(output.progress || (job.status === "completed" ? 100 : job.status === "running" ? 35 : 5)))),
     error: job.status === "failed" ? String(output.publicError || "Website Plan generation could not be completed. Please retry.") : null,
@@ -3520,14 +3452,15 @@ async function activeContentPlanJob(taskId: string, projectId: string) {
   return jobs.find((job) => contentPlanJobRecord(job.inputSnapshotJson).taskId === taskId) ?? null;
 }
 
-async function enqueueContentPlanGenerationJob(jobId: string) {
-  const existing = await contentPlanGenerationQueue.getJob(jobId);
+async function enqueueContentPlanGenerationJob(jobId: string, stage: PlanStage = 1) {
+  const queueId = `${jobId}-part-${stage}`;
+  const existing = await contentPlanGenerationQueue.getJob(queueId);
   if (existing) {
     const state = await existing.getState();
     if (!["completed", "failed", "unknown"].includes(state)) return "existing" as const;
     await existing.remove().catch(() => undefined);
   }
-  await contentPlanGenerationQueue.add("content-plan:generate", { jobId }, { jobId, removeOnComplete: 250, removeOnFail: 250 });
+  await contentPlanGenerationQueue.add("content-plan:generate", { jobId, stage }, { jobId: queueId, attempts: 3, backoff: { type: "exponential", delay: 10_000 }, removeOnComplete: 250, removeOnFail: 250 });
   return "enqueued" as const;
 }
 
@@ -3557,9 +3490,18 @@ async function savedContentPlanForGenerationJob(taskId: string, jobId: string) {
   return { task, plan: snapshot.contentPlan };
 }
 
-async function executeContentPlanGenerationJob(jobId: string) {
+async function executeContentPlanGenerationJob(jobId: string, stage: PlanStage = 1, lastAttempt = true) {
   const job = await prisma.aiRun.findUnique({ where: { id: jobId } });
   if (!job || job.moduleName !== "content_plan_generation_job" || ["completed", "failed", "cancelled"].includes(job.status)) return;
+  const persistedOutput = contentPlanJobRecord(job.outputJson);
+  if (typeof persistedOutput.part === "number" && persistedOutput.part !== stage) {
+    // If Redis was unavailable after persisting a handoff, a retry of the
+    // preceding queue item must deliver that handoff instead of dropping it.
+    if (job.status === "queued" && persistedOutput.part > stage && (persistedOutput.part === 2 || persistedOutput.part === 3)) {
+      await enqueueContentPlanGenerationJob(jobId, persistedOutput.part);
+    }
+    return;
+  }
   const input = job.inputSnapshotJson as unknown as ContentPlanGenerationJobInput;
   const saved = await savedContentPlanForGenerationJob(input.taskId, jobId);
   if (saved) {
@@ -3568,9 +3510,10 @@ async function executeContentPlanGenerationJob(jobId: string) {
     return;
   }
 
+  let output: Record<string, unknown> = { ...contentPlanJobRecord(job.outputJson), stage: planStageNames[stage], part: stage, progress: stage === 1 ? 10 : stage === 2 ? 35 : 90, taskId: input.taskId };
   const claimed = await prisma.aiRun.updateMany({
-    where: { id: jobId, status: "queued" },
-    data: { status: "running", outputJson: { stage: "building_plan", progress: 35, taskId: input.taskId, startedAt: new Date().toISOString() }, errorMessage: null },
+    where: { id: jobId, status: { in: ["queued", "running"] } },
+    data: { status: "running", outputJson: output as Prisma.InputJsonValue, errorMessage: null },
   });
   if (!claimed.count) return;
 
@@ -3595,8 +3538,26 @@ async function executeContentPlanGenerationJob(jobId: string) {
     outputTokens: 0,
   };
 
+  const priorUsage = contentPlanJobRecord(output.providerUsage);
+  const totalUsage = () => ({
+    model: commercialContext.providerModel || priorUsage.model,
+    inputTokens: Number(priorUsage.inputTokens || 0) + (commercialContext.inputTokens || 0),
+    outputTokens: Number(priorUsage.outputTokens || 0) + (commercialContext.outputTokens || 0),
+  });
   try {
-    await runCommercialRequestContext(commercialContext, () => performContentPlanPrepare(request, response));
+    await runCommercialRequestContext(commercialContext, () => withPlanCheckpoints({
+      stage,
+      values: contentPlanJobRecord(output.checkpoints),
+      save: async (checkpoints, lastCheckpoint) => {
+        const pageMap = contentPlanJobRecord(checkpoints.page_map);
+        const totalPages = Array.isArray(pageMap.pageAssignments) ? pageMap.pageAssignments.length : 0;
+        const decisionPages = Object.keys(checkpoints).filter((key) => key.startsWith("decision:")).length;
+        const briefPages = Object.keys(checkpoints).filter((key) => key.startsWith("brief:")).length;
+        const progress = stage === 2 && totalPages ? Math.min(89, 35 + Math.floor(30 * decisionPages / totalPages + 24 * briefPages / totalPages)) : output.progress;
+        output = { ...output, checkpoints, lastCheckpoint, totalPages, decisionPages, briefPages, progress, checkpointAt: new Date().toISOString() };
+        await prisma.aiRun.update({ where: { id: jobId }, data: { outputJson: output as Prisma.InputJsonValue } });
+      },
+    }, () => performContentPlanPrepare(request, response)));
     if (responseStatus >= 400 || !responsePayload?.plan || !responsePayload.task?.id) {
       const errorValue = responsePayload?.error;
       const message = typeof errorValue === "string" ? errorValue : "Website Plan generation did not return a saved plan.";
@@ -3608,8 +3569,8 @@ async function executeContentPlanGenerationJob(jobId: string) {
         usageEventId: input.usageEventId,
         provider: "openai",
         model: commercialContext.providerModel,
-        inputTokens: commercialContext.inputTokens,
-        outputTokens: commercialContext.outputTokens,
+        inputTokens: totalUsage().inputTokens,
+        outputTokens: totalUsage().outputTokens,
         metadata: { source: "content_plan_generation_job", taskId: input.taskId },
       });
     } catch (usageError) {
@@ -3618,12 +3579,23 @@ async function executeContentPlanGenerationJob(jobId: string) {
     }
     await prisma.aiRun.update({ where: { id: jobId }, data: {
       status: "completed",
-      outputJson: { stage: "completed", progress: 100, taskId: input.taskId, completedAt: new Date().toISOString(), ...(usageWarning ? { usageWarning } : {}) },
+      outputJson: { ...output, stage: "completed", progress: 100, taskId: input.taskId, completedAt: new Date().toISOString(), ...(usageWarning ? { usageWarning } : {}) },
       outputText: "Website Plan is ready for review.",
-      tokenUsage: { model: commercialContext.providerModel, inputTokens: commercialContext.inputTokens ?? 0, outputTokens: commercialContext.outputTokens ?? 0 },
+      tokenUsage: totalUsage() as Prisma.InputJsonValue,
       errorMessage: null,
     } });
   } catch (error) {
+    output = { ...output, providerUsage: totalUsage() };
+    if (error instanceof NextPlanStage) {
+      output = { ...output, stage: planStageNames[error.stage], part: error.stage, progress: error.stage === 2 ? 35 : 90 };
+      await prisma.aiRun.update({ where: { id: jobId }, data: { status: "queued", outputJson: output as Prisma.InputJsonValue } });
+      await enqueueContentPlanGenerationJob(jobId, error.stage);
+      return;
+    }
+    if (!lastAttempt) {
+      await prisma.aiRun.update({ where: { id: jobId }, data: { status: "queued", errorMessage: error instanceof Error ? error.message : String(error), outputJson: { ...output, retrying: true } as Prisma.InputJsonValue } });
+      throw error;
+    }
     const message = error instanceof Error ? error.message : "Website Plan generation failed.";
     const publicMessage = error && typeof error === "object" && "publicMessage" in error && (error as { publicMessage?: unknown }).publicMessage === true;
     const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode || 500) : 500;
@@ -3633,19 +3605,21 @@ async function executeContentPlanGenerationJob(jobId: string) {
     const publicError = statusCode < 500 || publicMessage
       ? message
       : `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.`;
-    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError, recovery: workflowRecoveryPayload({ whatFailed: "Website Plan generation", workSaved: true, capacityOutcome: refundSucceeded ? "refunded" : "refund_pending", nextStep: refundSucceeded ? "Retry from the Website Plan screen; project inputs and the failed job are saved." : "Do not retry yet; contact support with the error code so Capacity can be reconciled.", action: refundSucceeded ? "retry" : "contact_support", actionUrl: `/seo-page-map?projectId=${input.projectId}`, errorCode }) }, errorMessage: message } }).catch(() => undefined);
+    await prisma.aiRun.update({ where: { id: jobId }, data: { status: "failed", outputJson: { ...output, stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError, recovery: workflowRecoveryPayload({ whatFailed: "Website Plan generation", workSaved: true, capacityOutcome: refundSucceeded ? "refunded" : "refund_pending", nextStep: refundSucceeded ? "Retry from the Website Plan screen; project inputs and the failed job are saved." : "Do not retry yet; contact support with the error code so Capacity can be reconciled.", action: refundSucceeded ? "retry" : "contact_support", actionUrl: `/seo-page-map?projectId=${input.projectId}`, errorCode }) }, errorMessage: message } }).catch(() => undefined);
     if (statusCode >= 500) queueApiErrorReport({ errorCode, statusCode, diagnostic: error, request });
   }
 }
 
 async function recoverContentPlanGenerationJobs() {
-  const jobs = await prisma.aiRun.findMany({ where: { moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "asc" }, select: { id: true } });
+  const jobs = await prisma.aiRun.findMany({ where: { moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } }, orderBy: { createdAt: "asc" }, select: { id: true, outputJson: true } });
   for (const job of jobs) {
-    const queuedJob = await contentPlanGenerationQueue.getJob(job.id);
+    const output = contentPlanJobRecord(job.outputJson);
+    const stage: PlanStage = output.part === 3 ? 3 : output.part === 2 ? 2 : 1;
+    const queuedJob = await contentPlanGenerationQueue.getJob(`${job.id}-part-${stage}`) ?? await contentPlanGenerationQueue.getJob(job.id);
     const queueState = queuedJob ? await queuedJob.getState() : "unknown";
     if (queueState === "active") continue;
-    await prisma.aiRun.updateMany({ where: { id: job.id, status: { in: ["queued", "running"] } }, data: { status: "queued", outputJson: { stage: "queued", progress: 5, recovered: true } } });
-    await enqueueContentPlanGenerationJob(job.id);
+    await prisma.aiRun.updateMany({ where: { id: job.id, status: { in: ["queued", "running"] } }, data: { status: "queued", outputJson: { ...output, recovered: true } as Prisma.InputJsonValue } });
+    await enqueueContentPlanGenerationJob(job.id, stage);
   }
   if (jobs.length) console.log(`[api] recovered ${jobs.length} queued Website Plan generation job(s)`);
 }
@@ -3653,17 +3627,18 @@ async function recoverContentPlanGenerationJobs() {
 let contentPlanGenerationWorker: Worker<ContentPlanGenerationQueueJobData> | null = null;
 export function startContentPlanGenerationQueueWorker() {
   if (contentPlanGenerationWorker) return contentPlanGenerationWorker;
-  contentPlanGenerationWorker = new Worker<ContentPlanGenerationQueueJobData>(CONTENT_PLAN_GENERATION_QUEUE, async (queueJob) => executeContentPlanGenerationJob(queueJob.data.jobId), { connection: queueConnection, concurrency: 2 });
+  contentPlanGenerationWorker = new Worker<ContentPlanGenerationQueueJobData>(CONTENT_PLAN_GENERATION_QUEUE, async (queueJob) => executeContentPlanGenerationJob(queueJob.data.jobId, queueJob.data.stage ?? 1, queueJob.attemptsMade + 1 >= (queueJob.opts.attempts ?? 1)), { connection: queueConnection, concurrency: 2 });
   contentPlanGenerationWorker.on("failed", (queueJob, error) => {
     const jobId = queueJob?.data.jobId;
     console.error(`[api] Website Plan generation queue job ${jobId ?? "unknown"} failed:`, error.message);
     if (jobId) void (async () => {
+      if (queueJob && await queueJob.getState() !== "failed") return;
       const record = await prisma.aiRun.findFirst({ where: { id: jobId, moduleName: "content_plan_generation_job", status: { in: ["queued", "running"] } } });
       if (!record) return;
       const input = record.inputSnapshotJson as unknown as ContentPlanGenerationJobInput;
       const errorCode = createApiErrorCode();
       await refundUsage({ usageEventId: input.usageEventId, reason: error.message }).catch(() => undefined);
-      await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error.message, outputJson: { stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError: `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.` } } });
+      await prisma.aiRun.updateMany({ where: { id: jobId, status: { in: ["queued", "running"] } }, data: { status: "failed", errorMessage: error.message, outputJson: { ...contentPlanJobRecord(record.outputJson), stage: "failed", progress: 100, taskId: input.taskId, errorCode, publicError: `We could not complete Website Plan generation. If the problem continues, send error code ${errorCode} to ${config.supportEmail}.` } } });
       queueApiErrorReport({ errorCode, statusCode: 500, diagnostic: error, request: contentPlanWorkerRequest(input, jobId) });
     })().catch((reportError) => console.error(`[api] Website Plan queue failure ${jobId} could not be recorded:`, reportError));
   });
@@ -3676,6 +3651,20 @@ const contentPlanJobSchema = z.object({
   localSeoEnabled: z.boolean().optional(),
   targetLocations: z.array(z.string().trim().min(2).max(160)).max(20).optional(),
   idempotencyKey: z.string().trim().min(8).max(191).optional(),
+});
+
+executionTasksRouter.get("/execution-tasks/:id/content-plan/estimate", async (req, res, next) => {
+  try {
+    const context = await workspaceContext(req);
+    const task = await prisma.executionTask.findUnique({ where: { id: req.params.id }, select: { projectId: true } });
+    if (!task?.projectId || !await canAccessProject(context, task.projectId)) return res.status(404).json({ error: "Website planning task not found" });
+    if (!hasWorkspacePermission(context, "execute_tasks")) return res.status(403).json({ error: "Task execution permission is required." });
+    if (!await enforceSeoPlanWorkflow(task.projectId, res)) return;
+    const feature = await prisma.featureCostCatalog.findUnique({ where: { featureKey: "site_architect_generate" } });
+    if (!feature?.isActive) return res.status(409).json({ error: "Website Plan pricing is unavailable. Please try again later." });
+    const estimate = calculateWorkflowUnits(feature.featureKey, feature.defaultCreditCost, { pricingModel: feature.pricingModel, pricingConfig: feature.pricingConfigJson, minimumUnitCost: feature.minimumUnitCost, maximumUnitCost: feature.maximumUnitCost, metadata: { source: "content_plan_generation_job", taskId: req.params.id } });
+    return res.json({ estimate });
+  } catch (error) { next(error); }
 });
 
 executionTasksRouter.post("/execution-tasks/:id/content-plan/jobs", (req, res, next) => {
@@ -3711,7 +3700,7 @@ executionTasksRouter.post("/execution-tasks/:id/content-plan/jobs", (req, res, n
     try {
       job = await prisma.$transaction(async (tx) => {
         await tx.usageEvent.update({ where: { id: usage.usageEventId }, data: { approvalTokenExpiresAt: new Date(Date.now() + 24 * 60 * 60 * 1_000) } });
-        return tx.aiRun.create({ data: { id: jobId, projectId: task.projectId, clientId: task.clientId, moduleName: "content_plan_generation_job", promptVersion: "website-plan-job-v1", inputSnapshotJson: input as unknown as Prisma.InputJsonValue, outputJson: { stage: "queued", progress: 5, taskId: task.id, queuedAt: new Date().toISOString() }, status: "queued" } });
+        return tx.aiRun.create({ data: { id: jobId, projectId: task.projectId, clientId: task.clientId, moduleName: "content_plan_generation_job", promptVersion: "website-plan-job-v2-staged", inputSnapshotJson: input as unknown as Prisma.InputJsonValue, outputJson: { stage: "queued", progress: 5, taskId: task.id, queuedAt: new Date().toISOString() }, status: "queued" } });
       });
     } catch (error) {
       await refundUsage({ usageEventId: usage.usageEventId, reason: "Duplicate Website Plan job submission." }).catch(() => undefined);
