@@ -1,3 +1,5 @@
+import { currentCommercialRequestContext, runCommercialRequestContext } from "../commercial-request-context.js";
+import { reviewWebsitePageCost } from "../website-page-pricing.js";
 import { recordPublishedWebsite } from "../website-context.js";
 import { websiteContext, websiteAnalysisUrl, websitePlanningContext } from "@webtummy/core/website-context";
 import { extractWebsiteSourceDocument, websiteSourceDocumentComponents } from "@webtummy/core/website-generation";
@@ -5997,7 +5999,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
   };
   const pageVersionSignature = activePages.map((page) => `${page.id}:${page.version}`).join("|");
   const navigationSignature = JSON.stringify({ primaryMenu: menu, footerMenu });
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "website_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -6026,7 +6028,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/submit-developme
       preferredPublishingMethod: project.preferredPublishingMethod,
       pages: activePages.map((page) => ({ id: page.id, title: page.title, slug: page.slug, version: page.version, primaryKeyword: page.primaryKeyword, secondaryKeywords: page.secondaryKeywords, searchIntent: page.searchIntent, brief: page.briefJson, content: page.contentJson, seo: page.seoJson })),
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "website_generation", pricedJob);
   const job = queued.job;
   if (queued.reused) return res.status(202).json({ job, reused: true });
   await prisma.$transaction([
@@ -6173,8 +6177,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/jobs/:jobId/mana
       .map((page) => page.id)
     : jsonStrings(sourceInput.pageIds).filter((pageId) => !completedPageIds.has(pageId));
   if (!pageIds.length) return res.status(409).json({ error: "All pages from this job are already complete." });
-  const job = await prisma.websiteBuildJob.create({
-    data: {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
       buildId: source.buildId,
       projectId: source.projectId,
       clientId: source.clientId,
@@ -6190,8 +6193,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/jobs/:jobId/mana
         resumedFromJobId: source.id,
         checkpointRunId: String(sourceInput.checkpointRunId || source.id),
       } as Prisma.InputJsonValue,
-    },
-  });
+    };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const job = await prisma.websiteBuildJob.create({ data: pricedJob });
   await enqueueMeteredWebsiteJob(job.id);
   await recordWorkspaceActivity(prisma, { context, action: "website_builder.job_retried", entityType: "website_build_job", entityId: job.id, agencyClientId: project.agencyClientId, projectId: project.id, previousJson: { sourceJobId: source.id }, nextJson: { pageCount: pageIds.length } });
   res.status(202).json({ job, sourceJobId: source.id, queuedPages: pageIds.length });
@@ -6833,10 +6837,34 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/ge
   }).parse(req.body ?? {});
   const page = await prisma.websiteBuildPage.findFirst({ where: { id: req.params.pageId, build: { projectId: project.id } } });
   if (!page) return res.status(404).json({ error: "Builder page not found." });
-  const seoPlan = jsonRecord(project.websiteBuilds[0]?.settingsJson).seoPlan || {};
-  const generated = await generatePage(page, project, seoPlan, input.comment, reservedWebsitePageSignals(project.websiteBuilds[0]?.pages ?? [], page.id), { forceRewrite: input.forceRewrite, revisionScope: input.revisionScope });
-  const updated = await saveGeneratedPage(page, generated, context, project.websiteBuilds[0]?.templateKey ?? "service_modern", input.comment);
-  res.json({ page: updated, reviewWarnings: generated.brief.reviewWarnings, reviewOptions: generated.brief.reviewWarnings.length ? ["keep", "edit", "regenerate"] : [] });
+  const build = project.websiteBuilds[0];
+  if (!build) return res.status(404).json({ error: "Website build not found." });
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
+    buildId: build.id, projectId: project.id, clientId: project.clientId, workspaceId: context.workspace.id,
+    requestedByUserId: context.membership.userId, status: "queued", stage: "queued_single_page", queuedAt: new Date(),
+    inputJson: { mode: "content_generation", pageIds: [page.id], instructions: input.comment, regenerate: pageHasCompleteContent(page) },
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", pricedJob);
+  if (queued.reused) return res.status(202).json({ job: queued.job, reused: true });
+  let job = queued.job;
+  try {
+    job = await reserveWebsiteJobUsage(job.id);
+    const aiContext = { ...currentCommercialRequestContext(), workspaceId: context.workspace.id, clientId: project.clientId, userId: context.membership.userId, projectId: project.id, featureKey: "website_page_generate", actionKey: "Generate website page", requestId: job.id, usageEventId: job.usageEventId, manualUsageReservation: true, inputTokens: 0, outputTokens: 0 };
+    await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "processing", stage: "generating_single_page" } });
+    const result = await runCommercialRequestContext(aiContext, async () => {
+      const generated = await generatePage(page, project, jsonRecord(build.settingsJson).seoPlan || {}, input.comment, reservedWebsitePageSignals(build.pages, page.id), { forceRewrite: input.forceRewrite, revisionScope: input.revisionScope });
+      const updated = await saveGeneratedPage(page, generated, context, build.templateKey ?? "service_modern", input.comment);
+      return { page: updated, reviewWarnings: generated.brief.reviewWarnings, reviewOptions: generated.brief.reviewWarnings.length ? ["keep", "edit", "regenerate"] : [] };
+    });
+    await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "completed", stage: "content_ready_for_review", completedAt: new Date(), progress: 100, resultJson: { completedPageIds: [page.id] } } });
+    if (job.usageEventId) await commitUsage({ usageEventId: job.usageEventId, provider: "openai", inputTokens: aiContext.inputTokens, outputTokens: aiContext.outputTokens, metadata: { completedBillablePageIds: jsonStrings(jsonRecord(jsonRecord(pricedJob.inputJson).pricingApproval).billablePageIds) } });
+    res.json(result);
+  } catch (error) {
+    await prisma.websiteBuildJob.update({ where: { id: job.id }, data: { status: "failed", stage: "single_page_failed", completedAt: new Date(), errorMessage: error instanceof Error ? error.message : "Page generation failed." } });
+    await refundWebsiteJobUsage(job.id, "Website page generation did not complete.");
+    throw error;
+  }
 });
 
 websiteBuilderRouter.post("/projects/:projectId/website-builder/pages/:pageId/generate-targeted-updates", async (req, res) => {
@@ -7689,7 +7717,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all", a
     && String(resumeInput.instructions || "") === input.comment
       ? String(resumeInput.checkpointRunId || resumeSource.id)
       : null;
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -7708,7 +7736,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all", a
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
       ...(checkpointRunId ? { checkpointRunId, resumedFromJobId: resumeSource?.id } : {}),
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", pricedJob);
   const job = queued.job;
   if (queued.reused) return res.status(202).json({ job, reused: true, queuedPages: jsonStrings(jsonRecord(job.inputJson).pageIds).length });
   await enqueueMeteredWebsiteJob(job.id);
@@ -7756,7 +7786,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
   }) ?? null;
   const resumeInput = jsonRecord(resumeSource?.inputJson);
   const checkpointRunId = resumeSource ? String(resumeInput.checkpointRunId || resumeSource.id) : null;
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -7779,7 +7809,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/prepare-all-cont
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
       ...(checkpointRunId ? { checkpointRunId, resumedFromJobId: resumeSource?.id } : {}),
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", pricedJob);
   const job = queued.job;
   const queuedPages = jsonStrings(jsonRecord(job.inputJson).pageIds).length;
   if (!queued.reused) {
@@ -7833,7 +7865,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-tar
     // completed after the browser rendered the old candidate count.
     return res.json({ alreadyPrepared: true, queuedPages: 0, preparedPages });
   }
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -7855,7 +7887,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-tar
       ),
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "content_generation", pricedJob);
   const job = queued.job;
   if (!queued.reused) {
     await enqueueMeteredWebsiteJob(job.id);
@@ -7914,7 +7948,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-ima
     && String(resumeInput.instructions || "") === input.comment
       ? String(resumeInput.checkpointRunId || resumeSource.id)
       : null;
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "image_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -7933,7 +7967,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/generate-all-ima
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
       ...(checkpointRunId ? { checkpointRunId, resumedFromJobId: resumeSource?.id } : {}),
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "image_generation", pricedJob);
   const job = queued.job;
   if (queued.reused) return res.status(202).json({ job, reused: true, queuedPages: jsonStrings(jsonRecord(job.inputJson).pageIds).length });
   await enqueueMeteredWebsiteJob(job.id);
@@ -8074,7 +8110,7 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/g
   const input = z.object({ comment: z.string().trim().max(1000).optional().default("") }).parse(req.body ?? {});
   const build = project.websiteBuilds[0];
   if (!build || asset.buildId !== build.id) return res.status(404).json({ error: "Website build not found." });
-  const queued = await createOrReuseActiveWebsiteJob(build.id, "image_generation", {
+  const pricedJob: Prisma.WebsiteBuildJobUncheckedCreateInput = {
     buildId: build.id,
     projectId: project.id,
     clientId: project.clientId,
@@ -8093,7 +8129,9 @@ websiteBuilderRouter.post("/projects/:projectId/website-builder/media/:mediaId/g
       assetIds: [asset.id],
       seoPlan: jsonRecord(build.settingsJson).seoPlan,
     } as Prisma.InputJsonValue,
-  });
+  };
+  if (await reviewWebsitePageCost(req, res, pricedJob)) return;
+  const queued = await createOrReuseActiveWebsiteJob(build.id, "image_generation", pricedJob);
   const job = queued.job;
   if (queued.reused) return res.status(202).json({ job, reused: true, queuedImages: 1 });
   await enqueueMeteredWebsiteJob(job.id);

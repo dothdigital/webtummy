@@ -1,3 +1,4 @@
+import { WEBSITE_PAGE_BILLING_POLICY, completedBundlePageIds, pageBundleUnits } from "../../api/src/website-page-pricing.js";
 import { websiteImagePreferencePrompt } from "@webtummy/core/website-generation";
 import { UnrecoverableError, Worker } from "bullmq";
 import { createHmac } from "node:crypto";
@@ -2095,7 +2096,10 @@ async function settleWebsiteJobCapacity(jobId: string) {
   const requestedPageCount = Math.max(1, Number(metadata.pageCount || 1));
   const pricingConfig = record(metadata.pricingConfig);
   let actualUnits = job.status === "completed" ? usage.creditsReserved : 0;
-  if (job.status === "completed" && completedPageCount > 0 && completedPageCount < requestedPageCount) {
+  const bundled = metadata.billingPolicy === WEBSITE_PAGE_BILLING_POLICY;
+  const completedBillablePageIds = job.status === "completed" ? completedBundlePageIds(metadata.billablePageIds, result.completedPageIds) : [];
+  if (bundled) actualUnits = Math.min(usage.creditsReserved, pageBundleUnits(completedBillablePageIds, Number(metadata.creditsPerPage)));
+  else if (job.status === "completed" && completedPageCount > 0 && completedPageCount < requestedPageCount) {
     const mode = String(metadata.mode || "website_generation");
     const perPageUnits = Math.max(0, Number(pricingConfig.perPageUnits || 25));
     if (mode === "content_generation") actualUnits = completedPageCount * perPageUnits;
@@ -2129,6 +2133,7 @@ async function settleWebsiteJobCapacity(jobId: string) {
           terminalStatus: job.status,
           terminalStage: job.stage,
           completedPageCount,
+          ...(bundled ? { completedBillablePageIds } : {}),
           partialSettlement: !shouldRefund && actualUnits < usage.creditsReserved,
         },
       },

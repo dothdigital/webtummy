@@ -127,7 +127,7 @@ const featureSeeds: FeatureSeed[] = [
   { featureKey: "ad_landing_suggestions", moduleName: "gap_analysis", label: "Ad and landing suggestions", description: "Generate ad copy, CTA, offer, landing page, and experiment suggestions without ad-account automation.", defaultCreditCost: 6, estimatedProviderCost: 0.06, requiresApproval: true, cacheTtlMinutes: 1440 },
   { featureKey: "ecommerce_export_guidance", moduleName: "gap_analysis", label: "Ecommerce export guidance", description: "Generate manual Shopify or ecommerce SEO publishing guidance without deep launch integration.", defaultCreditCost: 6, estimatedProviderCost: 0.05, cacheTtlMinutes: 1440 },
   { featureKey: "ai_content_generate", moduleName: "content", label: "Generate AI content", description: "Generate or revise a content asset through the central AI service.", defaultCreditCost: 6, estimatedProviderCost: 0.08, requiresApproval: true, cacheTtlMinutes: 720 },
-  { featureKey: "website_page_generate", moduleName: "website_development", label: "Generate website page", description: "Generate or revise website page structure and content through the central AI service.", defaultCreditCost: 10, estimatedProviderCost: 0.14, requiresApproval: true, cacheTtlMinutes: 720 },
+  { featureKey: "website_page_generate", moduleName: "website_development", label: "Generate website page", description: "Generate website page content and standard images with one per-page charge.", unitLabel: "page", defaultCreditCost: 15, estimatedProviderCost: 0.14, requiresApproval: true, cacheTtlMinutes: 720 },
   { featureKey: "website_image_generate", moduleName: "website_development", label: "Generate website image", description: "Generate an approved website image asset.", defaultCreditCost: 12, estimatedProviderCost: 0.18, requiresApproval: true, cacheTtlMinutes: 0 },
   { featureKey: "execution_content_generate", moduleName: "execution", label: "Generate execution content", description: "Generate reviewable execution-task content.", defaultCreditCost: 6, estimatedProviderCost: 0.08, requiresApproval: true, cacheTtlMinutes: 720 },
   { featureKey: "project_agent_chat", moduleName: "project_agent", label: "Project Agent response", description: "Generate one evidence-grounded Project Agent response.", defaultCreditCost: 2, estimatedProviderCost: 0.03, cacheTtlMinutes: 0 },
@@ -165,7 +165,7 @@ const commercialWorkflowPricing: Record<string, { units: number; model?: string;
   ad_landing_suggestions: { units: 75, model: "fixed", minimum: 50, maximum: 125 },
   ecommerce_export_guidance: { units: 40, model: "fixed", minimum: 25, maximum: 75 },
   ai_content_generate: { units: 80, model: "fixed", minimum: 50, maximum: 120 },
-  website_page_generate: { units: 1, model: "website", minimum: 25, maximum: null, config: { baseUnits: 250, perPageUnits: 25, perImageUnits: 25 } },
+  website_page_generate: { units: 15, model: "per_page_bundle", minimum: 0, maximum: null, config: { includedImagesPerPage: 3 } },
   website_image_generate: { units: 1, model: "per_image", minimum: 25, maximum: null, config: { perImageUnits: 25 } },
   execution_content_generate: { units: 10, model: "fixed", minimum: 5, maximum: 40 },
   project_agent_chat: { units: 10, model: "fixed", minimum: 5, maximum: 15 },
@@ -218,13 +218,22 @@ export async function ensureUsageControlDefaults(db: Db = prisma) {
         pricingConfigJson: pricing.config ?? {},
         minimumUnitCost: pricing.minimum ?? null,
         maximumUnitCost: pricing.maximum ?? null,
-        configJson: { commercialPricingInitialized: 1 },
+        configJson: { commercialPricingInitialized: 1, ...(feature.featureKey === "website_page_generate" ? { websitePageBundlePricingVersion: 1 } : {}) },
       } });
       continue;
     }
     const existingConfig = existing.configJson && typeof existing.configJson === "object" && !Array.isArray(existing.configJson)
       ? existing.configJson as Record<string, unknown>
       : {};
+    if (feature.featureKey === "website_page_generate" && existingConfig.websitePageBundlePricingVersion !== 1) {
+      // One-time future release migration. Subsequent Admin edits remain authoritative.
+      await db.featureCostCatalog.update({ where: { featureKey: feature.featureKey }, data: {
+        defaultCreditCost: 15, pricingModel: "per_page_bundle", pricingConfigJson: { includedImagesPerPage: 3 },
+        minimumUnitCost: 0, maximumUnitCost: null, pricingVersion: { increment: 1 },
+        configJson: { ...existingConfig, commercialPricingInitialized: 1, websitePageBundlePricingVersion: 1 },
+      } });
+      continue;
+    }
     await db.featureCostCatalog.update({
       where: { featureKey: feature.featureKey },
       data: {

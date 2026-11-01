@@ -277,9 +277,9 @@ export default function AdminCommercial() {
     try {
       const pricingConfig = JSON.parse(draft.config || "{}");
       await api.patch(`/api/billing/admin/commercial/workflow-pricing/${featureKey}`, {
-        defaultCreditCost: Number(draft.units), pricingModel: workflow.pricingModel, pricingConfig,
-        minimumUnitCost: draft.minimum === "" ? null : Number(draft.minimum),
-        maximumUnitCost: draft.maximum === "" ? null : Number(draft.maximum),
+        defaultCreditCost: Number(draft.units), pricingModel: featureKey === "website_page_generate" ? "per_page_bundle" : workflow.pricingModel, pricingConfig: featureKey === "website_page_generate" ? { includedImagesPerPage: 3 } : pricingConfig,
+        minimumUnitCost: featureKey === "website_page_generate" ? 0 : draft.minimum === "" ? null : Number(draft.minimum),
+        maximumUnitCost: featureKey === "website_page_generate" ? null : draft.maximum === "" ? null : Number(draft.maximum),
         estimatedProviderCost: Number(draft.providerCost),
       });
       setMessage("Workflow unit pricing saved as a new pricing version.");
@@ -424,11 +424,14 @@ export default function AdminCommercial() {
             const draft = workflowDrafts[workflow.featureKey] ?? { units: "", minimum: "", maximum: "", providerCost: "", config: "{}" };
             return <div key={workflow.featureKey} className="grid gap-3 p-4 xl:grid-cols-[240px_110px_110px_110px_130px_1fr_auto] xl:items-end">
               <div><div className="text-[11px] font-bold uppercase tracking-wide text-brand-700">{workflow.moduleName.replace(/_/g, " ")}</div><div className="font-bold text-charcoal-900">{workflow.label}</div><div className="text-xs text-charcoal-500">{workflow.featureKey} · {workflow.pricingModel} · v{workflow.pricingVersion}</div></div>
-              <Input label="Base units" type="number" value={draft.units} onChange={(value) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, units: value } }))} />
+              <Input label={workflow.featureKey === "website_page_generate" ? "Credits per page" : "Base units"} type="number" value={draft.units} onChange={(value) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, units: value } }))} />
+              {workflow.featureKey !== "website_page_generate" && <>
               <Input label="Minimum" type="number" value={draft.minimum} onChange={(value) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, minimum: value } }))} placeholder="None" />
               <Input label="Maximum" type="number" value={draft.maximum} onChange={(value) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, maximum: value } }))} placeholder="None" />
+              </>}
               <Input label="Est. provider $" type="number" value={draft.providerCost} onChange={(value) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, providerCost: value } }))} />
-              <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Formula configuration</span><textarea value={draft.config} onChange={(event) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, config: event.target.value } }))} className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs" /></label>
+              {workflow.featureKey === "website_page_generate" ? <p className="text-sm text-slate-600">Per page, including content and up to 3 standard images. Previously paid pages and included revisions are not charged again.</p> : <label className="block"><span className="mb-1 block text-sm font-medium text-slate-600">Formula configuration</span><textarea value={draft.config} onChange={(event) => setWorkflowDrafts((current) => ({ ...current, [workflow.featureKey]: { ...draft, config: event.target.value } }))} className="min-h-20 w-full rounded-lg border border-slate-300 px-3 py-2 font-mono text-xs" /></label>}
+
               <Button onClick={() => void saveWorkflowPricing(workflow.featureKey)} disabled={busy === workflow.featureKey}>{busy === workflow.featureKey ? "Saving…" : "Save"}</Button>
             </div>;
           })}

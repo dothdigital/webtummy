@@ -64,7 +64,7 @@ export async function centralAiJson<T = unknown>(input: { system: string; prompt
   const promptProvenance = input.productionPrompt ? resolveProductionPrompt(input.productionPrompt) : null;
   let automaticUsageEventId: string | null = null;
   try {
-    if (requestContext && !requestContext.usageEventId) {
+    if (requestContext && !requestContext.usageEventId && !requestContext.manualUsageReservation) {
       requestContext.usageSequence = (requestContext.usageSequence ?? 0) + 1;
       const reservation = await preflightUsage({
         clientId: requestContext.clientId,

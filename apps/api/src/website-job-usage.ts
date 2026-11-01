@@ -1,3 +1,4 @@
+import { websitePageQuote, websiteQuoteMatches, WEBSITE_PAGE_BILLING_POLICY } from "./website-page-pricing.js";
 import { prisma } from "@webtummy/db";
 import { preflightUsage, refundUsage } from "./usage-engine.js";
 
@@ -19,18 +20,7 @@ export async function reserveWebsiteJobUsage(jobId: string) {
 
   const input = objectValue(job.inputJson);
   const mode = String(input.mode || "website_generation");
-  const earlierCompletedWebsiteBuild = mode === "website_generation"
-    ? await prisma.websiteBuildJob.findFirst({
-        where: {
-          buildId: job.buildId,
-          id: { not: job.id },
-          status: "completed",
-          inputJson: { path: ["mode"], equals: "website_generation" },
-        },
-        select: { id: true },
-      })
-    : null;
-  const revision = websiteJobIsIncludedRevision(input) || Boolean(earlierCompletedWebsiteBuild);
+  const revision = websiteJobIsIncludedRevision(input);
   // User-requested revisions replace previously generated work and are
   // included. They still run through the worker, but must not reserve or
   // commit Capacity a second time.
@@ -42,7 +32,10 @@ export async function reserveWebsiteJobUsage(jobId: string) {
   const imageCount = mode === "image_generation"
     ? Math.max(1, Number(input.imageCount || pageCount))
     : generateImages ? pageCount + 2 : 0;
-  const featureKey = mode === "image_generation" ? "website_image_generate" : "website_page_generate";
+  const quote = await websitePageQuote({ workspaceId: job.workspaceId, buildId: job.buildId, projectId: job.projectId, clientId: job.clientId, requestedByUserId: job.requestedByUserId!, inputJson: input }, Number(objectValue(input.pricingApproval).expiresAt) || undefined);
+  if (!websiteQuoteMatches(input.pricingApproval, quote)) throw Object.assign(new Error("Website pricing changed. Review the current cost before proceeding."), { statusCode: 409, code: "website_price_changed" });
+  if (quote.totalCredits === 0) return job;
+  const featureKey = "website_page_generate";
   const actionKey = mode === "image_generation"
     ? revision ? "Regenerate website images" : "Generate website images"
     : mode === "content_generation"
@@ -62,11 +55,16 @@ export async function reserveWebsiteJobUsage(jobId: string) {
         projectId: job.projectId,
         featureKey,
         actionKey,
-        inputUnits: pageCount,
+        inputUnits: quote.billablePageCount,
         idempotencyKey,
-        metadata: { websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, billPageContent, revision, recovery, billingReason: recovery ? "failed_job_recovery" : "new_generation", execution: "background_job" },
+        metadata: { workspaceId: job.workspaceId, billingPolicy: WEBSITE_PAGE_BILLING_POLICY, billablePageIds: quote.billablePageIds, billablePageCount: quote.billablePageCount, creditsPerPage: quote.creditsPerPage, quotedCredits: quote.totalCredits, websiteBuildJobId: job.id, mode, pageCount, imageCount, generateImages, billPageContent, revision, recovery, billingReason: recovery ? "failed_job_recovery" : "new_generation", execution: "background_job" },
       });
 
+  const reserved = await prisma.usageEvent.findUniqueOrThrow({ where: { id: reservation.usageEventId } });
+  if (reserved.creditsReserved !== quote.totalCredits) {
+    await refundUsage({ usageEventId: reservation.usageEventId, reason: "Website pricing changed after confirmation." });
+    throw Object.assign(new Error("Website pricing changed. Review the updated cost before proceeding."), { statusCode: 409, code: "website_price_changed" });
+  }
   const linked = await prisma.$transaction(async (tx) => {
     const result = await tx.websiteBuildJob.updateMany({
       where: { id: job.id, usageEventId: null },

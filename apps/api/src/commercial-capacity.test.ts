@@ -63,3 +63,12 @@ describe("DEV-059 commercial capacity policy", () => {
     expect(capacityPackPurchaseAllowed(0)).toBe(true);
   });
 });
+
+
+describe("website page bundle pricing", () => {
+  it("charges only the new pages and includes images and assembly", () => {
+    expect(calculateWorkflowUnits("website_page_generate", 15, { pricingModel: "per_page_bundle", metadata: { pageCount: 10, billablePageCount: 10, imageCount: 30 } })).toBe(150);
+    expect(calculateWorkflowUnits("website_page_generate", 20, { pricingModel: "per_page_bundle", metadata: { pageCount: 10, billablePageCount: 2, imageCount: 30 } })).toBe(40);
+    expect(calculateWorkflowUnits("website_page_generate", 15, { pricingModel: "per_page_bundle", metadata: { pageCount: 10, billablePageCount: 0, mode: "website_generation" } })).toBe(0);
+  });
+});

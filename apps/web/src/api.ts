@@ -1,3 +1,4 @@
+import { websiteCreditConfirmationMessage } from "./website-credit-confirmation.js";
 import { publicErrorMessage } from "./public-error-message.js";
 export { publicErrorMessage } from "./public-error-message.js";
 // Thin API client. Browser authentication uses an HttpOnly session cookie. A
@@ -329,7 +330,7 @@ function authHeaders(): Record<string, string> {
   };
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+async function request<T>(path: string, init: RequestInit = {}, costReviews = 0): Promise<T> {
   const res = await fetch(path, {
     ...init,
     credentials: "same-origin",
@@ -338,6 +339,13 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   captureRenewedSession(res);
   if (!res.ok) {
     const data = await readJson(res).catch(() => ({}));
+    if (data.code === "website_cost_confirmation_required" && data.costEstimate && init.method === "POST" && path.includes("/website-builder/")) {
+      if (costReviews >= 3) throw new Error("Website pricing changed. Please review the action again.");
+      const message = websiteCreditConfirmationMessage(data.costEstimate);
+      if (!window.confirm(message)) throw new Error("Website generation cancelled. No credits were used.");
+      const body = typeof init.body === "string" ? JSON.parse(init.body) : {};
+      return request<T>(path, { ...init, body: JSON.stringify({ ...body, pricingApproval: data.costEstimate }) }, costReviews + 1);
+    }
     if (res.status === 401) expireSession();
     throw new Error(apiErrorMessage(data, "Request failed. Please try again.", res));
   }

@@ -131,7 +131,7 @@ const commercialAddonSchema = z.object({
 
 const workflowPricingSchema = z.object({
   defaultCreditCost: z.number().int().min(0).max(1_000_000),
-  pricingModel: z.enum(["fixed", "keyword_market", "website", "per_image", "per_domain", "ai_or_zero"]),
+  pricingModel: z.enum(["fixed", "keyword_market", "website", "per_page_bundle", "per_image", "per_domain", "ai_or_zero"]),
   pricingConfig: z.record(z.string(), z.union([z.number(), z.string(), z.boolean(), z.null()])),
   minimumUnitCost: z.number().int().min(0).max(1_000_000).nullable(),
   maximumUnitCost: z.number().int().min(0).max(10_000_000).nullable(),
@@ -588,6 +588,9 @@ billingRouter.patch("/admin/commercial/workflow-pricing/:featureKey", requireAut
   if (parsed.data.maximumUnitCost != null && parsed.data.minimumUnitCost != null && parsed.data.maximumUnitCost < parsed.data.minimumUnitCost) {
     return res.status(400).json({ error: "Maximum units cannot be lower than minimum units." });
   }
+  if (req.params.featureKey === "website_page_generate" && (parsed.data.pricingModel !== "per_page_bundle" || (parsed.data.minimumUnitCost ?? 0) !== 0 || parsed.data.maximumUnitCost !== null)) {
+    return res.status(400).json({ error: "Website page pricing must use the per-page bundle rate without a minimum or batch maximum." });
+  }
   const previous = await prisma.featureCostCatalog.findUnique({ where: { featureKey: req.params.featureKey } });
   if (!previous) return res.status(404).json({ error: "Workflow pricing record not found." });
   const workflow = await prisma.$transaction(async (tx) => {
@@ -598,6 +601,7 @@ billingRouter.patch("/admin/commercial/workflow-pricing/:featureKey", requireAut
       minimumUnitCost: parsed.data.minimumUnitCost,
       maximumUnitCost: parsed.data.maximumUnitCost,
       estimatedProviderCost: parsed.data.estimatedProviderCost,
+      ...(req.params.featureKey === "website_page_generate" ? { configJson: { ...(previous.configJson && typeof previous.configJson === "object" && !Array.isArray(previous.configJson) ? previous.configJson : {}), commercialPricingInitialized: 1, websitePageBundlePricingVersion: 1 } } : {}),
       pricingVersion: { increment: 1 },
     } });
     await tx.commercialAuditEvent.create({ data: {

@@ -195,7 +195,9 @@ export function calculateWorkflowUnits(featureKey: string, defaultUnits: number,
             featureKey === "growth_diagnosis" ? "ai_or_zero" : "fixed"
   );
   let calculated: number;
-  if (model === "keyword_market") {
+  if (model === "per_page_bundle") {
+    calculated = positiveInt(metadata.billablePageCount, positiveInt(metadata.pageCount, items)) * defaultUnits;
+  } else if (model === "keyword_market") {
     const countryChecks = positiveInt(metadata.countryChecks);
     const localChecks = positiveInt(metadata.localChecks, countryChecks ? 0 : items);
     calculated = positiveInt(config.baseUnits, 50) + countryChecks * positiveInt(config.countryCheckUnits, 5) + localChecks * positiveInt(config.localCheckUnits, 15);
