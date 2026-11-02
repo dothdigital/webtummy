@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 import { api } from "../api.js";
 import { ActionIconButton, Button, Card, Input, StatusPill } from "../components/ui.js";
 import type { BillingPlan } from "../types.js";
+import { sanitizeHtml } from "../sanitize-html.js";
 
 type PlanDraft = Omit<BillingPlan, "priceMonthly" | "articles" | "helperDailyLimit" | "memberCount"> & { memberCount?: number };
 
@@ -53,7 +54,8 @@ function RichTextEditor({ label, value, onChange }: { label: string; value: stri
 
   useEffect(() => {
     const editor = editorRef.current;
-    if (editor && editor.innerHTML !== value) editor.innerHTML = value || "<p></p>";
+    const safeValue = sanitizeHtml(value || "<p></p>", "basic");
+    if (editor && editor.innerHTML !== safeValue) editor.innerHTML = safeValue;
   }, [value]);
 
   const run = (command: string) => {
@@ -77,7 +79,7 @@ function RichTextEditor({ label, value, onChange }: { label: string; value: stri
           ref={editorRef}
           contentEditable
           suppressContentEditableWarning
-          onInput={(event) => onChange(event.currentTarget.innerHTML)}
+          onInput={(event) => onChange(sanitizeHtml(event.currentTarget.innerHTML, "basic"))}
           className="min-h-32 w-full px-3 py-2 text-sm leading-6 text-slate-800 outline-none [&_ol]:ml-5 [&_ol]:list-decimal [&_ul]:ml-5 [&_ul]:list-disc"
         />
       </div>
@@ -131,8 +133,6 @@ function PlanForm({ draft, mode, busy, onChange, onCancel, onSubmit }: { draft: 
               className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-100"
             />
           </label>
-          <Input label="Stripe product ID" value={draft.stripeProductId ?? ""} onChange={(value) => onChange({ stripeProductId: value || null })} placeholder="prod_..." />
-          <div className="lg:col-span-2"><Input label="Stripe price ID" value={draft.stripePriceId ?? ""} onChange={(value) => onChange({ stripePriceId: value || null })} placeholder="price_..." /></div>
           <label className="flex items-center gap-2 text-sm font-medium text-charcoal-700">
             <input type="checkbox" checked={draft.isActive} onChange={(event) => onChange({ isActive: event.target.checked })} className="h-4 w-4 rounded border-charcoal-300" />
             Active for new purchases

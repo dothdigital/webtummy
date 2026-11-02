@@ -1,5 +1,6 @@
 import { config as dotenvConfig } from "dotenv";
-import { existsSync } from "node:fs";
+import { parse as dotenvParse } from "dotenv";
+import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { CrawlOptions } from "@webtummy/core";
 
@@ -8,7 +9,14 @@ function loadEnv() {
   for (let i = 0; i < 6; i++) {
     const candidate = join(dir, ".env");
     if (existsSync(candidate)) {
+      const inheritedOpenAiKey = process.env.OPENAI_API_KEY?.trim();
       dotenvConfig({ path: candidate });
+      // Match the API process: a redacted IDE/shell placeholder must not mask
+      // the real project key for background content-generation workers.
+      if (!usableOpenAiKey(inheritedOpenAiKey)) {
+        const fileOpenAiKey = dotenvParse(readFileSync(candidate)).OPENAI_API_KEY?.trim();
+        if (usableOpenAiKey(fileOpenAiKey)) process.env.OPENAI_API_KEY = fileOpenAiKey;
+      }
       return;
     }
     const parent = dirname(dir);
@@ -17,17 +25,31 @@ function loadEnv() {
   }
 }
 
+function usableOpenAiKey(value: string | undefined) {
+  if (!value || value.length < 20) return false;
+  return !/redacted|replace[_ -]?me|your[_ -]?(openai|api)[_ -]?key|placeholder/i.test(value);
+}
+
 loadEnv();
 
 const num = (v: string | undefined, d: number) => (v ? parseInt(v, 10) : d);
 
 export const config = {
   redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
+  openaiApiKey: process.env.OPENAI_API_KEY ?? "",
+  openaiContentModel: process.env.OPENAI_CONTENT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  // Backward-compatible alias used by existing background content jobs.
+  openaiModel: process.env.OPENAI_CONTENT_MODEL ?? process.env.OPENAI_MODEL ?? "gpt-4o-mini",
+  openaiImageModel: process.env.OPENAI_IMAGE_MODEL ?? "gpt-image-2",
+  appEncryptionKey: process.env.APP_ENCRYPTION_KEY ?? process.env.JWT_SECRET ?? "dev-only-change-me",
+  publicApiUrl: process.env.PUBLIC_API_URL ?? process.env.WEB_APP_URL ?? "http://localhost:4000",
+  websiteImageQuality: process.env.WEBSITE_IMAGE_QUALITY === "medium" ? "medium" as const : "high" as const,
   userAgent:
-    process.env.CRAWL_USER_AGENT ?? "Webtummy-Crawler/0.1 (+https://webtummy.com/bot)",
+    process.env.CRAWL_USER_AGENT ?? "SEnukeAI-Crawler/0.1 (+https://senuke-ai.local/bot)",
   webAppUrl: process.env.WEB_APP_URL ?? "http://localhost:5173",
   emailProvider: (process.env.EMAIL_PROVIDER ?? "").toLowerCase(),
-  emailFrom: process.env.EMAIL_FROM ?? "Webtummy <no-reply@webtummy.local>",
+  emailFrom: process.env.EMAIL_FROM ?? "SEnuke AI - AI Growth Operating System <no-reply@senuke.com>",
+  supportEmail: process.env.SUPPORT_EMAIL ?? "support@senuke.com",
   resendApiKey: process.env.RESEND_API_KEY ?? "",
   awsRegion: process.env.SES_MAILER_AWS_REGION ?? process.env.AWS_REGION ?? process.env.AWS_DEFAULT_REGION ?? "",
   awsAccessKeyId: process.env.SES_MAILER_ACCESS_KEY ?? process.env.AWS_ACCESS_KEY_ID ?? "",
@@ -38,6 +60,15 @@ export const config = {
   crawlJobTimeoutMs: num(process.env.CRAWL_JOB_TIMEOUT_MS, 45 * 60 * 1000),
   monthlyAuditPageLimit: num(process.env.MONTHLY_AUDIT_PAGE_LIMIT, 150),
   monthlyAuditMaxDepth: num(process.env.MONTHLY_AUDIT_MAX_DEPTH, 8),
+  websiteBuilderConcurrency: Math.max(1, num(process.env.WEBSITE_BUILDER_CONCURRENCY, 2)),
+  websiteBuilderJobsPerMinute: Math.max(1, num(process.env.WEBSITE_BUILDER_JOBS_PER_MINUTE, 60)),
+  growthIntelligenceConcurrency: Math.max(1, num(process.env.GROWTH_INTELLIGENCE_CONCURRENCY, 8)),
+  growthIntelligenceJobsPerMinute: Math.max(1, num(process.env.GROWTH_INTELLIGENCE_JOBS_PER_MINUTE, 120)),
+  growthIntelligenceScheduleIntervalMs: Math.max(15_000, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_INTERVAL_MS, 60_000)),
+  growthIntelligenceScheduleBatchSize: Math.max(10, num(process.env.GROWTH_INTELLIGENCE_SCHEDULE_BATCH_SIZE, 250)),
+  growthIntelligenceDebounceMs: Math.max(60_000, num(process.env.GROWTH_INTELLIGENCE_DEBOUNCE_MS, 30 * 60 * 1000)),
+  changeIntelligenceInitialDelayMs: Math.max(5_000, num(process.env.CHANGE_INTELLIGENCE_INITIAL_DELAY_MS, 45_000)),
+  changeIntelligenceIntervalMs: Math.max(60 * 60 * 1000, num(process.env.CHANGE_INTELLIGENCE_INTERVAL_MS, 24 * 60 * 60 * 1000)),
 };
 
 /** Crawl defaults from env; per-crawl options override these. */
@@ -56,3 +87,6 @@ export function defaultCrawlOptions(): CrawlOptions {
 }
 
 export const CRAWL_QUEUE = "crawl";
+export const WEBSITE_BUILDER_QUEUE = "website-builder";
+export const GROWTH_INTELLIGENCE_QUEUE = "growth-intelligence";
+export const SOCIAL_IMAGE_QUEUE = "social-images";

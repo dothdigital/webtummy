@@ -5,12 +5,16 @@
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./planning-reconciliation": "./src/planning-reconciliation.ts",
+    "./growth-execution": "./src/growth-execution.ts"
   },
   "scripts": {
     "generate": "prisma generate",
     "migrate": "prisma migrate dev",
     "push": "prisma db push",
+    "postgres:init": "prisma db execute --file prisma/postgresql-init.sql --schema prisma/schema.prisma",
+    "backfill-workspaces": "tsx scripts/backfill-workspaces.ts",
     "studio": "prisma studio"
   },
   "dependencies": {

@@ -6,6 +6,7 @@ import { hashPassword } from "../auth.js";
 import { requireAuth, requireRole } from "../middleware.js";
 import { projectClientIdForRequest } from "../project-scope.js";
 import { trialEndsFrom } from "../billing.js";
+import { captureWebsiteTracking } from "../website-tracking.js";
 
 export const clientsRouter = Router();
 clientsRouter.use(requireAuth, requireRole("super_admin"));
@@ -63,6 +64,7 @@ clientsRouter.post("/", async (req, res) => {
     const website = await tx.website.create({
       data: { clientId: client.id, domain: site.domain, rootUrl: site.rootUrl },
     });
+    await captureWebsiteTracking(tx, { websiteId: website.id, clientId: client.id, domain: website.domain, rootUrl: website.rootUrl, createdByUserId: req.user?.userId });
     let admin = null;
     if (d.adminEmail && d.adminPassword) {
       admin = await tx.user.create({

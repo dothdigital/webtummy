@@ -1,0 +1,48 @@
+Hello,
+
+SAMPLE · Weekly performance report
+
+Ready to review: SAMPLE · Weekly performance report
+Update recorded: 2026-09-05 12:00:00 UTC
+
+What happened
+Demonstration project: Example Growth Studio. Sample weekly activity: 30 August–5 September 2026. The Google section has its own clearly labelled 28-day comparison. All figures below are illustrative.
+
+Website activity · SAMPLE
+Metric | Current | Previous | Change
+Page views | 2,450 | 2,000 | ↑ 450 · Improved
+Form submissions | 38 | 29 | ↑ 9 · Improved
+Site health score | 87 | 79 | ↑ 8 · Improved
+Illustrative values only. Live reports use saved tracking and crawl evidence, with collection dates.
+
+Google search performance
+Metric | Current | Previous | Change
+Clicks | 420 | 350 | ↑ 70 · Improved
+Impressions | 12,000 | 10,000 | ↑ 2000 · Improved
+CTR | 3.50% | 3.50% | — No change (percentage points)
+Average position | 8.2 | 10.7 | ↓ 2.5 · Improved
+Google period: 1–28 August 2026 · SAMPLE. Comparison: 4–31 July 2026 · SAMPLE. Average position is a Google aggregate, not a fixed live rank.
+
+Search queries
+Query | Clicks | Impressions | Avg. position | Movement
+business growth software | 135 | 2600 | 4.20 | ↓ 3.2 · Improved
+website SEO planning | 92 | 2100 | 9.10 | ↑ 1.9 · Declined
+local growth dashboard | 43 | 1200 | 6.80 | ↓ 2.8 · Improved
+Showing up to 20 queries returned by Google. Open the performance dashboard for more detail. Missing queries are not treated as zero or lost rankings.
+
+Work and next actions · SAMPLE
+Activity | Status | Next action
+Service page titles updated | Published | Verify performance at next checkpoint
+New FAQ content prepared | Awaiting approval | Review content in SEnuke
+Broken internal link found | Needs attention | Review the affected page
+Keyword-to-page map | Reviewed | Continue approved improvements
+
+
+Next action
+Open SEnuke dashboard: https://app.senuke.com/
+
+Thank you,
+The SEnuke AI Team
+
+SAMPLE DESIGN requested for review. All project names, measurements and results in this email are fictional demonstration data.
+Support: support@senuke.com
